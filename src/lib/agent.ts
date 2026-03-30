@@ -707,7 +707,7 @@ const TECHNICAL_INSTRUCTIONS = `
 - File editing, running commands, web searches, computer control → use the appropriate tool
 - Rule of thumb: "Can I answer this from what I already know?" If yes, answer directly.
 
-**One tool per turn** — Execute one tool, read the result, then decide the next step.
+**Multiple tools per turn are allowed** — Execute a batch of tools, review all results, then decide the next step.
 
 **Exit cleanly** — When your task is complete, give your conclusion directly (no tool block). The loop ends automatically when you respond without a tool. Use \`end_turn\` only to force-stop a runaway loop or deliver a closing message mid-loop.
 
@@ -1054,7 +1054,7 @@ LOOP:
 
 ### Tool Call Format
 
-Always output **exactly one** \`\`\`tool block per turn:
+Multiple tool calls are allowed in a single response; execute one or more tool blocks in the same turn:
 \`\`\`tool
 { "name": "tool_name", "args": { "key": "value" } }
 \`\`\`
