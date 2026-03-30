@@ -116,9 +116,16 @@ export async function runPython(code: string, timeoutMs = 120_000): Promise<stri
 
     fs.writeFileSync(tempFile, code, 'utf8');
     const { stdout, stderr } = await execAsync(`"${pythonCmd}" "${tempFile}"`, { timeout: timeoutMs });
-    return `Python STDOUT:\n${stdout.substring(0, 4000)}\nSTDERR:\n${stderr.substring(0, 1000)}`;
+    // Avoid truncating user output; keep full logs so debugging and large notebook-style results are preserved.
+    const trimmedStdout = stdout.length > 200000 ? `${stdout.slice(0, 200000)}\n... [output truncated to 200k chars]` : stdout;
+    const trimmedStderr = stderr.length > 100000 ? `${stderr.slice(0, 100000)}\n... [stderr truncated to 100k chars]` : stderr;
+    return `Python STDOUT:\n${trimmedStdout}\nSTDERR:\n${trimmedStderr}`;
   } catch (err: any) {
-    return `Python Error:\n${err.stderr || err.message}`;
+    const errStdout = err.stdout || '';
+    const errStderr = err.stderr || err.message || '';
+    const trimmedErrStdout = errStdout.length > 200000 ? `${errStdout.slice(0, 200000)}\n... [output truncated to 200k chars]` : errStdout;
+    const trimmedErrStderr = errStderr.length > 100000 ? `${errStderr.slice(0, 100000)}\n... [stderr truncated to 100k chars]` : errStderr;
+    return `Python Error:\nSTDOUT:\n${trimmedErrStdout}\nSTDERR:\n${trimmedErrStderr}`;
   } finally {
     if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
   }
