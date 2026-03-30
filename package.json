@@ -1,23 +1,40 @@
 {
-  "name": "e8-agent",
-  "version": "0.1.0",
+  "name": "omni-shape-agent",
+  "version": "0.2.0",
   "private": true,
+  "bin": {
+    "shapagent": "./bin/shapagent.js",
+    "ShapeAgent": "./bin/shapagent.js",
+    "OmniShapeAgent": "./bin/shapagent.js",
+    "oshape": "./bin/shapagent.js"
+  },
   "scripts": {
+    "cli": "node bin/shapagent.js",
+    "install-cli": "npm link",
     "dev": "next dev",
+    "dev:lan": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@types/three": "^0.183.1",
+    "cheerio": "^1.2.0",
     "next": "16.2.1",
+    "node-notifier": "^10.0.1",
+    "nodemailer": "^8.0.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "three": "^0.171.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/node-notifier": "^8.0.5",
+    "@types/nodemailer": "^7.0.11",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^9.1.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",

@@ -24,6 +24,87 @@
 .DS_Store
 *.pem
 
+
+# Ignore personal, generated, and environment-specific files only
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+
+# Editor/IDE settings
+.vscode/
+.idea/
+.history/
+.vs/
+*.sublime-workspace
+*.sublime-project
+*.code-workspace
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.Python
+env/
+venv/
+.env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+.agent_venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Backup and temp files
+*~
+*.bak
+*.tmp
+*.swp
+*.swo
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Environment files
+.env*
+
+# Build output
+/.next/
+/out/
+/build/
+/coverage/
+
+# Vercel
+.vercel/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Textbelt local server (tracked as optional dep)
+textbelt/
+
+# Ignore system and app data folders
+/tmp/
+/screenshots/
+/saved_chats/
+/data/wallets/
+/weights/
+/workspace/
+/arc-agi-3/
+/bin/
+/public/
+/palette-configs/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
@@ -38,4 +119,12 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+
 next-env.d.ts
+
+# Textbelt local server (tracked as optional dep)
+textbelt/
+next-env.d.ts
+
+# Textbelt local server (tracked as optional dep)
+textbelt/

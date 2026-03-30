@@ -1,0 +1,63 @@
+[
+  {
+    "id": "gameLearner01",
+    "url": "file://$PWD/bots/game_learning_bot.py",
+    "goal": "Autonomously learn a simple 2‑D game by locating green cells (color code \"3\") on the screen and clicking them, while storing each experience in memory for later analysis.",
+    "region": "us-east-1",
+    "startTime": "2026-03-26T23:13:21.148Z",
+    "status": "running",
+    "iterations": 0
+  },
+  {
+    "id": "agarBot",
+    "url": "file://$PWD/bots/agar_io_bot.py",
+    "goal": "Grow the Agar.io cell by eating food, splitting when advantageous, and avoiding larger enemies.",
+    "region": "us-east-1",
+    "startTime": "2026-03-26T23:29:11.439Z",
+    "status": "running",
+    "iterations": 0
+  },
+  {
+    "id": "agarBot01",
+    "url": "file://$PWD/bots/agar_io_bot.py",
+    "goal": "Play Agar.io (Free‑For‑All) autonomously – grow mass by eating green food, split (Space) when advantageous, and avoid larger enemies.",
+    "region": "us-east-1",
+    "startTime": "2026-03-26T23:50:41.285Z",
+    "status": "running",
+    "iterations": 0
+  },
+  {
+    "id": "snake-bot-001",
+    "url": "http://localhost:8000/bot-endpoint",
+    "goal": "Play the HTML Snake game and maximize score",
+    "region": "local",
+    "startTime": "2026-03-28T22:26:59.131Z",
+    "status": "stopped",
+    "iterations": 0
+  },
+  {
+    "id": "snake-bot-002",
+    "url": "http://localhost:8000/bot-endpoint",
+    "goal": "Play the HTML Snake game and maximize score",
+    "region": "local",
+    "startTime": "2026-03-28T22:29:37.814Z",
+    "status": "running",
+    "iterations": 0
+  },
+  {
+    "id": "slither-1",
+    "url": "https://slither.io",
+    "goal": "maximize snake length by eating food and avoiding collisions",
+    "startTime": "2026-03-29T20:29:36.124Z",
+    "status": "running",
+    "iterations": 0
+  },
+  {
+    "id": "slither-new-1",
+    "url": "https://slither.io",
+    "goal": "maximize snake length by eating food and avoiding collisions with other snakes",
+    "startTime": "2026-03-29T22:16:31.500Z",
+    "status": "running",
+    "iterations": 0
+  }
+]
