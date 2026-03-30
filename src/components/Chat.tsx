@@ -2068,7 +2068,7 @@ export default function Chat() {
                     : 'Execute command or message...'
                 }
                 className="flex-1 bg-transparent border-none outline-none text-[16px] md:text-sm font-black text-black placeholder:text-black/10 px-5 md:px-8 py-5 md:py-6"
-                autoCapitalize="off"
+                autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
               />
