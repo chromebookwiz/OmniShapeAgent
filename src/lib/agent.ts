@@ -2693,36 +2693,38 @@ export async function* runAgentLoop(
       scheduler.checkResonance(responseText);
 
       // ── Tool Execution ─────────────────────────────────────────────
-      const toolMatch = responseText.match(/```tool\s*(\{[\s\S]*?\})\s*```/i);
-      if (toolMatch) {
-        try {
-          const call = JSON.parse(toolMatch[1]);
-          const name = call.name || call.tool;
-          const args = call.args || { ...call };
-          if (args.name) delete args.name;
-          if (args.tool) delete args.tool;
+      const toolMatches = Array.from(responseText.matchAll(/```tool\s*(\{[\s\S]*?\})\s*```/gi));
+      if (toolMatches.length > 0) {
+        for (const toolMatch of toolMatches) {
+          try {
+            const call = JSON.parse(toolMatch[1]);
+            const name = call.name || call.tool;
+            const args = call.args || { ...call };
+            if (args.name) delete args.name;
+            if (args.tool) delete args.tool;
 
-          yield { type: 'status', content: `Executing Tool: ${name}` };
-          // Detect same-tool infinite loops
-          if (name === lastToolName) {
-            consecutiveSameToolCount++;
-            if (consecutiveSameToolCount >= 5) {
-              yield { type: 'status', content: `Loop detected: "${name}" called ${consecutiveSameToolCount} times consecutively. Ending turn.` };
-              break;
+            yield { type: 'status', content: `Executing Tool: ${name}` };
+            // Detect same-tool infinite loops
+            if (name === lastToolName) {
+              consecutiveSameToolCount++;
+              if (consecutiveSameToolCount >= 5) {
+                yield { type: 'status', content: `Loop detected: "${name}" called ${consecutiveSameToolCount} times consecutively. Ending turn.` };
+                shouldEndTurn = true;
+                break;
+              }
+            } else {
+              lastToolName = name;
+              consecutiveSameToolCount = 1;
             }
-          } else {
-            lastToolName = name;
-            consecutiveSameToolCount = 1;
-          }
-          let toolResult: any;
-          
-          switch (name) {
-            // ── Web & HTTP ──────────────────────────────────────────────────
-            case 'search_internet': toolResult = await searchInternet(args.query); break;
-            case 'fetch_url': toolResult = await fetchUrl(args.url); break;
-            case 'extract_links': toolResult = await extractLinks(args.url); break;
-            case 'http_request': toolResult = await httpRequest(args.url, args.method, args.headersJson, args.body); break;
-            case 'http_post': toolResult = await httpPost(args.url, args.bodyJson); break;
+            let toolResult: any;
+            
+            switch (name) {
+              // ── Web & HTTP ──────────────────────────────────────────────────
+              case 'search_internet': toolResult = await searchInternet(args.query); break;
+              case 'fetch_url': toolResult = await fetchUrl(args.url); break;
+              case 'extract_links': toolResult = await extractLinks(args.url); break;
+              case 'http_request': toolResult = await httpRequest(args.url, args.method, args.headersJson, args.body); break;
+              case 'http_post': toolResult = await httpPost(args.url, args.bodyJson); break;
 
             // ── Code Execution ──────────────────────────────────────────────
             case 'run_terminal_command': {
@@ -4193,12 +4195,17 @@ except Exception as e:
             context: userMessage.slice(0, 100),
             timestamp: Date.now(),
           });
-          if (shouldEndTurn) break; // end_turn or prompt_self — exit the while loop
+          if (shouldEndTurn) break; // stop processing further tool calls if endpoint requested
+          // continue to next tool call in this assistant response
           continue;
         } catch (e) {
           messages.push({ role: 'system', content: `Tool error: ${e}` });
           continue;
         }
+      }
+
+      if (shouldEndTurn) break; // exit the main agent turn loop
+      continue; // processed at least one tool, run another cycle to generate follow-ups
       }
       break; 
     } catch (e: any) {
