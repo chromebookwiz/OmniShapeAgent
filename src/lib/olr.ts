@@ -6,8 +6,9 @@ import { PATHS, ROOT } from './paths-core';
 
 const STORE_PATH = PATHS.olrResonator;
 const DEFAULT_THEME = 'resonance';
-const RADIAL_BINS = 64;
-const HARMONICS = 10;
+const BASE_RADIAL_BINS = 64;
+const BASE_HARMONICS = 10;
+const MAX_HARMONICS = 24;
 
 export interface GlyphPoint {
   symbol: string;
@@ -36,6 +37,14 @@ export interface ResonatorLanguageState {
   observations: number;
   totalTokens: number;
   updatedAt: number;
+}
+
+interface ResonatorLanguageConfig {
+  id: string;
+  script: string;
+  alphabet: string[];
+  radialBins: number;
+  harmonics: number;
 }
 
 interface UniversalState {
@@ -88,6 +97,11 @@ export interface OLRAnalysis {
   glyphCount: number;
   uniqueGlyphs: number;
   totalPossibleGates: number;
+  config: {
+    alphabetSize: number;
+    radialBins: number;
+    harmonics: number;
+  };
   glyphs: GlyphPoint[];
   path: Array<{ symbol: string; x: number; y: number; angle: number }>;
   metrics: OLRMetrics;
@@ -178,6 +192,189 @@ function segmentText(text: string): string[] {
   return Array.from(text);
 }
 
+function normalizeLanguageHint(languageHint?: string): string {
+  return (languageHint ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+function mergeOrderedUnique(...groups: Array<string[] | undefined>): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    if (!group) continue;
+    for (const symbol of group) {
+      if (!symbol || seen.has(symbol)) continue;
+      seen.add(symbol);
+      merged.push(symbol);
+    }
+  }
+  return merged;
+}
+
+function rangeChars(start: number, end: number): string[] {
+  return Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => String.fromCodePoint(start + index));
+}
+
+function symbolsFromText(text: string): string[] {
+  return segmentText(text).filter(isTrackedGlyph);
+}
+
+function mergeNumberRecords(...records: Array<Record<string, number> | undefined>): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const record of records) {
+    if (!record) continue;
+    for (const [key, value] of Object.entries(record)) {
+      merged[key] = (merged[key] ?? 0) + value;
+    }
+  }
+  return merged;
+}
+
+function mergeGateRecords(...records: Array<Record<string, GateWeight> | undefined>): Record<string, GateWeight> {
+  const merged: Record<string, GateWeight> = {};
+  for (const record of records) {
+    if (!record) continue;
+    for (const [key, value] of Object.entries(record)) {
+      const current = merged[key] ?? { virtue: 0, entropy: 0, resonance: 0, traversals: 0, lastUpdated: 0 };
+      current.virtue += value.virtue ?? 0;
+      current.entropy += value.entropy ?? 0;
+      current.traversals += value.traversals ?? 0;
+      current.lastUpdated = Math.max(current.lastUpdated, value.lastUpdated ?? 0);
+      current.resonance = current.virtue - current.entropy;
+      merged[key] = current;
+    }
+  }
+  return merged;
+}
+
+function padVector(values: number[], length: number): number[] {
+  if (values.length >= length) return values.slice(0, length);
+  return values.concat(Array.from({ length: length - values.length }, () => 0));
+}
+
+function deriveRadialBins(alphabetSize: number): number {
+  const scaled = Math.ceil(Math.max(BASE_RADIAL_BINS, alphabetSize) / 8) * 8;
+  return Math.max(48, Math.min(192, scaled));
+}
+
+function deriveHarmonics(alphabetSize: number): number {
+  return Math.max(8, Math.min(MAX_HARMONICS, Math.round(Math.sqrt(Math.max(BASE_HARMONICS ** 2, alphabetSize)))));
+}
+
+function defineLanguageConfig(id: string, script: string, alphabet: string[]): ResonatorLanguageConfig {
+  const mergedAlphabet = mergeOrderedUnique(alphabet);
+  return {
+    id,
+    script,
+    alphabet: mergedAlphabet,
+    radialBins: deriveRadialBins(mergedAlphabet.length),
+    harmonics: deriveHarmonics(mergedAlphabet.length),
+  };
+}
+
+const ASCII_UPPER = rangeChars(0x41, 0x5a);
+const ASCII_LOWER = rangeChars(0x61, 0x7a);
+const ASCII_DIGITS = rangeChars(0x30, 0x39);
+const ASCII_PUNCTUATION = symbolsFromText("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+const SHARED_SYMBOLS = mergeOrderedUnique(
+  ASCII_DIGITS,
+  ASCII_PUNCTUATION,
+  symbolsFromText('«»“”‘’—–…•·،؛؟־׳״।॥、。・「」『』（）［］｛｝〈〉《》')
+);
+const LATIN_CORE = mergeOrderedUnique(ASCII_UPPER, ASCII_LOWER, SHARED_SYMBOLS);
+const LATIN_FULL = mergeOrderedUnique(
+  LATIN_CORE,
+  rangeChars(0x00c0, 0x024f).filter((symbol) => /\p{Script=Latin}/u.test(symbol)),
+  rangeChars(0x1e00, 0x1eff).filter((symbol) => /\p{Script=Latin}/u.test(symbol))
+);
+const GREEK_FULL = mergeOrderedUnique(rangeChars(0x0370, 0x03ff).filter((symbol) => /\p{Script=Greek}/u.test(symbol)), SHARED_SYMBOLS);
+const CYRILLIC_FULL = mergeOrderedUnique(rangeChars(0x0400, 0x052f).filter((symbol) => /\p{Script=Cyrillic}/u.test(symbol)), SHARED_SYMBOLS);
+const HEBREW_FULL = mergeOrderedUnique(rangeChars(0x0590, 0x05ff).filter((symbol) => /\p{Script=Hebrew}/u.test(symbol)), SHARED_SYMBOLS);
+const ARABIC_FULL = mergeOrderedUnique(
+  rangeChars(0x0600, 0x06ff).filter((symbol) => /\p{Script=Arabic}/u.test(symbol)),
+  rangeChars(0x0750, 0x077f).filter((symbol) => /\p{Script=Arabic}/u.test(symbol)),
+  rangeChars(0x08a0, 0x08ff).filter((symbol) => /\p{Script=Arabic}/u.test(symbol)),
+  SHARED_SYMBOLS
+);
+const DEVANAGARI_FULL = mergeOrderedUnique(rangeChars(0x0900, 0x097f).filter((symbol) => /\p{Script=Devanagari}/u.test(symbol)), SHARED_SYMBOLS);
+const HIRAGANA_FULL = mergeOrderedUnique(rangeChars(0x3040, 0x309f).filter((symbol) => /\p{Script=Hiragana}/u.test(symbol)), SHARED_SYMBOLS);
+const KATAKANA_FULL = mergeOrderedUnique(
+  rangeChars(0x30a0, 0x30ff).filter((symbol) => /\p{Script=Katakana}/u.test(symbol)),
+  rangeChars(0x31f0, 0x31ff).filter((symbol) => /\p{Script=Katakana}/u.test(symbol)),
+  SHARED_SYMBOLS
+);
+
+const LANGUAGE_CONFIGS: Record<string, ResonatorLanguageConfig> = {
+  common: defineLanguageConfig('common', 'Common', SHARED_SYMBOLS),
+  english: defineLanguageConfig('english', 'Latin', LATIN_CORE),
+  french: defineLanguageConfig('french', 'Latin', mergeOrderedUnique(LATIN_CORE, symbolsFromText('ÀÂÆÇÈÉÊËÎÏÔŒÙÛÜŸàâæçèéêëîïôœùûüÿ'))),
+  german: defineLanguageConfig('german', 'Latin', mergeOrderedUnique(LATIN_CORE, symbolsFromText('ÄÖÜẞäöüß'))),
+  spanish: defineLanguageConfig('spanish', 'Latin', mergeOrderedUnique(LATIN_CORE, symbolsFromText('ÁÉÍÑÓÚÜ¡¿áéíñóúü'))),
+  portuguese: defineLanguageConfig('portuguese', 'Latin', mergeOrderedUnique(LATIN_CORE, symbolsFromText('ÁÂÃÀÇÉÊÍÓÔÕÚÜáâãàçéêíóôõúü'))),
+  italian: defineLanguageConfig('italian', 'Latin', mergeOrderedUnique(LATIN_CORE, symbolsFromText('ÀÈÉÌÍÎÒÓÙàèéìíîòóù'))),
+  latin: defineLanguageConfig('latin', 'Latin', LATIN_FULL),
+  hebrew: defineLanguageConfig('hebrew', 'Hebrew', HEBREW_FULL),
+  arabic: defineLanguageConfig('arabic', 'Arabic', ARABIC_FULL),
+  greek: defineLanguageConfig('greek', 'Greek', GREEK_FULL),
+  russian: defineLanguageConfig('russian', 'Cyrillic', mergeOrderedUnique(SHARED_SYMBOLS, symbolsFromText('АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя'))),
+  ukrainian: defineLanguageConfig('ukrainian', 'Cyrillic', mergeOrderedUnique(SHARED_SYMBOLS, symbolsFromText('АБВГҐДЕЄЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЬЮЯабвгґдеєжзиіїйклмнопрстуфхцчшщьюя'))),
+  cyrillic: defineLanguageConfig('cyrillic', 'Cyrillic', CYRILLIC_FULL),
+  hindi: defineLanguageConfig('hindi', 'Devanagari', DEVANAGARI_FULL),
+  devanagari: defineLanguageConfig('devanagari', 'Devanagari', DEVANAGARI_FULL),
+  hiragana: defineLanguageConfig('hiragana', 'Hiragana', HIRAGANA_FULL),
+  katakana: defineLanguageConfig('katakana', 'Katakana', KATAKANA_FULL),
+  japanese: defineLanguageConfig('japanese', 'Japanese', mergeOrderedUnique(HIRAGANA_FULL, KATAKANA_FULL, symbolsFromText('々〆〤ー'))),
+};
+
+const LANGUAGE_ALIASES: Record<string, string> = {
+  ar: 'arabic',
+  arab: 'arabic',
+  arabic: 'arabic',
+  common: 'common',
+  cyrl: 'cyrillic',
+  cyrillic: 'cyrillic',
+  de: 'german',
+  deutsch: 'german',
+  devanagari: 'devanagari',
+  el: 'greek',
+  en: 'english',
+  english: 'english',
+  es: 'spanish',
+  french: 'french',
+  fr: 'french',
+  german: 'german',
+  greek: 'greek',
+  he: 'hebrew',
+  hebrew: 'hebrew',
+  hi: 'hindi',
+  hindi: 'hindi',
+  hiragana: 'hiragana',
+  it: 'italian',
+  italian: 'italian',
+  ja: 'japanese',
+  japanese: 'japanese',
+  katakana: 'katakana',
+  latin: 'latin',
+  pt: 'portuguese',
+  portuguese: 'portuguese',
+  ru: 'russian',
+  russian: 'russian',
+  spanish: 'spanish',
+  uk: 'ukrainian',
+  ukrainian: 'ukrainian',
+};
+
+const SCRIPT_DEFAULTS: Record<string, string> = {
+  Arabic: 'arabic',
+  Common: 'common',
+  Cyrillic: 'cyrillic',
+  Devanagari: 'devanagari',
+  Greek: 'greek',
+  Hebrew: 'hebrew',
+  Hiragana: 'hiragana',
+  Katakana: 'katakana',
+  Latin: 'latin',
+};
+
 function isTrackedGlyph(symbol: string): boolean {
   return symbol.trim().length > 0;
 }
@@ -231,7 +428,7 @@ function intersects(a1: { x: number; y: number }, a2: { x: number; y: number }, 
   return d1 * d2 < 0 && d3 * d4 < 0;
 }
 
-function spectralDescriptor(signal: number[], harmonics = HARMONICS): number[] {
+function spectralDescriptor(signal: number[], harmonics = BASE_HARMONICS): number[] {
   const bins = signal.length;
   const output: number[] = [];
   for (let k = 1; k <= harmonics; k++) {
@@ -304,32 +501,46 @@ function buildFallbackSvg(analysis: OLRAnalysis, theme = DEFAULT_THEME): string 
   return `data:image/svg+xml;base64,${Buffer.from(svg.trim(), 'utf8').toString('base64')}`;
 }
 
-function defaultLanguageState(id: string, script: string): ResonatorLanguageState {
+function resolveLanguageConfig(languageHint: string | undefined, script: string): ResonatorLanguageConfig {
+  const normalizedHint = normalizeLanguageHint(languageHint);
+  const presetId = LANGUAGE_ALIASES[normalizedHint] ?? SCRIPT_DEFAULTS[script] ?? normalizedHint;
+  if (presetId && LANGUAGE_CONFIGS[presetId]) {
+    return LANGUAGE_CONFIGS[presetId];
+  }
+  const dynamicId = presetId || script.toLowerCase();
+  return defineLanguageConfig(dynamicId, script, SHARED_SYMBOLS);
+}
+
+function createUniversalState(): UniversalState {
   return {
-    id,
-    script,
-    alphabet: [],
-    symbolCounts: {},
-    symbolBias: {},
-    gates: {},
     observations: 0,
-    totalTokens: 0,
+    harmonics: Array.from({ length: MAX_HARMONICS }, () => 0),
+    virtueMean: 0,
+    entropyMean: 0,
+    coherenceMean: 0,
+    languageLinks: {},
     updatedAt: Date.now(),
+  };
+}
+
+function hydrateLanguageState(config: ResonatorLanguageConfig, incoming?: Partial<ResonatorLanguageState>, existing?: ResonatorLanguageState): ResonatorLanguageState {
+  return {
+    id: config.id,
+    script: config.script,
+    alphabet: mergeOrderedUnique(config.alphabet, existing?.alphabet, Array.isArray(incoming?.alphabet) ? incoming.alphabet : undefined),
+    symbolCounts: mergeNumberRecords(existing?.symbolCounts, incoming?.symbolCounts),
+    symbolBias: mergeNumberRecords(existing?.symbolBias, incoming?.symbolBias),
+    gates: mergeGateRecords(existing?.gates, incoming?.gates),
+    observations: (existing?.observations ?? 0) + (incoming?.observations ?? 0),
+    totalTokens: (existing?.totalTokens ?? 0) + (incoming?.totalTokens ?? 0),
+    updatedAt: Math.max(existing?.updatedAt ?? 0, incoming?.updatedAt ?? 0, Date.now()),
   };
 }
 
 class OmniShapeLinguisticResonator {
   private state: OLRStoreState = {
     languages: {},
-    universal: {
-      observations: 0,
-      harmonics: Array.from({ length: HARMONICS }, () => 0),
-      virtueMean: 0,
-      entropyMean: 0,
-      coherenceMean: 0,
-      languageLinks: {},
-      updatedAt: Date.now(),
-    },
+    universal: createUniversalState(),
     learning: {
       hebbianRate: 0.085,
       decay: 0.002,
@@ -345,13 +556,22 @@ class OmniShapeLinguisticResonator {
     try {
       if (!fs.existsSync(STORE_PATH)) return;
       const raw = JSON.parse(fs.readFileSync(STORE_PATH, 'utf8')) as Partial<OLRStoreState>;
-      if (raw.languages) this.state.languages = raw.languages;
+      if (raw.languages) {
+        const hydrated: Record<string, ResonatorLanguageState> = {};
+        for (const [key, value] of Object.entries(raw.languages)) {
+          const script = value?.script ?? 'Common';
+          const config = resolveLanguageConfig(value?.id ?? key, script);
+          hydrated[config.id] = hydrateLanguageState(config, value, hydrated[config.id]);
+        }
+        this.state.languages = hydrated;
+      }
       if (raw.universal) {
         this.state.universal = {
+          ...createUniversalState(),
           ...this.state.universal,
           ...raw.universal,
           harmonics: Array.isArray(raw.universal.harmonics)
-            ? raw.universal.harmonics.slice(0, HARMONICS).concat(Array.from({ length: Math.max(0, HARMONICS - raw.universal.harmonics.length) }, () => 0))
+            ? raw.universal.harmonics.slice(0, MAX_HARMONICS).concat(Array.from({ length: Math.max(0, MAX_HARMONICS - raw.universal.harmonics.length) }, () => 0))
             : this.state.universal.harmonics,
         };
       }
@@ -369,25 +589,14 @@ class OmniShapeLinguisticResonator {
     }
   }
 
-  private languageId(languageHint: string | undefined, script: string): string {
-    const normalizedHint = (languageHint ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    return normalizedHint || script.toLowerCase();
+  private ensureLanguage(config: ResonatorLanguageConfig): ResonatorLanguageState {
+    const hydrated = hydrateLanguageState(config, this.state.languages[config.id]);
+    this.state.languages[config.id] = hydrated;
+    return hydrated;
   }
 
-  private ensureLanguage(languageHint: string | undefined, script: string): ResonatorLanguageState {
-    const id = this.languageId(languageHint, script);
-    if (!this.state.languages[id]) {
-      this.state.languages[id] = defaultLanguageState(id, script);
-    }
-    return this.state.languages[id];
-  }
-
-  private ensureAlphabet(state: ResonatorLanguageState, symbols: string[]) {
-    const seen = new Set(state.alphabet);
-    const additions = Array.from(new Set(symbols.filter((symbol) => !seen.has(symbol)))).sort((a, b) => a.localeCompare(b));
-    if (additions.length > 0) {
-      state.alphabet.push(...additions);
-    }
+  private ensureAlphabet(state: ResonatorLanguageState, config: ResonatorLanguageConfig, symbols: string[]) {
+    state.alphabet = mergeOrderedUnique(config.alphabet, state.alphabet, Array.from(new Set(symbols)).sort((a, b) => a.localeCompare(b)));
   }
 
   private mapGlyphs(state: ResonatorLanguageState, textSymbols: string[]): GlyphPoint[] {
@@ -516,11 +725,11 @@ class OmniShapeLinguisticResonator {
     };
   }
 
-  private buildVibration(path: Array<{ symbol: string; x: number; y: number; angle: number }>, state: ResonatorLanguageState, gateUsage: Record<string, number>): number[] {
-    const bins = Array.from({ length: RADIAL_BINS }, () => 0);
+  private buildVibration(path: Array<{ symbol: string; x: number; y: number; angle: number }>, state: ResonatorLanguageState, gateUsage: Record<string, number>, config: ResonatorLanguageConfig): number[] {
+    const bins = Array.from({ length: config.radialBins }, () => 0);
     for (const point of path) {
       const normalized = (point.angle + Math.PI * 2) % (Math.PI * 2);
-      const bin = Math.floor((normalized / (Math.PI * 2)) * RADIAL_BINS) % RADIAL_BINS;
+      const bin = Math.floor((normalized / (Math.PI * 2)) * config.radialBins) % config.radialBins;
       bins[bin] += 0.25 + (state.symbolBias[point.symbol] ?? 0) * 0.15;
     }
     for (const [key, traversals] of Object.entries(gateUsage)) {
@@ -529,7 +738,7 @@ class OmniShapeLinguisticResonator {
       const rightIndex = state.alphabet.indexOf(right);
       if (leftIndex < 0 || rightIndex < 0 || state.alphabet.length === 0) continue;
       const midAngle = ((leftIndex + rightIndex) / 2 / state.alphabet.length) * Math.PI * 2 - Math.PI / 2;
-      const bin = Math.floor((((midAngle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2)) * RADIAL_BINS) % RADIAL_BINS;
+      const bin = Math.floor((((midAngle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2)) * config.radialBins) % config.radialBins;
       const weight = state.gates[key]?.resonance ?? 0;
       bins[bin] += traversals * (0.08 + weight * 0.15);
     }
@@ -616,7 +825,7 @@ class OmniShapeLinguisticResonator {
     universal.virtueMean += (metrics.virtue - universal.virtueMean) / obs;
     universal.entropyMean += (metrics.entropy - universal.entropyMean) / obs;
     universal.coherenceMean += (metrics.coherence - universal.coherenceMean) / obs;
-    for (let index = 0; index < HARMONICS; index++) {
+    for (let index = 0; index < MAX_HARMONICS; index++) {
       universal.harmonics[index] += ((harmonics[index] ?? 0) - universal.harmonics[index]) / obs;
     }
     this.save();
@@ -625,8 +834,9 @@ class OmniShapeLinguisticResonator {
   analyzeText(text: string, options?: { languageHint?: string; learn?: boolean; theme?: string; render?: boolean; preferPython?: boolean }): OLRAnalysis {
     const symbols = segmentText(text).filter(isTrackedGlyph);
     const script = dominantScript(symbols);
-    const language = this.ensureLanguage(options?.languageHint, script);
-    this.ensureAlphabet(language, symbols);
+    const config = resolveLanguageConfig(options?.languageHint, script);
+    const language = this.ensureLanguage(config);
+    this.ensureAlphabet(language, config, symbols);
     const glyphs = this.mapGlyphs(language, symbols);
     const path = this.pathForSymbols(glyphs, symbols);
 
@@ -636,8 +846,8 @@ class OmniShapeLinguisticResonator {
       gateUsage[key] = (gateUsage[key] ?? 0) + 1;
     }
 
-    const vibration = this.buildVibration(path, language, gateUsage);
-    const harmonics = spectralDescriptor(vibration);
+    const vibration = this.buildVibration(path, language, gateUsage, config);
+    const harmonics = spectralDescriptor(vibration, config.harmonics);
     const metrics = this.computeMetrics(path, vibration);
     const fingerprint = this.fingerprint(metrics, harmonics);
     const topGates = Object.entries(gateUsage)
@@ -660,6 +870,11 @@ class OmniShapeLinguisticResonator {
       glyphCount: symbols.length,
       uniqueGlyphs: new Set(symbols).size,
       totalPossibleGates: Math.max(0, (language.alphabet.length * (language.alphabet.length - 1)) / 2),
+      config: {
+        alphabetSize: language.alphabet.length,
+        radialBins: config.radialBins,
+        harmonics: config.harmonics,
+      },
       glyphs,
       path,
       metrics,
@@ -688,7 +903,8 @@ class OmniShapeLinguisticResonator {
   compareTexts(textA: string, textB: string, options?: { languageHintA?: string; languageHintB?: string; learn?: boolean }): OLRComparison {
     const analysisA = this.analyzeText(textA, { languageHint: options?.languageHintA, learn: options?.learn });
     const analysisB = this.analyzeText(textB, { languageHint: options?.languageHintB, learn: options?.learn });
-    const spectralSimilarity = clamp01((cosineSimilarity(analysisA.harmonics, analysisB.harmonics) + 1) * 0.5);
+    const harmonicWidth = Math.max(analysisA.harmonics.length, analysisB.harmonics.length);
+    const spectralSimilarity = clamp01((cosineSimilarity(padVector(analysisA.harmonics, harmonicWidth), padVector(analysisB.harmonics, harmonicWidth)) + 1) * 0.5);
     const metricSimilarity = clamp01((cosineSimilarity(analysisA.fingerprint.slice(0, 8), analysisB.fingerprint.slice(0, 8)) + 1) * 0.5);
     const similarity = clamp01(spectralSimilarity * 0.58 + metricSimilarity * 0.42);
     const topologicalSynonym = similarity >= 0.84;
@@ -762,12 +978,16 @@ class OmniShapeLinguisticResonator {
 
   stats(languageId?: string) {
     if (languageId) {
-      const language = this.state.languages[languageId];
+      const direct = this.state.languages[languageId];
+      const config = resolveLanguageConfig(languageId, direct?.script ?? 'Common');
+      const language = this.state.languages[config.id];
       if (!language) return null;
       return {
         id: language.id,
         script: language.script,
         alphabetSize: language.alphabet.length,
+        radialBins: config.radialBins,
+        harmonics: config.harmonics,
         observations: language.observations,
         totalTokens: language.totalTokens,
         topSymbols: Object.entries(language.symbolCounts).sort((a, b) => b[1] - a[1]).slice(0, 16),
@@ -782,6 +1002,8 @@ class OmniShapeLinguisticResonator {
         id: language.id,
         script: language.script,
         alphabetSize: language.alphabet.length,
+        radialBins: resolveLanguageConfig(language.id, language.script).radialBins,
+        harmonics: resolveLanguageConfig(language.id, language.script).harmonics,
         observations: language.observations,
         totalTokens: language.totalTokens,
       })),
@@ -791,7 +1013,9 @@ class OmniShapeLinguisticResonator {
   }
 
   setGateWeights(languageId: string, from: string, to: string, virtue: number, entropy: number) {
-    const language = this.state.languages[languageId];
+    const direct = this.state.languages[languageId];
+    const config = resolveLanguageConfig(languageId, direct?.script ?? 'Common');
+    const language = this.state.languages[config.id];
     if (!language) return null;
     const key = gateKey(from, to);
     const current = language.gates[key] ?? { virtue: 0, entropy: 0, resonance: 0, traversals: 0, lastUpdated: 0 };
@@ -806,18 +1030,12 @@ class OmniShapeLinguisticResonator {
 
   reset(languageId?: string) {
     if (languageId) {
-      delete this.state.languages[languageId];
+      const direct = this.state.languages[languageId];
+      const config = resolveLanguageConfig(languageId, direct?.script ?? 'Common');
+      delete this.state.languages[config.id];
     } else {
       this.state.languages = {};
-      this.state.universal = {
-        observations: 0,
-        harmonics: Array.from({ length: HARMONICS }, () => 0),
-        virtueMean: 0,
-        entropyMean: 0,
-        coherenceMean: 0,
-        languageLinks: {},
-        updatedAt: Date.now(),
-      };
+      this.state.universal = createUniversalState();
     }
     this.save();
   }
