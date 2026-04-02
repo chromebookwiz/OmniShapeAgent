@@ -157,6 +157,48 @@ export default function PhysicsSimulator({
     const s = stateRef.current;
     if (!s.THREE || !s.scene) return;
     const THREE = s.THREE;
+    let shouldPublishState = false;
+
+    const publishState = () => {
+      const objState: Record<string, object> = {};
+      for (const [id, obj] of s.objects) {
+        objState[id] = {
+          position: obj.mesh.position.toArray(),
+          velocity: obj.velocity.toArray(),
+          angularVelocity: obj.angularVelocity.toArray(),
+          sleeping: obj.sleeping,
+          mass: obj.mass,
+          radius: obj.radius,
+          restitution: obj.restitution,
+          friction: obj.friction,
+          fixed: obj.mass >= 1e8,
+        };
+      }
+      const hingeState: Record<string, object> = {};
+      for (const [id, h] of s.hinges) {
+        hingeState[id] = {
+          a: h.a,
+          b: h.b,
+          motorSpeed: h.motorSpeed,
+          motorForce: h.motorForce,
+          minAngle: h.minAngle,
+          maxAngle: h.maxAngle,
+        };
+      }
+      const statePayload = {
+        objects: objState,
+        hinges: hingeState,
+        trainingLog: s.trainingLog,
+        objectCount: Object.keys(objState).length,
+        hingeCount: Object.keys(hingeState).length,
+        timestamp: Date.now(),
+      };
+      fetch('/api/physics-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(statePayload),
+      }).catch(() => {});
+    };
 
     for (const cmd of commandsRef.current) {
       if (processedRef.current.has(cmd.id)) continue;
@@ -270,6 +312,7 @@ export default function PhysicsSimulator({
               sleepTimer: isFixed ? 999 : 0,
             });
           }
+          shouldPublishState = true;
           break;
         }
 
@@ -282,6 +325,7 @@ export default function PhysicsSimulator({
             obj.mesh.geometry.dispose();
             (obj.mesh.material as import("three").Material).dispose();
             s.objects.delete(cmd.objId);
+            shouldPublishState = true;
           }
           break;
         }
@@ -295,6 +339,7 @@ export default function PhysicsSimulator({
             obj.velocity.y += cmd.force[1] / obj.mass;
             obj.velocity.z += cmd.force[2] / obj.mass;
             obj.sleeping = false; obj.sleepTimer = 0;
+            shouldPublishState = true;
           }
           break;
         }
@@ -306,6 +351,7 @@ export default function PhysicsSimulator({
             obj.velocity.y += cmd.force[1] / obj.mass;
             obj.velocity.z += cmd.force[2] / obj.mass;
             obj.sleeping = false; obj.sleepTimer = 0;
+            shouldPublishState = true;
           }
           break;
         }
@@ -314,6 +360,7 @@ export default function PhysicsSimulator({
           if (obj && cmd.velocity) {
             obj.velocity.set(...cmd.velocity);
             obj.sleeping = false; obj.sleepTimer = 0;
+            shouldPublishState = true;
           }
           break;
         }
@@ -322,6 +369,7 @@ export default function PhysicsSimulator({
           if (obj && cmd.angularVelocity) {
             obj.angularVelocity.set(...cmd.angularVelocity);
             obj.sleeping = false; obj.sleepTimer = 0;
+            shouldPublishState = true;
           }
           break;
         }
@@ -331,6 +379,7 @@ export default function PhysicsSimulator({
             obj.mesh.position.set(...cmd.position);
             obj.velocity.set(0, 0, 0);
             obj.sleeping = false; obj.sleepTimer = 0;
+            shouldPublishState = true;
           }
           break;
         }
@@ -352,12 +401,16 @@ export default function PhysicsSimulator({
             case "friction":   obj.friction = Math.max(0, Math.min(1, Number(cmd.value))); break;
           }
           mat.needsUpdate = true;
+          shouldPublishState = true;
           break;
         }
 
         // ── gravity ───────────────────────────────────────────────────────
         case "set_gravity": {
-          if (cmd.gravity) s.gravity.set(...cmd.gravity);
+          if (cmd.gravity) {
+            s.gravity.set(...cmd.gravity);
+            shouldPublishState = true;
+          }
           break;
         }
 
@@ -371,10 +424,14 @@ export default function PhysicsSimulator({
             stiffness: cmd.stiffness ?? 20,
             damping: cmd.damping ?? 2,
           });
+          shouldPublishState = true;
           break;
         }
         case "remove_spring": {
-          if (cmd.springId) s.springs.delete(cmd.springId);
+          if (cmd.springId) {
+            s.springs.delete(cmd.springId);
+            shouldPublishState = true;
+          }
           break;
         }
 
@@ -417,32 +474,13 @@ export default function PhysicsSimulator({
             obj.velocity.add(dir);
             obj.sleeping = false; obj.sleepTimer = 0;
           }
+          shouldPublishState = true;
           break;
         }
 
         // ── get_state ─────────────────────────────────────────────────────
         case "get_state": {
-          const objState: Record<string, object> = {};
-          for (const [id, obj] of s.objects) {
-            objState[id] = {
-              position: obj.mesh.position.toArray(),
-              velocity: obj.velocity.toArray(),
-              angularVelocity: obj.angularVelocity.toArray(),
-              sleeping: obj.sleeping, mass: obj.mass,
-            };
-          }
-          const hingeState: Record<string, object> = {};
-          for (const [id, h] of s.hinges) {
-            hingeState[id] = { a: h.a, b: h.b, motorSpeed: h.motorSpeed, motorForce: h.motorForce };
-          }
-          const statePayload = { objects: objState, hinges: hingeState, trainingLog: s.trainingLog, timestamp: Date.now() };
-          console.info("[PhysicsSimulator state]", statePayload);
-          // Post to server so agent can read via physics_get_state tool
-          fetch('/api/physics-state', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(statePayload),
-          }).catch(() => {});
+          publishState();
           break;
         }
 
@@ -462,6 +500,7 @@ export default function PhysicsSimulator({
           s.orbitTheta = 0.6; s.orbitPhi = 0.42; s.orbitRadius = 18;
           if (s.scene) s.scene.background = new THREE.Color(0x0a0b10);
           updateCamera();
+          shouldPublishState = true;
           break;
         }
 
@@ -473,6 +512,7 @@ export default function PhysicsSimulator({
             obj.angularVelocity.y += cmd.torque[1] / obj.mass;
             obj.angularVelocity.z += cmd.torque[2] / obj.mass;
             obj.sleeping = false; obj.sleepTimer = 0;
+            shouldPublishState = true;
           }
           break;
         }
@@ -492,6 +532,7 @@ export default function PhysicsSimulator({
             motorSpeed: 0,
             motorForce: 0,
           });
+          shouldPublishState = true;
           break;
         }
 
@@ -502,13 +543,17 @@ export default function PhysicsSimulator({
           if (hinge) {
             hinge.motorSpeed = cmd.motorSpeed ?? 0;
             hinge.motorForce = cmd.motorForce ?? 10;
+            shouldPublishState = true;
           }
           break;
         }
 
         // ── remove_hinge ─────────────────────────────────────────────────
         case "remove_hinge": {
-          if (cmd.hingeId) s.hinges.delete(cmd.hingeId);
+          if (cmd.hingeId) {
+            s.hinges.delete(cmd.hingeId);
+            shouldPublishState = true;
+          }
           break;
         }
 
@@ -517,6 +562,7 @@ export default function PhysicsSimulator({
           // Sensors are evaluated via get_state; this registers sensor metadata
           // The agent can use run_script to read sensor values
           console.info("[PhysicsSimulator] sensor registered:", cmd.sensorId, cmd.sensorType, cmd.objId, cmd.objId2);
+          shouldPublishState = true;
           break;
         }
 
@@ -572,6 +618,7 @@ export default function PhysicsSimulator({
               }
             }
           }
+          shouldPublishState = true;
           break;
         }
 
@@ -708,12 +755,17 @@ export default function PhysicsSimulator({
             new Function("objects", "springs", "hinges", "THREE", "scene", "gravity", "NeuralNet", cmd.script)(
               s.objects, s.springs, s.hinges, THREE, s.scene, s.gravity, NeuralNet
             );
+            shouldPublishState = true;
           } catch (e) {
             console.warn("[PhysicsSimulator] script error:", e);
           }
           break;
         }
       }
+    }
+
+    if (shouldPublishState) {
+      publishState();
     }
   }, [updateCamera]);
 

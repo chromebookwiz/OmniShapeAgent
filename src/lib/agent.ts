@@ -3032,10 +3032,12 @@ export async function* runAgentLoop(
       const toolMatches = Array.from(responseText.matchAll(/```tool\s*(\{[\s\S]*?\})\s*```/gi));
       if (toolMatches.length > 0) {
         for (const toolMatch of toolMatches) {
+          let name = 'unknown';
+          let args: Record<string, any> = {};
           try {
             const call = JSON.parse(toolMatch[1]);
-            const name = call.name || call.tool;
-            const args = call.args || { ...call };
+            name = call.name || call.tool;
+            args = call.args || { ...call };
             if (args.name) delete args.name;
             if (args.tool) delete args.tool;
 
@@ -3255,6 +3257,7 @@ export async function* runAgentLoop(
             // ── Physics Simulator ───────────────────────────────────────
             case 'physics_spawn': {
               const objId = args.objId || `phys_obj_${Date.now().toString(36)}`;
+              const requestedAt = Date.now();
               const cmd = makePhysicsCmd('spawn', {
                 objId,
                 shape: args.shape || 'box',
@@ -3272,7 +3275,19 @@ export async function* runAgentLoop(
                 fixed: args.fixed,
               });
               for (const event of physicsEvents(cmd)) yield event;
-              toolResult = JSON.stringify({ spawned: objId, note: 'Object spawned in physics window. Use physics_get_state() to confirm position, or vision_self_check() to see the scene.' });
+              for (const event of physicsEvents(makePhysicsCmd('get_state'))) yield event;
+              const phState = await waitForPhysicsStateAfter(requestedAt, 2000, 100);
+              const objects = (phState?.data as { objects?: Record<string, unknown> } | undefined)?.objects ?? {};
+              if (objects[objId]) {
+                toolResult = JSON.stringify({
+                  ok: true,
+                  spawned: objId,
+                  objectCount: Object.keys(objects).length,
+                  note: 'Object spawned in physics window and verified by state readback.',
+                });
+              } else {
+                toolResult = `Failed: physics object '${objId}' did not appear in simulator state after spawn. Retry the spawn or inspect the physics window.`;
+              }
               break;
             }
             case 'physics_delete': {
@@ -3367,8 +3382,16 @@ export async function* runAgentLoop(
               break;
             }
             case 'physics_reset': {
+              const requestedAt = Date.now();
               for (const event of physicsEvents(makePhysicsCmd('reset'))) yield event;
-              toolResult = JSON.stringify({ reset: true, note: 'All objects, hinges, and springs cleared. Ready for new design.' });
+              for (const event of physicsEvents(makePhysicsCmd('get_state'))) yield event;
+              const phState = await waitForPhysicsStateAfter(requestedAt, 2000, 100);
+              const objects = (phState?.data as { objects?: Record<string, unknown> } | undefined)?.objects ?? {};
+              if (Object.keys(objects).length === 0) {
+                toolResult = JSON.stringify({ ok: true, reset: true, note: 'All objects, hinges, and springs cleared. Ready for new design.' });
+              } else {
+                toolResult = `Failed: physics reset left ${Object.keys(objects).length} objects in the simulator.`;
+              }
               break;
             }
             case 'physics_apply_torque': {
@@ -4883,13 +4906,23 @@ except Exception as e:
           const resultStr = rawResult?.trim()
             ? rawResult
             : `✓ ${name} completed successfully (no output returned).`;
+          const normalizedResult = resultStr.trim().toLowerCase();
+          const isFailure =
+            normalizedResult.startsWith('error') ||
+            normalizedResult.startsWith('failed') ||
+            normalizedResult.startsWith('access denied') ||
+            normalizedResult.startsWith('unknown tool') ||
+            normalizedResult.includes('permission denied') ||
+            normalizedResult.includes('command not found') ||
+            normalizedResult.includes('traceback') ||
+            normalizedResult.includes('exception');
           // success/error prefix makes it easy for the agent to detect failures at a glance
-          const succeeded = !resultStr.startsWith('Error') && !resultStr.startsWith('Access denied') && !resultStr.startsWith('Unknown tool') && !resultStr.includes('not found') && !resultStr.toLowerCase().startsWith('failed');
+          const succeeded = !isFailure;
           const statusTag = succeeded ? '✓ OK' : '✗ FAILED';
           // Neural reflection cue: appended to every tool result so the model briefly
           // reasons about what it got before deciding next steps.
           const reflectionCue = `\n\n[${statusTag}] Reflect: was this the expected result? What does it mean for the current plan? What is the optimal next action?`;
-          messages.push({ role: 'system', content: `Tool ${name} result:\n${resultStr}${reflectionCue}` });
+          messages.push({ role: 'system', content: `Tool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
           finalAppendedOutput += `\n[TOOL] ${name}: ${statusTag}\n`;
 
           // Rolling tool result compression: when old results are bloating the context,
@@ -4903,7 +4936,7 @@ except Exception as e:
             }
           }
           // Record every tool call for meta-learning + update working memory
-          const callSucceeded = !resultStr.startsWith('Error') && !resultStr.startsWith('Unknown tool');
+          const callSucceeded = succeeded;
           metaLearner.recordToolCall({
             toolName: name,
             args: Object.keys(args).reduce((a: Record<string,string>, k) => { a[k] = String(args[k]).slice(0,50); return a; }, {}),
@@ -4920,7 +4953,24 @@ except Exception as e:
           // continue to next tool call in this assistant response
           continue;
         } catch (e) {
-          messages.push({ role: 'system', content: `Tool error: ${e}` });
+          const errMsg = e instanceof Error ? e.message : String(e);
+          const statusTag = '✗ FAILED';
+          const resultStr = `Error: ${errMsg}`;
+          const reflectionCue = `\n\n[${statusTag}] Reflect: was this the expected result? What does it mean for the current plan? What is the optimal next action?`;
+          messages.push({ role: 'system', content: `Tool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
+          finalAppendedOutput += `\n[TOOL] ${name}: ${statusTag}\n`;
+          metaLearner.recordToolCall({
+            toolName: name,
+            args: Object.keys(args).reduce((a: Record<string,string>, k) => { a[k] = String(args[k]).slice(0,50); return a; }, {}),
+            success: false,
+            durationMs: 0,
+            outputQuality: 0,
+            context: userMessage.slice(0, 100),
+            timestamp: Date.now(),
+          });
+          turnCtx.toolsUsed.push(name);
+          turnCtx.hadToolCalls = true;
+          turnCtx.toolsFailed++;
           continue;
         }
       }
