@@ -4,7 +4,6 @@
 // Uses cosine similarity for retrieval with importance-weighted decay.
 
 import fs from 'fs';
-import path from 'path';
 import { cosineSimilarity } from './embeddings';
 import { PATHS } from './paths';
 
@@ -239,25 +238,63 @@ class VectorStore {
       const similarity = cosineSimilarity(queryEmbedding, record.embedding);
       if (similarity < 0.1) continue; // Hard threshold — ignore irrelevant noise
 
-      const daysOld = (now - record.createdAt) / DAY_MS;
-      // Power-law temporal discount (heavier tail than exponential — old memories
-      // with high importance survive longer)
-      const decayFactor = Math.pow(1 + this.DECAY_LAMBDA * daysOld, -1.5);
-      const accessBonus = Math.log1p(record.accessCount) * 0.05;
+      const daysOld = Math.max(0, (now - record.createdAt) / DAY_MS);
+      
+      // Ebbinghaus Forgetting Curve + Leitner Spaced-Repetition:
+      // Base memory strength geometric expansion. S_0 = 1, alpha = 1.6
+      const memoryStrength = 1.0 * Math.pow(1.6, record.accessCount);
+      
+      // Retention R = e^(-t/S). Lambda scales decay linearly.
+      const decayFactor = Math.exp(-(this.DECAY_LAMBDA * daysOld) / memoryStrength);
 
       // Final score: semantic similarity * time decay * importance + access bonus
-      // Combine importance (what was relevant) and correctness (what was right).
-      // Negative-polarity memories (correctness < 0.4) still surface — the agent
-      // needs to know what NOT to do — but they score lower than positive ones.
       const correctness = record.correctness ?? 0.75;
       const qualityWeight = record.importance * 0.65 + correctness * 0.35;
-      const score = similarity * decayFactor * qualityWeight + accessBonus;
+      const score = similarity * decayFactor * qualityWeight + Math.log1p(record.accessCount) * 0.05;
+
       results.push({ record, score, similarity });
     }
 
-    // Sort descending, return top K
+    // Sort descending by initial relevance
     results.sort((a, b) => b.score - a.score);
-    const top = results.slice(0, topK);
+
+    // Maximum Marginal Relevance (MMR) for Top-K Selection (Proxy for Determinantal Point Process)
+    // MMR = lambda * Sim(Q, D) - (1 - lambda) * max_{S in Selected} Sim(D, S)
+    const LAMBDA_MMR = 0.7; // 70% relevance, 30% diversity
+    const top: SearchResult[] = [];
+    
+    if (results.length > 0) {
+      // First item is always the most relevant greedy choice
+      top.push(results[0]);
+      
+      const pool = results.slice(1);
+      
+      while (top.length < topK && pool.length > 0) {
+        let bestIdx = -1;
+        let maxMmrScore = -Infinity;
+
+        for (let i = 0; i < pool.length; i++) {
+          const candidate = pool[i];
+          
+          // Find max similarity between candidate and already selected items (redundancy penalty)
+          let maxSimToSelected = 0.0;
+          for (const selected of top) {
+            const sim = cosineSimilarity(candidate.record.embedding, selected.record.embedding);
+            if (sim > maxSimToSelected) maxSimToSelected = sim;
+          }
+
+          // MMR greedy calculation
+          const mmrScore = (LAMBDA_MMR * candidate.score) - ((1 - LAMBDA_MMR) * maxSimToSelected);
+
+          if (mmrScore > maxMmrScore) {
+            maxMmrScore = mmrScore;
+            bestIdx = i;
+          }
+        }
+
+        top.push(pool.splice(bestIdx, 1)[0]);
+      }
+    }
 
     // Reinforce accessed memories
     const now2 = Date.now();
@@ -284,8 +321,12 @@ class VectorStore {
 
     for (const [id, record] of this.records.entries()) {
       if (record.accessCount > 5) continue; // Never prune frequently accessed
-      const daysOld = (now - record.createdAt) / DAY_MS;
-      const effective = record.importance * Math.exp(-this.DECAY_LAMBDA * daysOld);
+      
+      const daysOld = Math.max(0, (now - record.createdAt) / DAY_MS);
+      const memoryStrength = 1.0 * Math.pow(1.6, record.accessCount);
+      const retention = Math.exp(-(this.DECAY_LAMBDA * daysOld) / memoryStrength);
+      const effective = record.importance * retention;
+      
       if (effective < importanceThreshold) {
         this.records.delete(id);
         pruned++;
@@ -336,19 +377,39 @@ class VectorStore {
   }
 
   /**
-   * Full-text substring search (last-resort when embeddings are degraded).
+   * Full-text substring search. Only returns records with meaningful keyword overlap.
+   * Uses a stopword filter and requires multiple significant word matches to avoid
+   * injecting irrelevant memories based on common words like "the", "how", "can".
    */
-  searchByText(query: string, topK: number = 10): MemoryRecord[] {
+  searchByText(query: string, topK: number = 10, minHits: number = 2): MemoryRecord[] {
+    const STOPWORDS = new Set([
+      'the','and','for','are','but','not','you','all','can','had','her','was','one',
+      'our','out','day','get','has','him','his','how','its','may','new','now','old',
+      'see','two','who','boy','did','its','let','put','say','she','too','use','way',
+      'will','with','that','this','have','from','they','know','want','been','good',
+      'much','some','time','very','when','come','here','just','like','long','make',
+      'many','more','only','over','such','take','than','them','then','well','were',
+    ]);
     const q = query.toLowerCase();
-    const results: Array<{ record: MemoryRecord; hits: number }> = [];
-    const words = q.split(/\s+/).filter(w => w.length > 2);
+    const words = q.split(/\s+/)
+      .map(w => w.replace(/[^a-z0-9]/g, ''))
+      .filter(w => w.length > 3 && !STOPWORDS.has(w));
 
+    // If query has very few meaningful words, require only 1 hit to avoid over-filtering
+    const effectiveMinHits = words.length <= 2 ? 1 : minHits;
+    if (words.length === 0) return [];
+
+    const results: Array<{ record: MemoryRecord; hits: number; score: number }> = [];
     for (const record of this.records.values()) {
       const content = record.content.toLowerCase();
       const hits = words.filter(w => content.includes(w)).length;
-      if (hits > 0) results.push({ record, hits });
+      if (hits >= effectiveMinHits) {
+        // Score = hits ratio * importance — rewards records that match more query words
+        const score = (hits / words.length) * record.importance;
+        results.push({ record, hits, score });
+      }
     }
-    results.sort((a, b) => b.hits - a.hits || b.record.importance - a.record.importance);
+    results.sort((a, b) => b.score - a.score || b.hits - a.hits);
     return results.slice(0, topK).map(r => r.record);
   }
 

@@ -4,7 +4,6 @@
 // meta-learner, and embedding models. Actual weight files live in weights/.
 
 import fs from 'fs';
-import path from 'path';
 
 import { PATHS, WEIGHTS_DIR } from './paths';
 

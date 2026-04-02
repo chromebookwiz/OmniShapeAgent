@@ -1,10 +1,10 @@
 // src/lib/tools/sandbox.ts
 // Proxy service to provide the agent with internet access.
-import * as cheerio from 'cheerio';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 const execAsync = promisify(exec);
 
@@ -101,10 +101,10 @@ export async function runTerminalCommand(command: string): Promise<string> {
 export async function runPython(code: string, timeoutMs = 120_000): Promise<string> {
   // Use OS temp dir + unique ID to avoid race conditions and CWD pollution
   const tempFile = path.join(
-    require('os').tmpdir(),
+    os.tmpdir(),
     `agent_py_${Date.now()}_${Math.random().toString(36).substring(2)}.py`
   );
-  const venvPath = path.join(process.cwd(), '.agent_venv');
+  const venvPath = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   const pythonCmd = process.platform === 'win32'
     ? path.join(venvPath, 'Scripts', 'python.exe')
     : path.join(venvPath, 'bin', 'python');
@@ -171,7 +171,6 @@ export async function grepSearch(query: string, dirPath: string = '.'): Promise<
 
   // Try ripgrep first (fastest), then git grep, then platform fallback
   const rg = `rg --no-heading -n --glob "!node_modules" --glob "!.next" --glob "!.git" -i "${escaped}" "${absPath}"`;
-  const gitGrep = `git -C "${absPath}" grep -n -i "${escaped}"`;
   const winFindstr = `findstr /s /i /n /c:"${query}" "${absPath}\\*.*"`;
   const posixGrep = `grep -rn --include="*.ts" --include="*.tsx" --include="*.js" --include="*.py" --include="*.md" -i "${escaped}" "${absPath}"`;
 

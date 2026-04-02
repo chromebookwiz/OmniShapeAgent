@@ -5,13 +5,26 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
-  // Override default ignores of eslint-config-next.
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
   globalIgnores([
-    // Default ignores of eslint-config-next:
+    // Next.js build artifacts
     ".next/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Third-party / generated directories not part of this project
+    ".agent_venv/**",
+    "bin/**",
+    "node_modules/**",
+    "public/**",
+    "data/**",
+    "screenshots/**",
+    "output/**",
+    "skills/**",
   ]),
 ]);
 

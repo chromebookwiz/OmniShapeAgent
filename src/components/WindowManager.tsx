@@ -15,7 +15,7 @@
 
 import {
   useState, useRef, useEffect, useCallback,
-  createContext, useContext, useReducer, useId,
+  createContext, useContext, useReducer,
 } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
@@ -263,6 +263,7 @@ export function WindowManagerProvider({ children }: { children: React.ReactNode 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(SAVED_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reading localStorage on mount to rehydrate saved windows is intentional initialization, not a cascading side effect
       if (raw) setSavedWindows(JSON.parse(raw));
     } catch {}
   }, []);
@@ -456,7 +457,7 @@ function DraggableWindow({
             title={win.title}
           />
         ) : win.contentType === 'terminal' ? (
-          <TerminalContent win={win} termEndRef={termEndRef} />
+          <TerminalContent win={win} termEndRef={termEndRef} dispatch={dispatch} />
         ) : win.contentType === 'code' ? (
           <pre style={{
             margin: 0, padding: '12px 16px',
@@ -522,32 +523,155 @@ function btnStyle(color: string): React.CSSProperties {
 
 // ── Terminal Content ───────────────────────────────────────────────────────────
 
+// Slash commands that can be triggered from the terminal input
+const SLASH_COMMANDS: Record<string, string> = {
+  '/help':        'Available commands: /autonomous, /physics, /bg-check, /safe-mode, /spawn [id] [prompt], /clear, /help',
+  '/autonomous':  '__toggle:autonomous__',
+  '/physics':     '__toggle:physics__',
+  '/bg-check':    '__toggle:bg-check__',
+  '/safe-mode':   '__toggle:safe-mode__',
+  '/clear':       '__clear__',
+};
+
+// Global callback registry — Chat.tsx registers handlers here so TerminalContent can call them
+export const terminalCommandHandlers: {
+  runCommand?: (cmd: string) => Promise<string>;
+  toggleMode?:  (mode: string) => string;
+  spawnSub?:    (id: string, prompt: string) => void;
+  appendLine?:  (id: string, line: string) => void;
+} = {};
+
 function TerminalContent({
   win,
   termEndRef,
+  dispatch,
 }: {
   win:         WindowState;
   termEndRef:  React.RefObject<HTMLDivElement | null>;
+  dispatch:    (e: WMAction) => void;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [inputVal, setInputVal] = useState('');
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const runInput = async () => {
+    const cmd = inputVal.trim();
+    if (!cmd) return;
+    setInputVal('');
+    setHistory(prev => [cmd, ...prev.slice(0, 99)]);
+    setHistoryIdx(-1);
+
+    // Append command echo
+    dispatch({ op: 'append_terminal', id: win.id, content: `$ ${cmd}` });
+
+    // Slash commands
+    if (cmd.startsWith('/')) {
+      const [slash, ...rest] = cmd.split(' ');
+      const action = SLASH_COMMANDS[slash];
+      if (action === '__clear__') {
+        // Clear terminal lines by closing + recreating
+        dispatch({ op: 'close', id: win.id });
+        dispatch({ op: 'ensure_terminal', id: win.id, title: win.title });
+        return;
+      }
+      if (action?.startsWith('__toggle:')) {
+        const mode = action.slice(9, -2);
+        const result = terminalCommandHandlers.toggleMode?.(mode) ?? `Unknown mode: ${mode}`;
+        dispatch({ op: 'append_terminal', id: win.id, content: result });
+        return;
+      }
+      if (slash === '/spawn') {
+        const spawnId = rest[0] ?? 'sub-1';
+        const prompt = rest.slice(1).join(' ') || 'Perform a helpful task.';
+        terminalCommandHandlers.spawnSub?.(spawnId, prompt);
+        dispatch({ op: 'append_terminal', id: win.id, content: `[spawn] Launching sub-agent "${spawnId}" with prompt: ${prompt}` });
+        return;
+      }
+      if (action) {
+        dispatch({ op: 'append_terminal', id: win.id, content: action });
+        return;
+      }
+      dispatch({ op: 'append_terminal', id: win.id, content: `Unknown command: ${cmd}. Type /help for available commands.` });
+      return;
+    }
+
+    // Shell command — run via API
+    if (terminalCommandHandlers.runCommand) {
+      try {
+        const output = await terminalCommandHandlers.runCommand(cmd);
+        dispatch({ op: 'append_terminal', id: win.id, content: output || '(no output)' });
+      } catch (err) {
+        dispatch({ op: 'append_terminal', id: win.id, content: `Error: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    } else {
+      dispatch({ op: 'append_terminal', id: win.id, content: '(Terminal command API not connected)' });
+    }
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') { runInput(); return; }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = Math.min(historyIdx + 1, history.length - 1);
+      setHistoryIdx(next);
+      if (history[next]) setInputVal(history[next]);
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = Math.max(historyIdx - 1, -1);
+      setHistoryIdx(next);
+      setInputVal(next === -1 ? '' : (history[next] ?? ''));
+    }
+  };
 
   return (
-    <div
-      ref={scrollRef}
-      style={{
-        width: '100%', height: '100%',
-        background: '#0a0a0a',
-        overflowY: 'auto',
-        padding: '8px 12px',
-        fontFamily: '"Cascadia Code", "Fira Code", monospace',
-        fontSize: 12,
-        lineHeight: 1.6,
-      }}
-    >
-      {win.terminalLines.map((line, i) => (
-        <TerminalLine key={i} text={line} />
-      ))}
-      <div ref={termEndRef as React.RefObject<HTMLDivElement>} />
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#0a0a0a' }}>
+      <div
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '8px 12px',
+          fontFamily: '"Cascadia Code", "Fira Code", monospace',
+          fontSize: 12,
+          lineHeight: 1.6,
+        }}
+        onClick={() => inputRef.current?.focus()}
+      >
+        {win.terminalLines.map((line, i) => (
+          <TerminalLine key={i} text={line} />
+        ))}
+        <div ref={termEndRef as React.RefObject<HTMLDivElement>} />
+      </div>
+      {/* User input row */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '4px 8px',
+        background: '#111',
+        borderTop: '1px solid rgba(255,255,255,0.06)',
+        flexShrink: 0,
+      }}>
+        <span style={{ color: '#7ec8e3', fontFamily: 'monospace', fontSize: 12, userSelect: 'none' }}>$</span>
+        <input
+          ref={inputRef}
+          value={inputVal}
+          onChange={e => setInputVal(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Enter command or /help …"
+          style={{
+            flex: 1,
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            color: 'rgba(255,255,255,0.85)',
+            fontFamily: '"Cascadia Code", "Fira Code", monospace',
+            fontSize: 12,
+            caretColor: '#7ec8e3',
+          }}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
     </div>
   );
 }

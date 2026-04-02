@@ -3,6 +3,8 @@
 // Supports: txt, md, csv, json, xml, html, pdf, docx, xlsx.
 // No external dependencies — uses Node.js Buffer operations.
 
+import zlib from 'zlib';
+
 export interface ParsedFile {
   name: string;
   type: string;          // mime or extension
@@ -66,7 +68,6 @@ function isTextType(mime: string, ext: string): boolean {
 // Pass 3: metadata fallback (Title/Author from Info dict).
 
 function extractPdfText(buf: Buffer): string {
-  const zlib = require('zlib');
   const parts: string[] = [];
 
   // ── Pass 1: decompress FlateDecode / zlib content streams ───────────────
@@ -193,7 +194,7 @@ function extractDocxText(buf: Buffer): string {
   if (!xmlContent) return '[DOCX: word/document.xml not found — file may be corrupted]';
 
   // Strip all XML tags, decode entities, preserve paragraph breaks
-  let text = xmlContent
+  const text = xmlContent
     .replace(/<w:br[^/]*/gi, '\n')          // line breaks
     .replace(/<\/w:p>/gi, '\n')             // paragraph ends
     .replace(/<[^>]+>/g, '')               // all other tags
@@ -244,7 +245,6 @@ function extractZipEntry(buf: Buffer, entryPath: string): string | null {
       } else if (method === 8) {
         // Deflate — use zlib
         try {
-          const zlib = require('zlib');
           return zlib.inflateRawSync(buf.slice(dataStart, dataEnd)).toString('utf-8');
         } catch {
           return null;

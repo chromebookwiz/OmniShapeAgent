@@ -64,6 +64,7 @@ function MemoryCard({
   onBoost: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is needed here to compute display age relative to record creation; this component intentionally shows a snapshot age on render
   const age = Date.now() - record.createdAt;
   const ageStr = age < 3600000
     ? `${Math.floor(age / 60000)}m ago`
@@ -248,7 +249,7 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
       defaultX={typeof window !== 'undefined' ? Math.max(40, window.innerWidth - 540) : 500}
       defaultY={50}
     >
-    <div className="flex flex-col h-full bg-[#FDFCF0]">
+    <div className="flex flex-col h-full bg-[#FDFCF0] text-black">
 
       {/* Header controls */}
       <div className="px-4 py-2.5 border-b border-black/10 flex items-center gap-2 flex-shrink-0 bg-[#FDFCF0]">

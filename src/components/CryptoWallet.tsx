@@ -259,7 +259,7 @@ export default function CryptoWallet({ isOpen, onClose }: CryptoWalletProps) {
       defaultX={typeof window !== 'undefined' ? Math.max(40, window.innerWidth - 400) : 600}
       defaultY={80}
     >
-      <div className="flex-1 overflow-y-auto flex flex-col bg-[#FDFCF0]" style={{ minHeight: 0 }}>
+      <div className="flex-1 overflow-y-auto flex flex-col bg-[#FDFCF0] text-black" style={{ minHeight: 0 }}>
 
         {/* Coin tabs */}
         <div className="flex border-b border-black/10">

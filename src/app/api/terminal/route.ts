@@ -9,12 +9,16 @@
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import {
   getPendingCommands,
   approveCommand,
   denyCommand,
   clearCompleted,
 } from '@/lib/tools/terminal-tools';
+
+const execAsync = promisify(exec);
 
 export const dynamic = 'force-dynamic';
 
@@ -82,9 +86,25 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true, ...parsed });
       }
 
+      case 'run': {
+        // Direct user-initiated command execution (from terminal window input)
+        const command = body.command;
+        if (!command || typeof command !== 'string') {
+          return NextResponse.json({ error: 'run requires: command (string)' }, { status: 400 });
+        }
+        try {
+          const { stdout, stderr } = await execAsync(command, { timeout: 30000 });
+          const output = (stdout + stderr).slice(0, 8000) || '(no output)';
+          return NextResponse.json({ ok: true, output });
+        } catch (e: any) {
+          const output = ((e.stdout ?? '') + (e.stderr ?? '') + (e.message ?? '')).toString().slice(0, 8000);
+          return NextResponse.json({ ok: false, output, exitCode: e.code ?? 1 });
+        }
+      }
+
       default:
         return NextResponse.json(
-          { error: `Unknown action "${action}". Valid: approve, deny, clear` },
+          { error: `Unknown action "${action}". Valid: approve, deny, clear, run` },
           { status: 400 },
         );
     }

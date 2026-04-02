@@ -1,53 +1,62 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnp
 .pnp.*
 .yarn/*
 !.yarn/patches
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+package-lock.json
 
-# testing
-/coverage
-
-# next.js
+# ─── Build output ─────────────────────────────────────────────────────────────
 /.next/
 /out/
+/build/
+/dist/
+/coverage/
+*.tsbuildinfo
+next-env.d.ts
 
-# production
-/build
+# ─── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.*
+.env.local
+.env.*.local
+!.env.example
 
-# misc
+# ─── OS generated ─────────────────────────────────────────────────────────────
 .DS_Store
-*.pem
-
-
-# Ignore personal, generated, and environment-specific files only
-# OS generated files
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-.DS_Store
+.DS_Store?
+._*
 .Spotlight-V100
 .Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
 .AppleDouble
 .LSOverride
 
-# Editor/IDE settings
+# ─── Editor / IDE ─────────────────────────────────────────────────────────────
 .vscode/
+!.vscode/extensions.json
 .idea/
 .history/
 .vs/
 *.sublime-workspace
 *.sublime-project
 *.code-workspace
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+.ionide/
 
-# Python environments and caches
+# ─── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyc
 .Python
 env/
 venv/
@@ -57,74 +66,85 @@ ENV/
 env.bak/
 venv.bak/
 .agent_venv/
+*.egg-info/
+dist/
+.eggs/
 
-# Jupyter
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
+*.ipynb_checkpoints
 
-# Backup and temp files
-*~
-*.bak
-*.tmp
-*.swp
-*.swo
-
-# Log files
+# ─── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+lerna-debug.log*
 
-# Environment files
-.env*
+# ─── Temp / backup ────────────────────────────────────────────────────────────
+*~
+*.bak
+*.tmp
+*.swp
+*.swo
+*.orig
+*.rej
+.cache/
+tmp/
+temp/
 
-# Build output
-/.next/
-/out/
-/build/
-/coverage/
-
-# Vercel
+# ─── Vercel / deployment ──────────────────────────────────────────────────────
 .vercel/
+.netlify/
 
-# TypeScript build info
-*.tsbuildinfo
-
-# Textbelt local server (tracked as optional dep)
-textbelt/
-
-# Ignore system and app data folders
+# ─── App data / runtime ───────────────────────────────────────────────────────
 /tmp/
 /screenshots/
 /saved_chats/
+/data/*.json
+!/data/.gitkeep
 /data/wallets/
+/data/self-improve-log.json
 /weights/
 /workspace/
 /arc-agi-3/
-/bin/
-/public/
 /palette-configs/
 
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
+# ─── CLI user data (stays in ~/.shapagent) ────────────────────────────────────
+# Do NOT ignore /bin/ — CLI lives there
 
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-
-next-env.d.ts
-
-# Textbelt local server (tracked as optional dep)
+# ─── External dependency repos ────────────────────────────────────────────────
 textbelt/
-next-env.d.ts
 
-# Textbelt local server (tracked as optional dep)
-textbelt/
+# ─── Testing ──────────────────────────────────────────────────────────────────
+/coverage/
+.nyc_output/
+*.test.snap
+
+# ─── Credentials / keys ───────────────────────────────────────────────────────
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+
+# ─── Binary / media (large files) ─────────────────────────────────────────────
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ─── TypeScript ───────────────────────────────────────────────────────────────
+*.d.ts.map

@@ -4,7 +4,6 @@
 // Persisted to knowledge_graph.json.
 
 import fs from 'fs';
-import path from 'path';
 
 import { PATHS } from './paths';
 const GRAPH_PATH = PATHS.knowledgeGraph;

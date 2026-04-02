@@ -8,7 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export const ROOT = process.cwd();
+export const ROOT = path.resolve(/*turbopackIgnore: true*/ process.cwd());
 
 // ── Named workspace directories ────────────────────────────────────────────
 
@@ -47,6 +47,7 @@ export const PATHS = {
   scheduler:       path.join(DATA_DIR, 'scheduler-tasks.json'),
   userProfile:     path.join(DATA_DIR, 'user-profile.json'),
   consolidationLog:path.join(DATA_DIR, 'consolidation-log.json'),
+  selfImproveLog:  path.join(DATA_DIR, 'self-improve-log.json'),
   voiceHistory:    path.join(DATA_DIR, 'voice-history.json'),
   voiceProfile:    path.join(DATA_DIR, 'voice-profile.json'),
   visionBaseline:  path.join(DATA_DIR, 'vision-baseline.json'),
@@ -92,17 +93,6 @@ function bootstrap(): void {
     }
   }
 
-  // Move stray root-level image/temp files into screenshots/
-  const rootFiles = fs.readdirSync(ROOT);
-  for (const f of rootFiles) {
-    if (/\.(png|jpg|jpeg|gif|webp|bmp)$/i.test(f)) {
-      const src = path.join(ROOT, f);
-      const dst = path.join(SCREENSHOTS_DIR, f);
-      try {
-        if (!fs.existsSync(dst)) fs.renameSync(src, dst);
-      } catch {}
-    }
-  }
 }
 
 bootstrap();

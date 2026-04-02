@@ -1,8 +1,8 @@
-"use client";
+﻿"use client";
 
 import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 
-// ── Web Speech API type augmentations ──────────────────────────────────────────
+// GöÇGöÇ Web Speech API type augmentations GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
 interface SpeechRecognitionEvent extends Event {
   readonly resultIndex: number;
@@ -29,12 +29,12 @@ interface SpeechRecognitionInstance extends EventTarget {
 
 declare global {
   interface Window {
-    SpeechRecognition: new () => SpeechRecognitionInstance;
-    webkitSpeechRecognition: new () => SpeechRecognitionInstance;
+    SpeechRecognition?: new () => SpeechRecognitionInstance;
+    webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
   }
 }
 
-// ── Props & ref handle ─────────────────────────────────────────────────────────
+// GöÇGöÇ Props & ref handle GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
 export interface VoiceButtonHandle {
   speakText: (text: string) => void;
@@ -46,7 +46,7 @@ export interface VoiceButtonProps {
   disabled?: boolean;
 }
 
-// ── Icons ──────────────────────────────────────────────────────────────────────
+// GöÇGöÇ Icons GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
 const MicIcon = ({ active }: { active: boolean }) => (
   <svg
@@ -103,7 +103,7 @@ const CloseIcon = () => (
   </svg>
 );
 
-// ── Component ──────────────────────────────────────────────────────────────────
+// GöÇGöÇ Component GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
 const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function VoiceButton(
   { onTranscript, lastAssistantMessage, disabled = false },
@@ -127,7 +127,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
   const prevMessageRef = useRef<string | undefined>(undefined);
   const settingsRef = useRef<HTMLDivElement>(null);
 
-  // ── Voice list ───────────────────────────────────────────────────────────────
+  // GöÇGöÇ Voice list GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   const loadVoices = useCallback(() => {
     const voices = window.speechSynthesis.getVoices();
@@ -145,7 +145,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     return () => window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
   }, [loadVoices]);
 
-  // ── SpeechRecognition init ────────────────────────────────────────────────────
+  // GöÇGöÇ SpeechRecognition init GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -198,7 +198,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     };
   }, [onTranscript]);
 
-  // ── Audio level simulation ────────────────────────────────────────────────────
+  // GöÇGöÇ Audio level simulation GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   const startLevelSimulation = () => {
     let prev = 0;
@@ -217,7 +217,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     setAudioLevel(0);
   };
 
-  // ── TTS ───────────────────────────────────────────────────────────────────────
+  // GöÇGöÇ TTS GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   const speakText = useCallback(
     (text: string) => {
@@ -238,7 +238,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
 
   useImperativeHandle(ref, () => ({ speakText }), [speakText]);
 
-  // ── Auto-speak when assistant message changes ─────────────────────────────────
+  // GöÇGöÇ Auto-speak when assistant message changes GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   useEffect(() => {
     if (!voiceOutputEnabled) return;
@@ -248,7 +248,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     speakText(lastAssistantMessage);
   }, [lastAssistantMessage, voiceOutputEnabled, speakText]);
 
-  // ── Listen toggle ─────────────────────────────────────────────────────────────
+  // GöÇGöÇ Listen toggle GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   const toggleListening = () => {
     if (notSupported) {
@@ -273,7 +273,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     }
   };
 
-  // ── Speaker toggle ────────────────────────────────────────────────────────────
+  // GöÇGöÇ Speaker toggle GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   const toggleSpeaker = () => {
     if (speaking) {
@@ -284,7 +284,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     }
   };
 
-  // ── Click-outside to close settings ──────────────────────────────────────────
+  // GöÇGöÇ Click-outside to close settings GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   useEffect(() => {
     if (!showSettings) return;
@@ -297,7 +297,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     return () => document.removeEventListener('mousedown', handler);
   }, [showSettings]);
 
-  // ── Audio level meter bars ────────────────────────────────────────────────────
+  // GöÇGöÇ Audio level meter bars GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   const BAR_COUNT = 5;
   const bars = Array.from({ length: BAR_COUNT }, (_, i) => {
@@ -334,7 +334,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
         )}
       </div>
 
-      {/* Audio level meter — only visible while listening */}
+      {/* Audio level meter GÇö only visible while listening */}
       {listening && (
         <div className="flex items-end gap-[2px] h-5 animate-in fade-in duration-200">
           {bars.map((active, i) => (
@@ -353,7 +353,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
       <button
         onClick={toggleSpeaker}
         disabled={disabled}
-        title={speaking ? 'Stop speaking' : voiceOutputEnabled ? 'Auto-speak ON — click to disable' : 'Enable auto-speak'}
+        title={speaking ? 'Stop speaking' : voiceOutputEnabled ? 'Auto-speak ON GÇö click to disable' : 'Enable auto-speak'}
         className={`p-2.5 rounded-lg transition-all active:scale-95 ${
           voiceOutputEnabled || speaking
             ? 'bg-[#000000] text-[#FDFCF0]'
@@ -363,7 +363,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
         <SpeakerIcon active={voiceOutputEnabled || speaking} />
       </button>
 
-      {/* Settings dots — only visible when voice mode is active */}
+      {/* Settings dots GÇö only visible when voice mode is active */}
       {(listening || voiceOutputEnabled || speaking) && (
         <button
           onClick={() => setShowSettings((s) => !s)}
@@ -472,3 +472,4 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
 });
 
 export default VoiceButton;
+

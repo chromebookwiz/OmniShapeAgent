@@ -5,10 +5,10 @@ import fs from 'fs';
 import path from 'path';
 
 const execAsync = promisify(exec);
-const CWD = process.cwd();
+const CWD = /*turbopackIgnore: true*/ process.cwd();
 
 // Path to the venv pip executable (used by runPython, always preferred over system pip)
-const VENV_DIR = path.join(CWD, '.agent_venv');
+const VENV_DIR = path.join(/*turbopackIgnore: true*/ CWD, '.agent_venv');
 const VENV_PIP = process.platform === 'win32'
   ? path.join(VENV_DIR, 'Scripts', 'pip.exe')
   : path.join(VENV_DIR, 'bin', 'pip');

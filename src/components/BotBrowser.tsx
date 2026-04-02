@@ -340,22 +340,6 @@ export default function BotBrowserManager() {
     return () => clearInterval(interval);
   }, []);
 
-  const addWindow = () => {
-    const n = counterRef.current++;
-    const offset = (n - 1) % 6;
-    setBots(prev => [...prev, {
-      id: `bot-${n}`,
-      url: '',
-      goal: '',
-      x: 60 + offset * 24,
-      y: 60 + offset * 24,
-      width: 720,
-      height: 540,
-      minimized: false,
-      status: 'idle',
-    }]);
-  };
-
   const close = (id: string) => setBots(prev => prev.filter(b => b.id !== id));
   const update = (id: string, patch: Partial<BotWindowState>) =>
     setBots(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));

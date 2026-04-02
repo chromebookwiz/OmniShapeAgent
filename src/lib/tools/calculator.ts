@@ -8,7 +8,6 @@ export function calculate(expression: string): string {
       return "Error: Invalid characters in expression.";
     }
     
-    // eslint-disable-next-line no-new-func
     const result = new Function(`return ${expression}`)();
     return String(result);
   } catch (e) {

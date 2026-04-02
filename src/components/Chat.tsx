@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import VoiceButton, { VoiceButtonHandle } from './VoiceButton';
@@ -14,7 +14,7 @@ type Message = {
   content: string;
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision autonomous reasoning system. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. All geometry — and all higher reasoning — emerges from the simplest structure: the line.`;
+const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision autonomous reasoning system. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. All geometry GÇö and all higher reasoning GÇö emerges from the simplest structure: the line.`;
 
 
 const Icons = {
@@ -130,7 +130,7 @@ const Icons = {
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   ),
-  // ⭕ Autonomous mode — solid circle when active, ring when off
+  // G¡ò Autonomous mode GÇö solid circle when active, ring when off
   Autonomous: ({ active, running }: { active: boolean; running: boolean }) => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
       stroke={active ? (running ? '#22c55e' : '#3b82f6') : 'currentColor'}>
@@ -146,7 +146,7 @@ const Icons = {
   ),
 };
 
-// ── ProviderModelPicker — reusable model config panel for a single provider ──
+// GöÇGöÇ ProviderModelPicker GÇö reusable model config panel for a single provider GöÇGöÇ
 
 interface ProviderModelPickerProps {
   provider: 'ollama' | 'vllm' | 'openrouter';
@@ -185,10 +185,10 @@ function ProviderModelPicker({
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Model {ollamaStatus === 'ok' ? `· ${ollamaModels.length}` : ollamaStatus === 'no-models' ? '· none' : ''}
+              Model {ollamaStatus === 'ok' ? `-+ ${ollamaModels.length}` : ollamaStatus === 'no-models' ? '-+ none' : ''}
             </label>
             {ollamaModels.length === 0 ? (
-              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models — is Ollama running?</div>
+              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models GÇö is Ollama running?</div>
             ) : (
               <select value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)}
                 className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none appearance-none cursor-pointer hover:border-black">
@@ -204,7 +204,7 @@ function ProviderModelPicker({
         <>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Cluster Endpoint {vllmStatus === 'ok' ? `· ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? '· none' : ''}
+              Cluster Endpoint {vllmStatus === 'ok' ? `-+ ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? '-+ none' : ''}
             </label>
             <div className="flex gap-1">
               <input value={vllmUrl} onChange={(e) => setVllmUrl(e.target.value)}
@@ -218,7 +218,7 @@ function ProviderModelPicker({
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">Model</label>
             {vllmModels.length === 0 ? (
-              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models — check URL and Refresh</div>
+              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models GÇö check URL and Refresh</div>
             ) : (
               <select value={vllmModel} onChange={(e) => setVllmModel(e.target.value)}
                 className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none appearance-none cursor-pointer hover:border-black">
@@ -244,17 +244,17 @@ function ProviderModelPicker({
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Model {openrouterStatus === 'ok' ? `· ${openrouterModels.length}` : ''}
+              Model {openrouterStatus === 'ok' ? `-+ ${openrouterModels.length}` : ''}
             </label>
             {openrouterModels.length === 0 ? (
               <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
-                {openrouterApiKey ? 'No models — press Refresh' : 'Enter API key first'}
+                {openrouterApiKey ? 'No models GÇö press Refresh' : 'Enter API key first'}
               </div>
             ) : (
               <select value={openrouterModel} onChange={(e) => setOpenrouterModel(e.target.value)}
                 className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none appearance-none cursor-pointer hover:border-black">
                 <option value="">DETACHED</option>
-                <option value="openrouter:openrouter/auto">Auto — Best Available</option>
+                <option value="openrouter:openrouter/auto">Auto GÇö Best Available</option>
                 {openrouterModels.map(m => <option key={m.id} value={`openrouter:${m.id}`}>{m.name}</option>)}
               </select>
             )}
@@ -283,7 +283,7 @@ export default function Chat() {
   const [secondaryProvider, setSecondaryProvider] = useState<'ollama' | 'vllm' | 'openrouter'>('ollama');
   const [savedChats, setSavedChats] = useState<Array<{ id: string; name: string; createdAt: string; updatedAt: string; summary: string | null; messageCount: number }>>([]);
   const [chatSummaries, setChatSummaries] = useState<Record<string, string>>({});
-  // Tracks the persisted file ID for the current conversation — set after first save
+  // Tracks the persisted file ID for the current conversation GÇö set after first save
   const currentChatIdRef = useRef<string | null>(null);
   const [chatName, setChatName] = useState('My Chat');
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
@@ -347,7 +347,7 @@ export default function Chat() {
   const [instagramMode, setInstagramMode] = useState(false);
   // Moltbook panel
   const [showMoltbook, setShowMoltbook] = useState(false);
-  // ── Autonomous Mode ──────────────────────────────────────────────────────────
+  // GöÇGöÇ Autonomous Mode GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
   const [autonomousMode, setAutonomousMode] = useState(false);
   const isAutoRunningRef = useRef(false);
   const autoStopRequestedRef = useRef(false);        // set by stop_agent event
@@ -359,7 +359,7 @@ export default function Chat() {
   const [mediaUrls, setMediaUrls] = useState<MediaUrlAttachment[]>([]);
   const [showMediaUrlInput, setShowMediaUrlInput] = useState(false);
   const [mediaUrlDraft, setMediaUrlDraft] = useState('');
-  // Stable ref to handleSend — lets the parallel-mode useEffect call it without stale closures
+  // Stable ref to handleSend GÇö lets the parallel-mode useEffect call it without stale closures
   const handleSendRef = useRef<(() => void) | null>(null);
   // Track last assistant message for voice auto-speak
   const lastAssistantMsg = messages.filter(m => m.role === 'assistant').at(-1)?.content ?? '';
@@ -381,7 +381,7 @@ export default function Chat() {
         .replace(/\[TOOL\][^\n]*/g, '')
         .trim();
       if (!userFirst) return '';
-      // Use just the first exchange for speed — no need for the full history
+      // Use just the first exchange for speed GÇö no need for the full history
       const prompt = `Write one short sentence (max 12 words) summarising this conversation.\nUser: ${userFirst.slice(0, 300)}\nAssistant: ${assistFirst.slice(0, 300)}`;
       const activeModel = primaryProvider === 'ollama' ? ollamaModel : primaryProvider === 'openrouter' ? openrouterModel : vllmModel;
       const res = await fetch('/api/agent', {
@@ -443,10 +443,10 @@ export default function Chat() {
         if (!primaryOk) {
           setConnectionError(
             primaryProvider === 'vllm'
-              ? `vLLM: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models — switch provider.' : ''}`
+              ? `vLLM: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models GÇö switch provider.' : ''}`
               : primaryProvider === 'openrouter'
               ? `OpenRouter: no models found. Check your API key in settings.`
-              : `Ollama: no models found at ${ollamaUrl}. ${vllm.length > 0 ? 'vLLM has models — switch provider.' : ''}`
+              : `Ollama: no models found at ${ollamaUrl}. ${vllm.length > 0 ? 'vLLM has models GÇö switch provider.' : ''}`
           );
         } else {
           setConnectionError(null);
@@ -463,7 +463,7 @@ export default function Chat() {
 
   const runVllmProbe = async () => {
     if (!vllmUrl) return;
-    setVllmProbeResult('Probing — testing all endpoint paths...');
+    setVllmProbeResult('Probing GÇö testing all endpoint paths...');
     try {
       const res = await fetch(`/api/vllm-probe?url=${encodeURIComponent(vllmUrl)}`);
       const data = await res.json();
@@ -472,7 +472,7 @@ export default function Chat() {
         '',
         ...(data.steps || []),
         '',
-        data.workingChatUrl ? `→ Working URL: ${data.workingChatUrl}` : '→ No working endpoint found',
+        data.workingChatUrl ? `GåÆ Working URL: ${data.workingChatUrl}` : 'GåÆ No working endpoint found',
       ];
       setVllmProbeResult(lines.join('\n'));
       // If probe found a working URL and we have models, update the vllmModel with correct URL
@@ -534,7 +534,7 @@ export default function Chat() {
         if (!Array.isArray(data.chats)) return;
         // API already sorts newest-first; just set state
         setSavedChats(data.chats);
-        // Populate summaries from stored data — no LLM calls needed
+        // Populate summaries from stored data GÇö no LLM calls needed
         const summaryMap: Record<string, string> = {};
         for (const c of data.chats) {
           if (c.summary) summaryMap[c.id] = c.summary;
@@ -559,7 +559,7 @@ export default function Chat() {
 
     try {
       if (existingId) {
-        // Update existing chat in-place — no new summary generation
+        // Update existing chat in-place GÇö no new summary generation
         const res = await fetch('/api/chats', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -590,7 +590,7 @@ export default function Chat() {
         }
       }
     } catch {
-      // Silently fail — auto-save is best-effort
+      // Silently fail GÇö auto-save is best-effort
     }
   };
 
@@ -666,7 +666,7 @@ export default function Chat() {
       return;
     }
 
-    // First message in parallel mode — start the loop
+    // First message in parallel mode GÇö start the loop
     const isFirstParallelMsg = parallelMode && !isParallelRunning;
     if (isFirstParallelMsg) setIsParallelRunning(true);
 
@@ -717,7 +717,7 @@ export default function Chat() {
           systemPrompt: (() => {
             let sp = systemPrompt;
             if (instagramMode) sp += '\n\n[INSTAGRAM MODE ACTIVE] You are managing an Instagram account autonomously. Use instagram_post, instagram_get_profile, instagram_get_posts, instagram_get_insights tools. Generate creative captions and coordinate with generate_image for visuals. Proactively manage the account: check metrics, post content, analyze performance.';
-            if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE ⭕] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
+            if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE G¡ò] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
             return sp;
           })(),
           temperature,
@@ -814,7 +814,7 @@ export default function Chat() {
                         } else if (sc.type === 'status' && sc.content) {
                           windowManager.dispatch({ op: 'append_terminal', id: windowId, content: `[${sc.content}]\n` } as any);
                         } else if (sc.type === 'done') {
-                          windowManager.dispatch({ op: 'append_terminal', id: windowId, content: `\n─── Subroutine ${subroutineId} complete ───\n` } as any);
+                          windowManager.dispatch({ op: 'append_terminal', id: windowId, content: `\nGöÇGöÇGöÇ Subroutine ${subroutineId} complete GöÇGöÇGöÇ\n` } as any);
                         }
                       } catch {}
                     }
@@ -853,8 +853,8 @@ export default function Chat() {
               setLiveStatus(chunk.content);
             } else if (chunk.type === 'error') {
               const errMsg = currentContent
-                ? currentContent + `\n\n⚠ Stream error: ${chunk.content}`
-                : `⚠ Agent error: ${chunk.content}`;
+                ? currentContent + `\n\nGÜá Stream error: ${chunk.content}`
+                : `GÜá Agent error: ${chunk.content}`;
               setMessages(prev => {
                 const next = [...prev];
                 next[next.length - 1] = { role: 'assistant', content: errMsg };
@@ -885,7 +885,7 @@ export default function Chat() {
           setInput(`Discourse continuation: ${assistantMsg.substring(0, 500)}... Analyze and respond.`);
         }, 1500);
       } else if (pendingAutoContinue) {
-        // Auto-continue: agent signaled there is more work to do — trigger after state settles
+        // Auto-continue: agent signaled there is more work to do GÇö trigger after state settles
         setTimeout(() => setAutoContinuePending(pendingAutoContinue!), 600);
       } else if (autonomousMode && !agentStoppedAuto && !autoStopRequestedRef.current) {
         // Autonomous loop: fire next turn automatically
@@ -900,7 +900,7 @@ export default function Chat() {
           handleSend({ msg: autoMsg, images: autoImages });
         }, 900);
       } else if (agentStoppedAuto || autoStopRequestedRef.current) {
-        // Agent called stop_agent — reset autonomous state
+        // Agent called stop_agent GÇö reset autonomous state
         isAutoRunningRef.current = false;
         autoLoopCountRef.current = 0;
       }
@@ -965,7 +965,7 @@ export default function Chat() {
         const data = await res.json();
         setMessages(prev => [...prev, {
           role: 'system' as const,
-          content: `✓ Approved: \`${data.command ?? id}\` — exit ${data.exitCode ?? 0}${data.output ? `\n\`\`\`\n${data.output.slice(0, 800)}\n\`\`\`` : ''}`,
+          content: `G£ô Approved: \`${data.command ?? id}\` GÇö exit ${data.exitCode ?? 0}${data.output ? `\n\`\`\`\n${data.output.slice(0, 800)}\n\`\`\`` : ''}`,
         }]);
       }
     } catch {}
@@ -981,7 +981,7 @@ export default function Chat() {
       setPendingApprovals(prev => prev.filter(p => p.id !== id));
       setMessages(prev => [...prev, {
         role: 'system' as const,
-        content: `✗ Denied: \`${command}\``,
+        content: `G£ù Denied: \`${command}\``,
       }]);
     } catch {}
   };
@@ -1013,7 +1013,7 @@ export default function Chat() {
 
   const handleFactoryReset = async () => {
     const confirmed = confirm(
-      'FACTORY RESET\n\nThis will permanently erase:\n• All saved conversations\n• All memories and knowledge\n• All generated images\n• All weights and learned strategies\n• All workspace files\n\nThis cannot be undone.\n\nAre you sure you want to do this?'
+      'FACTORY RESET\n\nThis will permanently erase:\nGÇó All saved conversations\nGÇó All memories and knowledge\nGÇó All generated images\nGÇó All weights and learned strategies\nGÇó All workspace files\n\nThis cannot be undone.\n\nAre you sure you want to do this?'
     );
     if (!confirmed) return;
     const confirmed2 = confirm('Are you absolutely sure? All agent memory and history will be lost forever.');
@@ -1040,7 +1040,7 @@ export default function Chat() {
   // Keep the handleSend ref current so the auto-loop effect always calls the latest version
   useEffect(() => { handleSendRef.current = handleSend; });
 
-  // Autonomous Parallel Loop — fires when input is set by the continuation timer above
+  // Autonomous Parallel Loop GÇö fires when input is set by the continuation timer above
   useEffect(() => {
     if (!parallelMode || !isParallelRunning || isLoading) return;
     if (!input.startsWith('Discourse continuation:')) return;
@@ -1048,7 +1048,7 @@ export default function Chat() {
     return () => clearTimeout(timer);
   }, [input, isParallelRunning, parallelMode, isLoading]);
 
-  // Auto-continue trigger — fires when agent signals [AUTO_CONTINUE: ...]
+  // Auto-continue trigger GÇö fires when agent signals [AUTO_CONTINUE: ...]
   const [autoContinuePending, setAutoContinuePending] = useState<string | null>(null);
   useEffect(() => {
     if (!autoContinuePending || isLoading) return;
@@ -1144,7 +1144,7 @@ export default function Chat() {
                     primaryProvider === 'vllm' ? `vLLM${vllmStatus === 'no-models' ? ' (no models)' : ''}` :
                     primaryProvider === 'openrouter' ? `OpenRouter${openrouterStatus === 'no-models' ? ' (no models)' : ''}` :
                     `Ollama${ollamaStatus === 'no-models' ? ' (no models)' : ''}`
-                  )}{parallelMode ? ' ∥ Parallel' : ''}
+                  )}{parallelMode ? ' GêÑ Parallel' : ''}
                 </span>
               </div>
             </div>
@@ -1188,7 +1188,7 @@ export default function Chat() {
               </button>
               <button
                 onClick={() => setAutonomousMode(v => !v)}
-                title={autonomousMode ? `Autonomous mode ON (loop #${autoLoopCountRef.current}) — click to stop` : 'Enable Autonomous Mode (runs until stop_agent)'}
+                title={autonomousMode ? `Autonomous mode ON (loop #${autoLoopCountRef.current}) GÇö click to stop` : 'Enable Autonomous Mode (runs until stop_agent)'}
                 className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 transition-all relative ${
                   autonomousMode ? 'text-green-600' : 'text-black/60'
                 }`}
@@ -1276,12 +1276,12 @@ export default function Chat() {
                         approval.risk === 'medium' ? 'bg-amber-100 text-amber-700 border-amber-300' :
                         'bg-green-100 text-green-700 border-green-300'
                       }`}>{approval.risk}</span>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Terminal — Awaiting Approval</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Terminal GÇö Awaiting Approval</span>
                     </div>
                     <button
                       onClick={() => handleDenyCmd(approval.id, approval.command)}
                       className="text-black/30 hover:text-black/60 text-xs leading-none"
-                    >✕</button>
+                    >G£ò</button>
                   </div>
                   <code className="block text-xs font-mono text-black bg-black/5 rounded-lg px-3 py-2 break-all">{approval.command}</code>
                   {approval.reason && approval.reason !== 'Agent command' && (
@@ -1292,13 +1292,13 @@ export default function Chat() {
                       onClick={() => handleApproveCmd(approval.id)}
                       className="flex items-center gap-1.5 px-4 py-2 bg-black text-[#FDFCF0] text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black/80 active:scale-95 transition-all"
                     >
-                      ✓ Approve
+                      G£ô Approve
                     </button>
                     <button
                       onClick={() => handleDenyCmd(approval.id, approval.command)}
                       className="flex items-center gap-1.5 px-4 py-2 border-2 border-black text-black text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black/5 active:scale-95 transition-all"
                     >
-                      ✕ Deny
+                      G£ò Deny
                     </button>
                     <label className="flex items-center gap-1.5 ml-2 cursor-pointer select-none">
                       <input
@@ -1416,7 +1416,7 @@ export default function Chat() {
                           {chat.name}
                         </p>
                         <p className={`text-[10px] font-mono mb-2 tabular-nums ${isActive && !isSelected ? 'text-white/50' : 'text-black/40'}`}>
-                          {dateStr} · {timeStr}
+                          {dateStr} -+ {timeStr}
                           {chat.messageCount > 0 && <span className="ml-2 opacity-60">{chat.messageCount} msgs</span>}
                         </p>
                         <p className={`text-[11px] line-clamp-2 leading-snug border-l-2 pl-3 py-0.5 ${isActive && !isSelected ? 'border-white/30 text-white/70' : 'border-black/10 text-black/60'}`}>
@@ -1447,7 +1447,7 @@ export default function Chat() {
           {/* Settings Panel */}
           {showSettingsPanel && (
             <FloatingPanel
-              title={parallelMode ? '∥ Parallel Discourse' : 'Inference Logic'}
+              title={parallelMode ? 'GêÑ Parallel Discourse' : 'Inference Logic'}
               onClose={() => setShowSettingsPanel(false)}
               defaultW={380}
               defaultH={680}
@@ -1468,20 +1468,20 @@ export default function Chat() {
                   className="w-full bg-white border-2 border-black rounded-lg px-3 py-2.5 text-xs font-black outline-none appearance-none cursor-pointer hover:bg-black/5 transition-colors"
                 >
                   <option value="ollama">
-                    Ollama — Local {ollamaStatus === 'ok' ? `(${ollamaModels.length} models)` : ollamaStatus === 'no-models' ? '(no models)' : '(checking...)'}
+                    Ollama GÇö Local {ollamaStatus === 'ok' ? `(${ollamaModels.length} models)` : ollamaStatus === 'no-models' ? '(no models)' : '(checking...)'}
                   </option>
                   <option value="vllm">
-                    vLLM — Cluster {vllmStatus === 'ok' ? `(${vllmModels.length} models)` : vllmStatus === 'no-models' ? '(no models)' : '(checking...)'}
+                    vLLM GÇö Cluster {vllmStatus === 'ok' ? `(${vllmModels.length} models)` : vllmStatus === 'no-models' ? '(no models)' : '(checking...)'}
                   </option>
                   <option value="openrouter">
-                    OpenRouter — Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length} models)` : openrouterApiKey ? '(checking...)' : '(set API key)'}
+                    OpenRouter GÇö Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length} models)` : openrouterApiKey ? '(checking...)' : '(set API key)'}
                   </option>
                 </select>
               </div>
               
               <div className="space-y-4 text-black">
                 {parallelMode ? (
-                  /* ── Parallel Mode: pick 2 providers ── */
+                  /* GöÇGöÇ Parallel Mode: pick 2 providers GöÇGöÇ */
                   <div className="space-y-6">
                     {/* Provider pair selectors */}
                     <div className="grid grid-cols-2 gap-4">
@@ -1567,7 +1567,7 @@ export default function Chat() {
                     </div>
                   </div>
                 ) : (
-                  /* ── Single Mode: provider dropdown + model picker ── */
+                  /* GöÇGöÇ Single Mode: provider dropdown + model picker GöÇGöÇ */
                   <div className="space-y-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Inference Provider</label>
@@ -1576,9 +1576,9 @@ export default function Chat() {
                         onChange={(e) => setPrimaryProvider(e.target.value as 'ollama' | 'vllm' | 'openrouter')}
                         className="w-full bg-white border-2 border-black rounded-lg px-4 py-3 text-xs font-black outline-none appearance-none cursor-pointer hover:bg-black/5 transition-colors"
                       >
-                        <option value="vllm">vLLM — Cluster {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
-                        <option value="ollama">Ollama — Local {ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ollamaStatus === 'no-models' ? '(no models)' : ''}</option>
-                        <option value="openrouter">OpenRouter — Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length})` : openrouterStatus === 'no-models' ? '(no models)' : '(set API key)'}</option>
+                        <option value="vllm">vLLM GÇö Cluster {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
+                        <option value="ollama">Ollama GÇö Local {ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ollamaStatus === 'no-models' ? '(no models)' : ''}</option>
+                        <option value="openrouter">OpenRouter GÇö Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length})` : openrouterStatus === 'no-models' ? '(no models)' : '(set API key)'}</option>
                       </select>
                     </div>
 
@@ -1600,7 +1600,7 @@ export default function Chat() {
                   </div>
                 )}
 
-                {/* ── OpenRouter API key (shown when openrouter is not primary, so key can always be configured) ── */}
+                {/* GöÇGöÇ OpenRouter API key (shown when openrouter is not primary, so key can always be configured) GöÇGöÇ */}
                 {primaryProvider !== 'openrouter' && !parallelMode && (
                   <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
                     <label className="text-[9px] font-black uppercase tracking-widest text-black/40">OpenRouter API Key</label>
@@ -1614,7 +1614,7 @@ export default function Chat() {
                   </div>
                 )}
 
-                {/* ── Tool Group Toggles ── */}
+                {/* GöÇGöÇ Tool Group Toggles GöÇGöÇ */}
                 <div className="pt-3 border-t border-dashed border-black/10">
                   <button
                     onClick={() => setShowToolsPanel(p => !p)}
@@ -1626,7 +1626,7 @@ export default function Chat() {
                         {enabledToolGroups.size}/12 enabled
                       </span>
                     </div>
-                    <span className={`text-[10px] text-black/30 transition-transform ${showToolsPanel ? 'rotate-90' : ''}`}>▶</span>
+                    <span className={`text-[10px] text-black/30 transition-transform ${showToolsPanel ? 'rotate-90' : ''}`}>Gû¦</span>
                   </button>
 
                   {showToolsPanel && (
@@ -1690,7 +1690,7 @@ export default function Chat() {
                   )}
                 </div>
 
-                {/* ── Image Pipeline ── */}
+                {/* GöÇGöÇ Image Pipeline GöÇGöÇ */}
                 <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
                   <label className="text-[9px] font-black uppercase tracking-widest text-black/40">Image Pipeline</label>
                   <select
@@ -1714,8 +1714,8 @@ export default function Chat() {
                         <option value="black-forest-labs/flux-1.1-pro">FLUX 1.1 Pro</option>
                         <option value="black-forest-labs/flux-pro">FLUX Pro</option>
                         <option value="stability/stable-diffusion-3-5-large">SD 3.5 Large</option>
-                        <option value="openai/dall-e-3">DALL·E 3</option>
-                        <option value="openai/dall-e-2">DALL·E 2</option>
+                        <option value="openai/dall-e-3">DALL-+E 3</option>
+                        <option value="openai/dall-e-2">DALL-+E 2</option>
                       </select>
                     </div>
                   )}
@@ -1763,7 +1763,7 @@ export default function Chat() {
                       onChange={(e) => setSystemPrompt(e.target.value)}
                       rows={4}
                       className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-medium focus:bg-[#FDFCF0] outline-none resize-none leading-relaxed focus:border-black"
-                      placeholder="Optional — leave blank for default."
+                      placeholder="Optional GÇö leave blank for default."
                     />
                   </div>
 
@@ -1838,7 +1838,7 @@ export default function Chat() {
                   <code className="text-[9px] font-mono bg-black/5 px-2 py-1 rounded text-black/50">npx next dev -H 0.0.0.0</code>
                 </div>
 
-                {/* ── Danger Zone ── */}
+                {/* GöÇGöÇ Danger Zone GöÇGöÇ */}
                 <div className="pt-3 border-t border-dashed border-red-200 space-y-2">
                   <p className="text-[9px] font-black uppercase tracking-widest text-red-400">Danger Zone</p>
                   <button
@@ -1867,7 +1867,7 @@ export default function Chat() {
                 <div className="space-y-1">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Agent Identity</p>
                   <p className="text-sm font-black">OmniShapeAgent</p>
-                  <p className="text-xs text-black/50">AI agent social network — post, follow, discuss.</p>
+                  <p className="text-xs text-black/50">AI agent social network GÇö post, follow, discuss.</p>
                 </div>
                 <div className="space-y-2">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Quick Actions</p>
@@ -1891,7 +1891,7 @@ export default function Chat() {
                 <div className="space-y-1.5 border-t border-black/10 pt-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">API Key</p>
                   <p className="text-[10px] text-black/50">Set <code className="bg-black/5 px-1 rounded">MOLTBOOK_API_KEY</code> env var after registration.</p>
-                  <a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-black/60 hover:text-black underline">moltbook.com ↗</a>
+                  <a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-black/60 hover:text-black underline">moltbook.com Gåù</a>
                 </div>
               </div>
             </FloatingPanel>
@@ -1904,7 +1904,7 @@ export default function Chat() {
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
               <span className="text-[10px] font-black uppercase tracking-widest text-white">
-                ⭕ Autonomous Mode — Turn {autoLoopCountRef.current} — Agent runs until stop_agent() or you click Stop
+                G¡ò Autonomous Mode GÇö Turn {autoLoopCountRef.current} GÇö Agent runs until stop_agent() or you click Stop
               </span>
             </div>
             <button onClick={() => setAutonomousMode(false)} className="text-white/70 hover:text-white text-xs font-black uppercase tracking-widest">Stop</button>
@@ -1915,18 +1915,18 @@ export default function Chat() {
           <div className="px-6 py-2 bg-gradient-to-r from-purple-600 via-pink-500 to-orange-400 flex items-center justify-between flex-shrink-0">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-white">Instagram Mode Active — Agent managing account</span>
+              <span className="text-[10px] font-black uppercase tracking-widest text-white">Instagram Mode Active GÇö Agent managing account</span>
             </div>
             <button onClick={() => setInstagramMode(false)} className="text-white/70 hover:text-white text-xs font-black uppercase tracking-widest">Disable</button>
           </div>
         )}
 
-        {/* Live status bar — visible while streaming */}
+        {/* Live status bar GÇö visible while streaming */}
         {isLoading && (
           <div className="px-6 md:px-12 py-2 border-t border-black/5 bg-[#FDFCF0] flex items-center gap-3 animate-in fade-in duration-200">
             <span className="w-1.5 h-1.5 rounded-full bg-black animate-ping flex-shrink-0" />
             <span className="text-[10px] font-black uppercase tracking-widest text-black/30 truncate flex-1">
-              {liveStatus || (streamPhase === 'thinking' ? 'Thinking…' : 'Streaming response…')}
+              {liveStatus || (streamPhase === 'thinking' ? 'ThinkingGÇª' : 'Streaming responseGÇª')}
             </span>
             {toolCallCount > 0 && (
               <span className="text-[10px] font-black text-black/20 flex-shrink-0">
@@ -1946,7 +1946,7 @@ export default function Chat() {
               </div>
               <div className="flex items-center gap-3">
                 <button onClick={(e) => { e.stopPropagation(); setTerminalLog([]); setShowTerminalLog(false); }} className="text-[9px] text-white/20 hover:text-white/60 uppercase tracking-widest">Clear</button>
-                <span className="text-[9px] text-white/20">{showTerminalLog ? '▾' : '▸'}</span>
+                <span className="text-[9px] text-white/20">{showTerminalLog ? 'Gû+' : 'Gû+'}</span>
               </div>
             </div>
             {showTerminalLog && (
@@ -1973,9 +1973,9 @@ export default function Chat() {
               <div className="flex flex-wrap gap-2">
                 {mediaUrls.map((m, i) => (
                   <div key={`mu-${i}`} className="flex items-center gap-1.5 bg-black/80 text-[#FDFCF0] px-3 py-1.5 text-[10px] font-black rounded-lg max-w-[220px] overflow-hidden">
-                    <span className="flex-shrink-0">{m.type === 'video' ? '🎬' : '🖼'}</span>
+                    <span className="flex-shrink-0">{m.type === 'video' ? '=ƒÄ¼' : '=ƒû+'}</span>
                     <span className="truncate min-w-0 flex-1">{m.url.slice(m.url.lastIndexOf('/') + 1).slice(0, 24) || m.url.slice(0, 24)}</span>
-                    <button onClick={() => setMediaUrls(prev => prev.filter((_, j) => j !== i))} className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none">✕</button>
+                    <button onClick={() => setMediaUrls(prev => prev.filter((_, j) => j !== i))} className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none">G£ò</button>
                   </div>
                 ))}
               </div>
@@ -1992,10 +1992,10 @@ export default function Chat() {
                       )}
                     </span>
                     <span className="truncate min-w-0 flex-1">{att.name}</span>
-                    <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none">✕</button>
+                    <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none">G£ò</button>
                   </div>
                 ))}
-                {attachUploading && <div className="text-[10px] font-black text-black/40 flex items-center gap-1.5 px-3 py-1.5 bg-black/5 rounded-lg"><span className="w-2 h-2 rounded-full bg-black/40 animate-ping inline-block" />Uploading…</div>}
+                {attachUploading && <div className="text-[10px] font-black text-black/40 flex items-center gap-1.5 px-3 py-1.5 bg-black/5 rounded-lg"><span className="w-2 h-2 rounded-full bg-black/40 animate-ping inline-block" />UploadingGÇª</div>}
               </div>
             )}
             {/* Media URL input row */}
@@ -2084,10 +2084,10 @@ export default function Chat() {
                   </button>
                   <button
                     onClick={handleKill}
-                    title="Kill — abort and discard current response"
+                    title="Kill GÇö abort and discard current response"
                     className="px-4 bg-red-50 border-l-2 border-black text-red-600 hover:bg-red-100 transition-colors flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest"
                   >
-                    <span className="text-base leading-none">✕</span>
+                    <span className="text-base leading-none">G£ò</span>
                     Kill
                   </button>
                 </>
@@ -2112,3 +2112,4 @@ export default function Chat() {
     </div>
   );
 }
+

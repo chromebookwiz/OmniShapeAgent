@@ -35,13 +35,13 @@ export function readSkill(skillName: string): string {
 
 export function readFile(filepath: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), filepath);
-    // basic security check to avoid traversing outside app directory entirely
-    if (!absPath.startsWith(process.cwd())) {
-      return "Access denied: Cannot read outside workspace.";
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
+    const content = fs.readFileSync(absPath, 'utf8');
+    if (content.length > 20000) {
+      return content.substring(0, 20000) + `\n\n[File truncated — ${content.length} total chars. Use read_file_range(filepath, startLine, endLine) to read specific sections.]`;
     }
-    if (!fs.existsSync(absPath)) return "File not found.";
-    return fs.readFileSync(absPath, 'utf8').substring(0, 10000);
+    return content;
   } catch (err) {
     return `Error reading file: ${String(err)}`;
   }
@@ -49,13 +49,10 @@ export function readFile(filepath: string): string {
 
 export function writeFile(filepath: string, content: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), filepath);
-    if (!absPath.startsWith(process.cwd())) {
-      return "Access denied: Cannot write outside workspace.";
-    }
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(absPath, content, 'utf8');
-    return `Successfully wrote to ${filepath}`;
+    return `✓ Wrote ${content.length} chars to ${filepath} (${fs.statSync(absPath).size} bytes on disk)`;
   } catch (err) {
     return `Error writing file: ${String(err)}`;
   }
@@ -63,20 +60,16 @@ export function writeFile(filepath: string, content: string): string {
 
 export function patchFile(filepath: string, search: string, replace: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), filepath);
-    if (!absPath.startsWith(process.cwd())) {
-      return "Access denied: Cannot patch outside workspace.";
-    }
-    if (!fs.existsSync(absPath)) return "File not found.";
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const content = fs.readFileSync(absPath, 'utf8');
     if (!content.includes(search)) {
-      return `Error: Search string not found in ${filepath}`;
+      return `Error: Search string not found in ${filepath}. Use read_file or search_in_files to confirm the exact text.`;
     }
-    // Replace all occurrences using a global split/join (avoids regex special char issues)
     const occurrences = content.split(search).length - 1;
     const newContent = content.split(search).join(replace);
     fs.writeFileSync(absPath, newContent, 'utf8');
-    return `Successfully patched ${filepath} (${occurrences} occurrence${occurrences !== 1 ? 's' : ''} replaced)`;
+    return `✓ Patched ${filepath} — replaced ${occurrences} occurrence${occurrences !== 1 ? 's' : ''}.`;
   } catch (err) {
     return `Error patching file: ${String(err)}`;
   }
@@ -203,5 +196,185 @@ export async function unzipFile(zipPath: string, destDir = '.'): Promise<string>
     return `Extracted to ${destDir}\n${stdout}`.trim();
   } catch (e: any) {
     return `Unzip error: ${e.message}`;
+  }
+}
+
+// ── Advanced Search & Edit Tools ─────────────────────────────────────────────
+
+/**
+ * Read a specific line range from a file.
+ * Lines are 1-indexed. Ideal for large files where read_file would truncate.
+ */
+export function readFileRange(filepath: string, startLine: number, endLine: number): string {
+  try {
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
+    const lines = fs.readFileSync(absPath, 'utf8').split('\n');
+    const total = lines.length;
+    const from = Math.max(1, startLine) - 1;
+    const to   = Math.min(total, endLine);
+    if (from >= total) return `Start line ${startLine} exceeds file length (${total} lines).`;
+    const slice = lines.slice(from, to);
+    const numbered = slice.map((l, i) => `${from + i + 1}\t${l}`).join('\n');
+    return `${filepath} lines ${from + 1}–${to} of ${total}:\n${numbered}`;
+  } catch (err) {
+    return `Error reading range: ${String(err)}`;
+  }
+}
+
+/**
+ * Find files matching a name pattern (substring or *.ext) in a directory tree.
+ * Skips node_modules, .next, .git, dist. Returns up to 200 matches.
+ */
+export function findFiles(pattern: string, dirPath = '.'): string {
+  try {
+    const absDir = path.isAbsolute(dirPath) ? dirPath : path.resolve(process.cwd(), dirPath);
+    if (!fs.existsSync(absDir)) return `Directory not found: ${dirPath}`;
+    const SKIP = new Set(['node_modules', '.next', '.git', 'dist', '__pycache__', '.cache']);
+    const results: string[] = [];
+
+    // Convert glob-like pattern to a matcher
+    const ext = pattern.startsWith('*.') ? pattern.slice(2) : null;
+    const contains = ext ? null : pattern.toLowerCase().replace(/\*/g, '');
+
+    function walk(dir: string) {
+      if (results.length >= 200) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (SKIP.has(e.name)) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(full);
+        } else {
+          const nameL = e.name.toLowerCase();
+          const match = ext ? nameL.endsWith('.' + ext) : (contains ? nameL.includes(contains) : true);
+          if (match) results.push(path.relative(process.cwd(), full));
+        }
+      }
+    }
+    walk(absDir);
+    if (!results.length) return `No files matching '${pattern}' found in ${dirPath}.`;
+    return `${results.length} file(s) matching '${pattern}':\n${results.join('\n')}`;
+  } catch (err) {
+    return `Error finding files: ${String(err)}`;
+  }
+}
+
+/**
+ * Search for a text query across files with context lines.
+ * Returns file:linenum: content format, max maxResults matches.
+ * Optionally filter by file extension (e.g. "ts", "py").
+ */
+export function searchInFiles(
+  query: string, fileExt?: string, dirPath = '.', maxResults = 30
+): string {
+  try {
+    const absDir = path.isAbsolute(dirPath) ? dirPath : path.resolve(process.cwd(), dirPath);
+    if (!fs.existsSync(absDir)) return `Directory not found: ${dirPath}`;
+    const SKIP = new Set(['node_modules', '.next', '.git', 'dist', '__pycache__', '.cache']);
+    const results: string[] = [];
+    const queryL = query.toLowerCase();
+    let filesScanned = 0;
+
+    function walk(dir: string) {
+      if (results.length >= maxResults) return;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (results.length >= maxResults) return;
+        if (SKIP.has(e.name)) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(full);
+        } else {
+          if (fileExt && !e.name.endsWith('.' + fileExt)) continue;
+          // Skip binary-looking files
+          if (/\.(png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|zip|bin|exe|dll|so|dylib|pdf)$/i.test(e.name)) continue;
+          try {
+            const content = fs.readFileSync(full, 'utf8');
+            filesScanned++;
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+              if (lines[i].toLowerCase().includes(queryL)) {
+                const rel = path.relative(process.cwd(), full);
+                // Show 1 line of context before and after
+                const ctx = [
+                  i > 0 ? `    ${i}: ${lines[i - 1]}` : null,
+                  `>>> ${i + 1}: ${lines[i].trimEnd()}`,
+                  i < lines.length - 1 ? `    ${i + 2}: ${lines[i + 1]}` : null,
+                ].filter(Boolean).join('\n');
+                results.push(`${rel}:\n${ctx}`);
+              }
+            }
+          } catch { /* skip unreadable files */ }
+        }
+      }
+    }
+    walk(absDir);
+    if (!results.length) return `No matches for '${query}' in ${dirPath}${fileExt ? ` (*.${fileExt})` : ''} (${filesScanned} files scanned).`;
+    return `${results.length} match(es) for '${query}'${fileExt ? ` in *.${fileExt}` : ''} (${filesScanned} files scanned):\n\n${results.join('\n\n')}`;
+  } catch (err) {
+    return `Error searching: ${String(err)}`;
+  }
+}
+
+/**
+ * Extract content between two marker strings (inclusive of markers).
+ * Useful for extracting a function, class, section, or block from a large file.
+ */
+export function extractSection(filepath: string, startMarker: string, endMarker: string): string {
+  try {
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
+    const content = fs.readFileSync(absPath, 'utf8');
+    const startIdx = content.indexOf(startMarker);
+    if (startIdx === -1) return `Start marker not found: "${startMarker}"`;
+    const endIdx = content.indexOf(endMarker, startIdx + startMarker.length);
+    if (endIdx === -1) return `End marker not found after start: "${endMarker}"`;
+    const section = content.slice(startIdx, endIdx + endMarker.length);
+    // Report line numbers
+    const startLine = content.slice(0, startIdx).split('\n').length;
+    const endLine   = content.slice(0, endIdx + endMarker.length).split('\n').length;
+    return `${filepath} lines ${startLine}–${endLine}:\n${section}`;
+  } catch (err) {
+    return `Error extracting section: ${String(err)}`;
+  }
+}
+
+/**
+ * Insert content at a specific line number (1-indexed).
+ * Existing content at and after that line is shifted down.
+ */
+export function insertAtLine(filepath: string, lineNumber: number, content: string): string {
+  try {
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
+    const lines = fs.readFileSync(absPath, 'utf8').split('\n');
+    const idx = Math.max(0, Math.min(lines.length, lineNumber - 1));
+    lines.splice(idx, 0, ...content.split('\n'));
+    fs.writeFileSync(absPath, lines.join('\n'), 'utf8');
+    return `✓ Inserted ${content.split('\n').length} line(s) at line ${lineNumber} in ${filepath}.`;
+  } catch (err) {
+    return `Error inserting at line: ${String(err)}`;
+  }
+}
+
+/**
+ * Delete a range of lines from a file (1-indexed, inclusive).
+ */
+export function deleteLines(filepath: string, startLine: number, endLine: number): string {
+  try {
+    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
+    const lines = fs.readFileSync(absPath, 'utf8').split('\n');
+    const from  = Math.max(1, startLine) - 1;
+    const count = Math.min(lines.length, endLine) - from;
+    if (count <= 0) return `No lines to delete in range ${startLine}–${endLine}.`;
+    lines.splice(from, count);
+    fs.writeFileSync(absPath, lines.join('\n'), 'utf8');
+    return `✓ Deleted lines ${startLine}–${endLine} (${count} line${count !== 1 ? 's' : ''}) from ${filepath}.`;
+  } catch (err) {
+    return `Error deleting lines: ${String(err)}`;
   }
 }

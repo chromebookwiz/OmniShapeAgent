@@ -9,7 +9,7 @@ import * as fs from 'fs';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-const PALETTE_DIR = path.join(process.cwd(), 'palette-configs');
+const PALETTE_DIR = path.join(/*turbopackIgnore: true*/ process.cwd(), 'palette-configs');
 
 // ── Default 16-color palette ──────────────────────────────────────────────────
 // [label, name, R, G, B]
@@ -41,7 +41,7 @@ export const PALETTE_KEY = DEFAULT_PALETTE.map(([l, n]) => `${l}=${n}`).join(' '
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function venvPython(): string {
-  const venv = path.join(process.cwd(), '.agent_venv');
+  const venv = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   return process.platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python');

@@ -1,9 +1,7 @@
 import fs from 'fs';
-import path from 'path';
 import { runAgentLoopText } from './agent';
-import { vectorStore } from './vector-store';
 import { generateEmbedding, cosineSimilarity } from './embeddings';
-import { getTelegramUpdates, sendTelegramMessage } from './tools/telegram';
+import { sendTelegramMessage } from './tools/telegram';
 
 import { PATHS } from './paths';
 const SCHEDULER_PATH = PATHS.scheduler;

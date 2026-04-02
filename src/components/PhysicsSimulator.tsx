@@ -686,7 +686,6 @@ export default function PhysicsSimulator({
           // Build reward function
           let rewardFn: (creature: object, step: number) => number;
           try {
-            // eslint-disable-next-line no-new-func
             rewardFn = new Function("creature", "step", `return (${rewardSrc})(creature, step)`) as any;
           } catch (e) {
             console.warn("[PhysicsSimulator] Invalid reward function:", e);
@@ -802,7 +801,6 @@ export default function PhysicsSimulator({
         case "run_script": {
           if (!cmd.script) break;
           try {
-            // eslint-disable-next-line no-new-func
             new Function("objects", "springs", "hinges", "THREE", "scene", "gravity", "NeuralNet", cmd.script)(
               s.objects, s.springs, s.hinges, THREE, s.scene, s.gravity, NeuralNet
             );
@@ -821,6 +819,8 @@ export default function PhysicsSimulator({
     const canvas = canvasRef.current;
     if (!canvas) return;
     let destroyed = false;
+    // Capture ref value now so the cleanup function uses the same object
+    const capturedState = stateRef.current;
 
     (async () => {
       const THREE = (await import("three")) as typeof import("three");
@@ -1112,7 +1112,7 @@ export default function PhysicsSimulator({
 
     return () => {
       destroyed = true;
-      const s = stateRef.current;
+      const s = capturedState;
       if (s.animId !== null) cancelAnimationFrame(s.animId);
       if (s.renderer) { s.renderer.dispose(); s.renderer = null; }
       s.scene = null; s.camera = null;

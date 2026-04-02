@@ -155,6 +155,7 @@ export default function MemoryViz() {
   useEffect(() => {
     requestRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(requestRef.current!);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- animate is intentionally excluded; including it would restart the animation loop on every render
   }, [links]);
 
   return (

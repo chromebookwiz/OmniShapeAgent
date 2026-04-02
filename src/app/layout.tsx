@@ -1,9 +1,17 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ShapeAgent E8",
-  description: "Persistent AI Agent powered by a 256-dimensional Cl(8,0) Conformal Geometric Algebra memory lattice.",
+  title: "OmniShapeAgent",
+  description: "Local AI agent with persistent memory, tool use, and vision.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

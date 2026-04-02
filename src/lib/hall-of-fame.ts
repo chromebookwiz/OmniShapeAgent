@@ -3,7 +3,6 @@
 // weights, and performance metrics. Champions persist across runs.
 
 import fs from 'fs';
-import path from 'path';
 
 import { PATHS } from './paths';
 const HOF_PATH = PATHS.hallOfFame;

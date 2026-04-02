@@ -1,6 +1,5 @@
 // scripts/self_improvement.ts
 import { runAgentLoopText } from '../src/lib/agent';
-import { setEnvKey } from '../src/lib/tools/config';
 
 async function main() {
   console.log("🚀 Starting ShapeAgent Self-Improvement Cycle...");

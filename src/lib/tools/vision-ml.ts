@@ -16,7 +16,7 @@ const BASELINE_PATH = PATHS.visionBaseline;
 // ── Helpers (mirrors pixel-vision.ts — intentionally copied, not imported) ────
 
 function venvPython(): string {
-  const venv = path.join(process.cwd(), '.agent_venv');
+  const venv = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   return process.platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python');

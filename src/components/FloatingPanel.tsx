@@ -10,7 +10,7 @@
  *   </FloatingPanel>
  */
 
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 
 interface FloatingPanelProps {
@@ -24,6 +24,7 @@ interface FloatingPanelProps {
   minH?: number;
   children: React.ReactNode;
   className?: string;
+  isMobile?: boolean;
 }
 
 let _nextZ = 200; // above WindowManager windows
@@ -38,6 +39,7 @@ export default function FloatingPanel({
   minW = 320,
   minH = 200,
   children,
+  isMobile = false,
 }: FloatingPanelProps) {
   const [pos, setPos] = useState<{ x: number; y: number }>(() => ({
     x: defaultX ?? Math.max(40, window?.innerWidth ? Math.floor((window.innerWidth - defaultW) / 2) : 200),
@@ -53,6 +55,7 @@ export default function FloatingPanel({
 
   // ── Drag ──────────────────────────────────────────────────────────────────
   const onMouseDownBar = useCallback((e: React.MouseEvent) => {
+    if (isMobile) return;
     if ((e.target as HTMLElement).closest('button')) return;
     e.preventDefault();
     focus();
@@ -68,10 +71,11 @@ export default function FloatingPanel({
     }
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [pos.x, pos.y, focus]);
+  }, [isMobile, pos.x, pos.y, focus]);
 
   // ── Resize ────────────────────────────────────────────────────────────────
   const onMouseDownResize = useCallback((e: React.MouseEvent) => {
+    if (isMobile) return;
     e.preventDefault();
     e.stopPropagation();
     const startW = size.w;
@@ -91,7 +95,7 @@ export default function FloatingPanel({
     }
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [size.w, size.h, minW, minH]);
+  }, [isMobile, size.w, size.h, minW, minH]);
 
   if (!mounted) return null;
 
@@ -100,10 +104,10 @@ export default function FloatingPanel({
       onMouseDown={focus}
       style={{
         position: 'fixed',
-        left: pos.x,
-        top: pos.y,
-        width: size.w,
-        height: size.h,
+        left: isMobile ? 12 : pos.x,
+        top: isMobile ? 12 : pos.y,
+        width: isMobile ? 'calc(100vw - 24px)' : size.w,
+        height: isMobile ? 'calc(100vh - 24px)' : size.h,
         zIndex,
         display: 'flex',
         flexDirection: 'column',
@@ -146,20 +150,22 @@ export default function FloatingPanel({
         </span>
       </div>
 
-      {/* Content area */}
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+      {/* Content area — reset text color so children on light backgrounds get black text, not body white */}
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column', color: '#000' }}>
         {children}
       </div>
 
       {/* Resize handle */}
-      <div
-        onMouseDown={onMouseDownResize}
-        style={{
-          position: 'absolute', bottom: 0, right: 0,
-          width: 14, height: 14, cursor: 'nwse-resize',
-          background: 'transparent',
-        }}
-      />
+      {!isMobile && (
+        <div
+          onMouseDown={onMouseDownResize}
+          style={{
+            position: 'absolute', bottom: 0, right: 0,
+            width: 14, height: 14, cursor: 'nwse-resize',
+            background: 'transparent',
+          }}
+        />
+      )}
     </div>
   );
 

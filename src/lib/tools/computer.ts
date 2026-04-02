@@ -9,14 +9,14 @@ import os from 'os';
 const execAsync = promisify(exec);
 
 function venvPython(): string {
-  const venv = path.join(process.cwd(), '.agent_venv');
+  const venv = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   return process.platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python');
 }
 
 async function ensurePyautogui(): Promise<void> {
-  const venv = path.join(process.cwd(), '.agent_venv');
+  const venv = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   if (!fs.existsSync(venv)) {
     await execAsync(`python -m venv "${venv}"`, { timeout: 60000 });
   }
@@ -50,7 +50,7 @@ export async function takeScreenshot(outputPath?: string): Promise<string> {
     await ensurePyautogui();
     // Default: save to screenshots/ workspace folder (not OS temp)
     const screenshotsDir = path.join(process.cwd(), 'screenshots');
-    try { if (!require('fs').existsSync(screenshotsDir)) require('fs').mkdirSync(screenshotsDir, { recursive: true }); } catch {}
+    try { if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true }); } catch {}
     const outFile = outputPath
       ? path.resolve(process.cwd(), outputPath)
       : path.join(screenshotsDir, `screenshot_${Date.now()}.png`);

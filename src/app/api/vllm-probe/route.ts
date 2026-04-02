@@ -12,13 +12,6 @@ const fetchT = async (url: string, options: RequestInit = {}, timeoutMs = 4000) 
   }
 };
 
-function toV1Base(raw: string): string {
-  const base = raw.replace(/\/+$/, '');
-  const v1idx = base.indexOf('/v1');
-  if (v1idx !== -1) return base.slice(0, v1idx) + '/v1';
-  return base + '/v1';
-}
-
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const rawUrl = searchParams.get('url') || process.env.VLLM_URL || '';

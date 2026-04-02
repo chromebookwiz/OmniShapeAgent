@@ -3,7 +3,6 @@
 // builds effectiveness models, and produces prompt adjustments.
 
 import fs from 'fs';
-import path from 'path';
 
 import { PATHS } from './paths';
 const META_PATH = PATHS.metaLearner;

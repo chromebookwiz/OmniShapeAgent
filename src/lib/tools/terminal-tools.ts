@@ -6,7 +6,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
-import path from 'path';
 
 const execAsync = promisify(exec);
 
@@ -91,7 +90,6 @@ const UNSAFE_PATTERNS: RegExp[] = [
  * Returns true when the command is read-only and safe to run without approval.
  */
 export function isSafeCommand(command: string): boolean {
-  const cmd = command.trim().toLowerCase();
   // Any unsafe pattern disqualifies immediately
   for (const p of UNSAFE_PATTERNS) {
     if (p.test(command)) return false;

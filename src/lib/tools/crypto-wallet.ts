@@ -266,7 +266,7 @@ function pointMul(scalar: bigint, point: Point): Point {
 function compressedPublicKey(pubPoint: { x: bigint; y: bigint }): Buffer {
   const prefix = (pubPoint.y & _BI1) === _BI0 ? 0x02 : 0x03;
   const xBuf = Buffer.alloc(32);
-  let xHex = pubPoint.x.toString(16).padStart(64, '0');
+  const xHex = pubPoint.x.toString(16).padStart(64, '0');
   xBuf.write(xHex, 0, 32, 'hex');
   return Buffer.concat([Buffer.from([prefix]), xBuf]);
 }

@@ -3,8 +3,7 @@
 // Reduces redundancy, raises importance of recurring themes, keeps the store lean.
 
 import fs from 'fs';
-import path from 'path';
-import { vectorStore, MemoryRecord, SearchResult } from './vector-store';
+import { vectorStore, MemoryRecord } from './vector-store';
 import { cosineSimilarity, generateEmbedding } from './embeddings';
 
 import { PATHS } from './paths';

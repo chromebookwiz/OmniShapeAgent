@@ -1,8 +1,0 @@
-{
-  "preferredPace": "medium",
-  "commonKeywords": [],
-  "avgInputLength": 30,
-  "successPatterns": [
-    "User asked to test voice mode."
-  ]
-}

@@ -2,7 +2,6 @@
 // Registry for deployed learning bots. Intentionally has NO import from agent.ts
 // (spawn logic lives in agent.ts switch to avoid circular deps).
 import fs from 'fs';
-import path from 'path';
 
 import { PATHS } from '../paths';
 const REGISTRY_PATH = PATHS.botsRegistry;

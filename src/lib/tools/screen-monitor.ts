@@ -203,14 +203,14 @@ while True:
 // ── Python helpers ───────────────────────────────────────────────────────────
 
 function venvPython(): string {
-  const venv = path.join(process.cwd(), '.agent_venv');
+  const venv = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   return process.platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python');
 }
 
 async function ensureMonitorDeps(): Promise<void> {
-  const venv = path.join(process.cwd(), '.agent_venv');
+  const venv = path.join(/*turbopackIgnore: true*/ process.cwd(), '.agent_venv');
   const py = venvPython();
   if (!fs.existsSync(venv)) {
     execSync(`python -m venv "${venv}"`, { timeout: 60000, stdio: 'ignore' });
@@ -289,7 +289,7 @@ export async function startScreenMonitor(options: {
   monitorProcess.on('exit', () => {
     monitorProcess = null;
     // Reject all pending waits
-    for (const [id, p] of pendingWaits) {
+    for (const [, p] of pendingWaits) {
       clearTimeout(p.timer);
       p.resolve(null);
     }

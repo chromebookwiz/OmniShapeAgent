@@ -4,7 +4,6 @@
 // this module handles persistence, semantic search, and prosody hints.
 
 import fs from 'fs';
-import path from 'path';
 import { weightStore } from '../weight-store';
 import { vectorStore } from '../vector-store';
 import { generateEmbedding } from '../embeddings';
@@ -165,7 +164,7 @@ export async function searchVoiceHistory(
 
   const matched: { interaction: VoiceInteraction; score: number }[] = [];
   for (const r of voiceResults.slice(0, topK)) {
-    const interaction = historyMap.get(r.record.content.replace(/^User: /, '').replace(/\nAgent: /, ''));
+    void historyMap.get(r.record.content.replace(/^User: /, '').replace(/\nAgent: /, ''));
     // Fallback: try to find by reconstructing the content
     const found = history.find(h => r.record.content.includes(h.transcript.substring(0, 30)));
     if (found) {

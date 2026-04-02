@@ -5,7 +5,14 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const { message, history, model, systemPrompt, temperature, synergyMode, companionModel, openrouterApiKey, disabledToolGroups, imagePipeline, imageModel, autoApproveTerminal, contextWindow, attachedImages, attachedMediaUrls, stream = true } = await req.json();
+    const {
+      message, history, model, systemPrompt, temperature, synergyMode, companionModel,
+      openrouterApiKey, disabledToolGroups, imagePipeline, imageModel, autoApproveTerminal,
+      contextWindow, attachedImages, attachedMediaUrls,
+      // Per-request URL overrides — forwarded from CLI config or web app settings
+      ollamaUrl, vllmUrl,
+      stream = true,
+    } = await req.json();
     if (!message || typeof message !== 'string') {
       return NextResponse.json({ error: 'Message required' }, { status: 400 });
     }
@@ -24,6 +31,8 @@ export async function POST(req: Request) {
       contextWindow: contextWindow ? Number(contextWindow) : undefined,
       attachedImages: Array.isArray(attachedImages) ? attachedImages : undefined,
       attachedMediaUrls: Array.isArray(attachedMediaUrls) ? attachedMediaUrls : undefined,
+      ollamaUrl: typeof ollamaUrl === 'string' && ollamaUrl ? ollamaUrl : undefined,
+      vllmUrl:   typeof vllmUrl   === 'string' && vllmUrl   ? vllmUrl   : undefined,
     };
 
     if (!stream) {

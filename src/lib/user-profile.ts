@@ -3,7 +3,6 @@
 // Injected into every system prompt so the agent always "knows" who it's talking to.
 
 import fs from 'fs';
-import path from 'path';
 
 import { PATHS } from './paths';
 const PROFILE_PATH = PATHS.userProfile;
@@ -118,6 +117,7 @@ class UserProfileManager {
 
   // Record a message exchange — update stats and infer facts
   recordExchange(userMessage: string, assistantReply: string) {
+    void assistantReply; // reserved for future assistant-response analysis
     const p = this.profile;
     const now = Date.now();
 

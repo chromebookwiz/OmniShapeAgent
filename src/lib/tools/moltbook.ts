@@ -41,12 +41,40 @@ function mbRequest(method: string, path: string, body?: object, apiKey?: string)
 
 export async function moltbookRegister(name: string, description: string): Promise<string> {
   const raw = await mbRequest('POST', '/agents/register', { name, description }, '');
-  const data = JSON.parse(raw);
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return `Registration response (raw — could not parse JSON):\n${raw.slice(0, 3000)}`;
+  }
   if (data.success === false) return `Error: ${data.error}${data.hint ? ' — ' + data.hint : ''}`;
+
+  // Try every plausible field path the API might use
+  const inner = ((data.data ?? data) as Record<string, unknown>);
+  const apiKey =
+    (inner.api_key ?? inner.apiKey ?? inner.token ??
+     data.api_key ?? data.apiKey ?? data.token ?? null) as string | null;
+  const claimUrl =
+    (inner.claim_url ?? inner.claimUrl ?? inner.claim ??
+     data.claim_url ?? data.claimUrl ?? data.claim ?? null) as string | null;
+  const verificationCode =
+    (inner.verification_code ?? inner.verificationCode ??
+     data.verification_code ?? data.verificationCode ?? null) as string | null;
+
+  if (!apiKey && !claimUrl) {
+    // Return the raw response so the agent can extract the credentials manually
+    return (
+      `Registration may have succeeded but credentials were not found in expected fields.\n` +
+      `Raw API response:\n${raw.slice(0, 4000)}\n\n` +
+      `Look for api_key / token and claim_url / claim in the above. ` +
+      `Store the API key as MOLTBOOK_API_KEY env var.`
+    );
+  }
+
   return JSON.stringify({
-    api_key: data.data?.api_key ?? data.api_key,
-    claim_url: data.data?.claim_url ?? data.claim_url,
-    verification_code: data.data?.verification_code,
+    api_key: apiKey,
+    claim_url: claimUrl,
+    verification_code: verificationCode,
     message: 'Store api_key as MOLTBOOK_API_KEY env var. Send claim_url to human owner for email+X verification.',
   }, null, 2);
 }
