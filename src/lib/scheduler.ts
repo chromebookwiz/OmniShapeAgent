@@ -3,8 +3,11 @@ import { runAgentLoopText } from './agent';
 import { generateEmbedding, cosineSimilarity } from './embeddings';
 import { sendTelegramMessage } from './tools/telegram';
 
-import { PATHS } from './paths';
+import { ensureWorkspacePaths } from './paths-bootstrap';
+import { PATHS } from './paths-core';
 const SCHEDULER_PATH = PATHS.scheduler;
+
+ensureWorkspacePaths();
 
 export interface ResonanceTask {
   id: string;

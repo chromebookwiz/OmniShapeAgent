@@ -26,6 +26,16 @@ interface MemoryStats {
   newestDate: string | null;
   topTags: Array<{ tag: string; count: number }>;
   sourceBreakdown: Record<string, number>;
+  avgAcknowledgementRatio: number;
+  avgLatticeDegree: number;
+  staleUnacknowledged: number;
+}
+
+interface MemoryPolicySummary {
+  minScore: number;
+  learningRate: number;
+  recentAcknowledgementRate: number;
+  observations: number;
 }
 
 interface GraphEntity {
@@ -133,6 +143,7 @@ function MemoryCard({
 export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
   const [records, setRecords] = useState<MemoryRecord[]>([]);
   const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [policy, setPolicy] = useState<MemoryPolicySummary | null>(null);
   const [graphStats, setGraphStats] = useState<{ entities: number; relations: number; topEntities: GraphEntity[] } | null>(null);
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('recent');
@@ -151,6 +162,7 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
       const data = await res.json();
       if (data.memory) setStats(data.memory);
       if (data.graph) setGraphStats(data.graph);
+      if (data.policy) setPolicy(data.policy);
     } catch {}
   }, []);
 
@@ -171,6 +183,22 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
       setLoading(false);
     }
   }, []);
+
+  const runMaintenance = useCallback(async (body: Record<string, unknown>, successLabel: string) => {
+    setAddStatus(successLabel);
+    try {
+      await fetch('/api/memory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      await Promise.all([loadStats(), loadRecords(sortMode, query || undefined)]);
+      setAddStatus(`${successLabel} ✓`);
+      setTimeout(() => setAddStatus(''), 1200);
+    } catch {
+      setAddStatus('Error — check server');
+    }
+  }, [loadRecords, loadStats, query, sortMode]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -276,6 +304,8 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
             { label: 'Total', value: stats.total.toLocaleString() },
             { label: 'Avg Imp.', value: stats.avgImportance.toFixed(2) },
             { label: 'Avg Hits', value: stats.avgAccessCount.toFixed(1) },
+            { label: 'Ack', value: `${Math.round(stats.avgAcknowledgementRatio * 100)}%` },
+            { label: 'Lattice', value: stats.avgLatticeDegree.toFixed(1) },
             { label: 'Entities', value: graphStats?.entities?.toLocaleString() ?? '–' },
             { label: 'Relations', value: graphStats?.relations?.toLocaleString() ?? '–' },
           ].map(({ label, value }) => (
@@ -325,6 +355,15 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
           ↻
         </button>
       </div>
+
+      {(policy || stats) && (
+        <div className="px-6 py-2 border-b border-black/5 flex flex-wrap gap-4 text-[9px] font-black uppercase tracking-widest text-black/35 flex-shrink-0">
+          {policy && <span>policy {policy.minScore.toFixed(2)} min</span>}
+          {policy && <span>policy ack {Math.round(policy.recentAcknowledgementRate * 100)}%</span>}
+          {policy && <span>policy obs {policy.observations}</span>}
+          {stats && <span>stale {stats.staleUnacknowledged}</span>}
+        </div>
+      )}
 
       {/* Add form */}
       {showAddForm && (
@@ -397,19 +436,32 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
           {records.length} shown{stats ? ` / ${stats.total} total` : ''}
         </span>
         <button
-          onClick={async () => {
-            if (!confirm('Prune low-importance memories? Irreversible.')) return;
-            await fetch('/api/memory', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'prune', threshold: 0.05 }),
-            });
-            loadStats();
-            loadRecords(sortMode);
-          }}
+          onClick={() => runMaintenance({ action: 'maintain', threshold: 0.05 }, 'Maintenance running')}
           className="text-[9px] font-black text-black/30 uppercase tracking-widest border border-black/10 rounded px-2 py-1 hover:border-black hover:text-black transition-colors"
         >
-          Prune Decayed
+          Maintain
+        </button>
+        <button
+          onClick={() => runMaintenance({ action: 'rebuild_lattice', limitNeighbors: 6 }, 'Rebuilding lattice')}
+          className="text-[9px] font-black text-black/30 uppercase tracking-widest border border-black/10 rounded px-2 py-1 hover:border-black hover:text-black transition-colors"
+        >
+          Rebuild Lattice
+        </button>
+        <button
+          onClick={() => runMaintenance({ action: 'reset_policy' }, 'Resetting policy')}
+          className="text-[9px] font-black text-black/30 uppercase tracking-widest border border-black/10 rounded px-2 py-1 hover:border-black hover:text-black transition-colors"
+        >
+          Reset Policy
+        </button>
+        <button
+          onClick={async () => {
+            if (!confirm('Clear all memory entries and reset the memory policy? Irreversible.')) return;
+            await fetch('/api/memory?action=clear', { method: 'DELETE' });
+            await Promise.all([loadStats(), loadRecords('recent')]);
+          }}
+          className="text-[9px] font-black text-red-500 uppercase tracking-widest border border-red-200 rounded px-2 py-1 hover:bg-red-500 hover:text-white hover:border-red-500 transition-colors"
+        >
+          Clear All
         </button>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
-import { PATHS, SAVED_CHATS_DIR, SCREENSHOTS_DIR, WORKSPACE_DIR, WEIGHTS_DIR } from '@/lib/paths';
+import { GENERATED_SCREENSHOTS_DIR, PATHS, SAVED_CHATS_DIR, WORKSPACE_DIR, WEIGHTS_DIR } from '@/lib/paths-core';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +29,8 @@ export async function DELETE() {
     PATHS.voiceProfile,
     PATHS.visionBaseline,
     PATHS.terminalQueue,
+    PATHS.memoryPolicy,
+    PATHS.olrResonator,
   ];
   for (const f of dataFiles) {
     try {
@@ -46,11 +48,10 @@ export async function DELETE() {
   } catch {}
 
   // ── Generated images ───────────────────────────────────────────────────────
-  const genDir = path.join(SCREENSHOTS_DIR, 'generated');
   try {
-    if (fs.existsSync(genDir)) {
-      const imgs = fs.readdirSync(genDir);
-      for (const img of imgs) { try { fs.unlinkSync(path.join(genDir, img)); } catch {} }
+    if (fs.existsSync(GENERATED_SCREENSHOTS_DIR)) {
+      const imgs = fs.readdirSync(GENERATED_SCREENSHOTS_DIR);
+      for (const img of imgs) { try { fs.unlinkSync(path.join(GENERATED_SCREENSHOTS_DIR, img)); } catch {} }
       if (imgs.length > 0) cleared.push(`${imgs.length} generated images`);
     }
   } catch {}

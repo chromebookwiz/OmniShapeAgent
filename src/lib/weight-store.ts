@@ -5,9 +5,12 @@
 
 import fs from 'fs';
 
-import { PATHS, WEIGHTS_DIR } from './paths';
+import { ensureWorkspacePaths } from './paths-bootstrap';
+import { PATHS, WEIGHTS_DIR } from './paths-core';
 
 const REGISTRY_PATH = PATHS.weightsRegistry;
+
+ensureWorkspacePaths();
 
 export type WeightComponent = 'voice' | 'vision' | 'policy' | 'meta' | 'memory' | 'embedding';
 

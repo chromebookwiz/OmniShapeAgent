@@ -3,6 +3,7 @@ import { vectorStore } from '@/lib/vector-store';
 import { generateEmbedding } from '@/lib/embeddings';
 import { knowledgeGraph } from '@/lib/knowledge-graph';
 import { userProfile } from '@/lib/user-profile';
+import { memoryPolicy } from '@/lib/memory-policy';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +27,7 @@ export async function GET(req: Request) {
     // Semantic search
     if (q) {
       const embedding = await generateEmbedding(q);
-      const results = vectorStore.search(embedding, limit);
+      const results = vectorStore.search(embedding, limit, q);
       const textResults = vectorStore.searchByText(q, limit);
 
       const seenIds = new Set(results.map(r => r.record.id));
@@ -36,6 +37,14 @@ export async function GET(req: Request) {
           content: r.record.content,
           score: r.score,
           similarity: r.similarity,
+          geometry: r.record.geometry
+            ? {
+                shapeKey: r.record.geometry.shapeKey,
+                repetitionCount: r.record.geometry.repetitionCount,
+                repetitionScore: r.record.geometry.repetitionScore,
+                virtue: r.record.geometry.virtue,
+              }
+            : null,
           importance: r.record.importance,
           accessCount: r.record.accessCount,
           tags: r.record.metadata.tags ?? [],
@@ -85,6 +94,7 @@ export async function GET(req: Request) {
           relations: knowledgeGraph.getAllRelations().length,
           topEntities,
         },
+        policy: memoryPolicy.summary(),
         profile: userProfile.get(),
       });
     }
@@ -107,8 +117,13 @@ export async function GET(req: Request) {
     if (action === 'tags') {
       const tags = (url.searchParams.get('tags') ?? '').split(',').map(t => t.trim()).filter(Boolean);
       if (tags.length === 0) return NextResponse.json({ error: 'Provide ?tags=tag1,tag2' }, { status: 400 });
-      const records = vectorStore.searchByTags(tags, limit);
+      const records = vectorStore.searchByTagLattice(tags, limit);
       return NextResponse.json({ records: serializeRecords(records), total: records.length, tags });
+    }
+
+    if (action === 'lattice') {
+      const id = url.searchParams.get('id') ?? undefined;
+      return NextResponse.json({ lattice: vectorStore.getLattice(id, limit) });
     }
 
     if (action === 'profile') {
@@ -156,7 +171,14 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
-    const id = new URL(req.url).searchParams.get('id');
+    const url = new URL(req.url);
+    const id = url.searchParams.get('id');
+    const action = url.searchParams.get('action');
+    if (action === 'clear') {
+      vectorStore.clear();
+      memoryPolicy.clear();
+      return NextResponse.json({ ok: true, cleared: 'all' });
+    }
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
     vectorStore.delete(id);
     return NextResponse.json({ ok: true, deleted: id });
@@ -170,8 +192,35 @@ export async function DELETE(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const id = new URL(req.url).searchParams.get('id');
-    const { boost } = await req.json();
+    const body = await req.json();
+    const { boost, action } = body;
+    if (action === 'maintain') {
+      return NextResponse.json({ ok: true, result: vectorStore.maintenancePass({
+        pruneThreshold: body.threshold ?? 0.05,
+        maxUnacknowledgedStreak: body.maxStreak ?? 4,
+        minInjectionCount: body.minInjectionCount ?? 4,
+        maxImportance: body.maxImportance ?? 0.9,
+        rebuildLattice: body.rebuildLattice !== false,
+      }) });
+    }
+    if (action === 'rebuild_lattice') {
+      return NextResponse.json({ ok: true, rebuilt: vectorStore.rebuildLattice(body.limitNeighbors ?? 6) });
+    }
+    if (action === 'reset_policy') {
+      memoryPolicy.clear();
+      return NextResponse.json({ ok: true, policy: memoryPolicy.summary() });
+    }
+    if (action === 'clear') {
+      vectorStore.clear();
+      return NextResponse.json({ ok: true, cleared: 'memory' });
+    }
     if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
+    if (action === 'ack') {
+      return NextResponse.json({ ok: vectorStore.acknowledge(id, body.strength ?? 1), id });
+    }
+    if (action === 'reject') {
+      return NextResponse.json({ ok: vectorStore.reject(id, body.strength ?? 1), id });
+    }
     vectorStore.boost(id, boost ?? 0.5);
     return NextResponse.json({ ok: true, id });
   } catch (e: any) {
@@ -190,6 +239,14 @@ function serializeRecords(records: import('@/lib/vector-store').MemoryRecord[]) 
     tags: r.metadata.tags ?? [],
     source: r.metadata.source,
     topic: r.metadata.topic,
+    geometry: r.geometry
+      ? {
+          shapeKey: r.geometry.shapeKey,
+          repetitionCount: r.geometry.repetitionCount,
+          repetitionScore: r.geometry.repetitionScore,
+          virtue: r.geometry.virtue,
+        }
+      : null,
     createdAt: r.createdAt,
     lastAccessedAt: r.lastAccessedAt,
   }));

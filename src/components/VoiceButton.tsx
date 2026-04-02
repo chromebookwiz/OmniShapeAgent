@@ -140,19 +140,39 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    loadVoices();
+    const syncVoicesId = window.setTimeout(loadVoices, 0);
     window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
-    return () => window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+    return () => {
+      window.clearTimeout(syncVoicesId);
+      window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+    };
   }, [loadVoices]);
 
   // GöÇGöÇ SpeechRecognition init GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
+
+  const startLevelSimulation = () => {
+    let prev = 0;
+    levelIntervalRef.current = setInterval(() => {
+      const target = Math.random() * 10;
+      prev = prev * 0.6 + target * 0.4;
+      setAudioLevel(Math.round(prev));
+    }, 80);
+  };
+
+  const stopLevelSimulation = () => {
+    if (levelIntervalRef.current) {
+      clearInterval(levelIntervalRef.current);
+      levelIntervalRef.current = null;
+    }
+    setAudioLevel(0);
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const SRConstructor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!SRConstructor) {
-      setNotSupported(true);
-      return;
+      const unsupportedId = window.setTimeout(() => setNotSupported(true), 0);
+      return () => window.clearTimeout(unsupportedId);
     }
     const sr = new SRConstructor();
     sr.continuous = false;
@@ -197,25 +217,6 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
       sr.abort();
     };
   }, [onTranscript]);
-
-  // GöÇGöÇ Audio level simulation GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
-
-  const startLevelSimulation = () => {
-    let prev = 0;
-    levelIntervalRef.current = setInterval(() => {
-      const target = Math.random() * 10;
-      prev = prev * 0.6 + target * 0.4;
-      setAudioLevel(Math.round(prev));
-    }, 80);
-  };
-
-  const stopLevelSimulation = () => {
-    if (levelIntervalRef.current) {
-      clearInterval(levelIntervalRef.current);
-      levelIntervalRef.current = null;
-    }
-    setAudioLevel(0);
-  };
 
   // GöÇGöÇ TTS GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 

@@ -4,8 +4,11 @@
 
 import fs from 'fs';
 
-import { PATHS } from './paths';
+import { ensureWorkspacePaths } from './paths-bootstrap';
+import { PATHS } from './paths-core';
 const PROFILE_PATH = PATHS.userProfile;
+
+ensureWorkspacePaths();
 
 export interface LearnedFact {
   fact: string;

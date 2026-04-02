@@ -19,7 +19,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
-import type { PhysicsCmd } from './PhysicsSimulator';
+import type { PhysicsCmd } from '@/lib/physics-types';
 const PhysicsSimulator = dynamic(() => import('./PhysicsSimulator'), { ssr: false });
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ export type WindowEvent =
   | { op: 'save_window';          id: string }
   | { op: 'restore_saved_window'; id: string }
   | { op: 'eval_js';              id: string; code: string }
-  | { op: 'physics_cmd';          id: string; cmd: object };
+  | { op: 'physics_cmd';          id: string; cmd: PhysicsCmd };
 
 export interface WindowManagerAPI {
   dispatch:       (event: WindowEvent) => void;

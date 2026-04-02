@@ -5,8 +5,11 @@
 
 import fs from 'fs';
 
-import { PATHS } from './paths';
+import { ensureWorkspacePaths } from './paths-bootstrap';
+import { PATHS } from './paths-core';
 const GRAPH_PATH = PATHS.knowledgeGraph;
+
+ensureWorkspacePaths();
 
 // ---------------------------------------------------------------------------
 // Types

@@ -15,7 +15,7 @@
 
 import fs   from 'fs';
 import path from 'path';
-import { DATA_DIR } from './paths';
+import { DATA_DIR } from './paths-core';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

@@ -5,12 +5,17 @@
 import fs from 'fs';
 import { vectorStore, MemoryRecord } from './vector-store';
 import { cosineSimilarity, generateEmbedding } from './embeddings';
+import { compareMemoryGeometry } from './memory-geometry';
 
-import { PATHS } from './paths';
+import { ensureWorkspacePaths } from './paths-bootstrap';
+import { PATHS } from './paths-core';
 const LOG_PATH = PATHS.consolidationLog;
 const SIMILARITY_THRESHOLD = 0.82;  // Memories this similar are candidates for merging
+const GEOMETRY_THRESHOLD = 0.84;
 const MIN_CLUSTER_SIZE = 3;         // Only consolidate clusters of at least 3 memories
 const CONSOLIDATION_INTERVAL_MS = 30 * 60 * 1000; // Every 30 minutes
+
+ensureWorkspacePaths();
 
 interface ConsolidationLog {
   runs: Array<{
@@ -46,6 +51,52 @@ class MemoryConsolidator {
     } catch {}
   }
 
+  private memorySimilarity(left: MemoryRecord, right: MemoryRecord) {
+    const geometry = compareMemoryGeometry(left.geometry, right.geometry);
+    const embedding = left.embedding.length > 0 && left.embedding.length === right.embedding.length
+      ? cosineSimilarity(left.embedding, right.embedding)
+      : 0;
+    const rightTags = new Set(right.metadata.tags ?? []);
+    const sharedTags = (left.metadata.tags ?? []).filter((tag) => rightTags.has(tag)).length;
+    return {
+      geometry: geometry.score,
+      embedding,
+      score: Math.max(geometry.score, embedding),
+      repeatedShape: geometry.repeatedShape,
+      topologicalSynonym: geometry.topologicalSynonym,
+      sharedTags,
+    };
+  }
+
+  private shouldCluster(left: MemoryRecord, right: MemoryRecord): boolean {
+    const similarity = this.memorySimilarity(left, right);
+    return similarity.repeatedShape
+      || similarity.topologicalSynonym
+      || similarity.geometry >= GEOMETRY_THRESHOLD
+      || similarity.embedding >= SIMILARITY_THRESHOLD
+      || (similarity.score >= 0.74 && similarity.sharedTags >= 2);
+  }
+
+  private clusterTags(cluster: MemoryRecord[]): string[] {
+    const counts = new Map<string, number>();
+    for (const record of cluster) {
+      for (const tag of record.metadata.tags ?? []) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([tag]) => tag);
+  }
+
+  private clusterGeometrySummary(cluster: MemoryRecord[]) {
+    const shapeKeys = Array.from(new Set(cluster.map((record) => record.geometry?.shapeKey).filter((value): value is string => Boolean(value)))).slice(0, 3);
+    const scripts = Array.from(new Set(cluster.map((record) => record.geometry?.script).filter((value): value is string => Boolean(value)))).slice(0, 3);
+    const audits = Array.from(new Set(cluster.map((record) => record.geometry?.auditLabel).filter((value): value is NonNullable<MemoryRecord['geometry']>['auditLabel'] => value !== undefined))).slice(0, 3);
+    return { shapeKeys, scripts, audits };
+  }
+
   /**
    * Start automatic periodic consolidation.
    */
@@ -72,34 +123,34 @@ class MemoryConsolidator {
     this.isRunning = true;
 
     try {
+      const maintenance = vectorStore.maintenancePass({ rebuildLattice: true });
       const all = vectorStore.all();
       if (all.length < MIN_CLUSTER_SIZE) {
-        return `Too few memories to consolidate (${all.length}).`;
+        return `Too few memories to consolidate (${all.length}). Maintenance: pruned=${maintenance.prunedDecay}, forgotten=${maintenance.forgottenUnacknowledged}.`;
       }
 
       console.log(`[Consolidator] Starting pass over ${all.length} memories...`);
 
-      // Build similarity clusters
+      // Build connected components using geometry-first similarity.
       const visited = new Set<string>();
       const clusters: MemoryRecord[][] = [];
+      const candidates = all.filter((record) => !(record.metadata.source === 'system' && record.metadata.topic === 'consolidated-olr'));
 
-      for (const record of all) {
+      for (const record of candidates) {
         if (visited.has(record.id)) continue;
-        if (record.metadata.source === 'system' && record.metadata.topic === 'consolidated') continue;
 
-        const cluster: MemoryRecord[] = [record];
+        const cluster: MemoryRecord[] = [];
+        const queue: MemoryRecord[] = [record];
         visited.add(record.id);
 
-        for (const other of all) {
-          if (visited.has(other.id)) continue;
-          if (other.metadata.source === 'system' && other.metadata.topic === 'consolidated') continue;
-
-          // Check embedding similarity
-          if (record.embedding.length > 0 && other.embedding.length > 0) {
-            const sim = cosineSimilarity(record.embedding, other.embedding);
-            if (sim >= SIMILARITY_THRESHOLD) {
-              cluster.push(other);
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          cluster.push(current);
+          for (const other of candidates) {
+            if (visited.has(other.id)) continue;
+            if (this.shouldCluster(current, other)) {
               visited.add(other.id);
+              queue.push(other);
             }
           }
         }
@@ -110,7 +161,7 @@ class MemoryConsolidator {
       }
 
       if (clusters.length === 0) {
-        return `No clusters found above threshold ${SIMILARITY_THRESHOLD}. Memory is already diverse.`;
+        return `No OLR clusters found above thresholds geometry=${GEOMETRY_THRESHOLD} embedding=${SIMILARITY_THRESHOLD}. Memory is already diverse.`;
       }
 
       let mergedCount = 0;
@@ -122,14 +173,12 @@ class MemoryConsolidator {
           b.importance * Math.log1p(b.accessCount) - a.importance * Math.log1p(a.accessCount)
         );
 
-        // Build a synthesis prompt from the cluster (we'll do a simple concatenation + LLM summarization)
-        const contents = cluster.map(r => r.content.substring(0, 200));
-        const synthesized = await this.synthesizeCluster(contents);
+        const synthesized = await this.synthesizeCluster(cluster);
         if (!synthesized) continue;
 
-        // Store the synthesis as a high-importance memory
         const synthEmb = await generateEmbedding(synthesized);
-        const avgImportance = cluster.reduce((s, r) => s + r.importance, 0) / cluster.length;
+        const avgImportance = cluster.reduce((sum, record) => sum + record.importance, 0) / cluster.length;
+        const commonTags = this.clusterTags(cluster);
 
         vectorStore.upsert({
           content: synthesized,
@@ -138,13 +187,12 @@ class MemoryConsolidator {
           importance: Math.min(2.0, avgImportance * 1.3 + 0.2),
           metadata: {
             source: 'system',
-            topic: 'consolidated',
-            tags: ['synthesis', 'consolidated'],
+            topic: 'consolidated-olr',
+            tags: Array.from(new Set(['synthesis', 'consolidated', 'olr', ...commonTags])).slice(0, 10),
           },
         });
         summaryCount++;
 
-        // Reduce importance of originals (they're captured in the synthesis)
         for (const r of cluster) {
           vectorStore.reduceImportance(r.id, 0.3);
         }
@@ -162,7 +210,7 @@ class MemoryConsolidator {
       this.log.totalConsolidations++;
       this.saveLog();
 
-      const msg = `Consolidation complete: ${clusters.length} clusters, ${mergedCount} memories merged into ${summaryCount} summaries.`;
+      const msg = `Consolidation complete: ${clusters.length} OLR clusters, ${mergedCount} memories merged into ${summaryCount} summaries. Maintenance pruned=${maintenance.prunedDecay}, forgotten=${maintenance.forgottenUnacknowledged}.`;
       console.log(`[Consolidator] ${msg}`);
       return msg;
     } finally {
@@ -172,18 +220,19 @@ class MemoryConsolidator {
 
   /**
    * Synthesize a cluster of memory contents into a single coherent summary.
-   * Uses simple extractive summarization — picks key sentences.
+   * Uses simple extractive summarization and preserves the OLR cluster identity.
    */
-  private async synthesizeCluster(contents: string[]): Promise<string | null> {
+  private async synthesizeCluster(cluster: MemoryRecord[]): Promise<string | null> {
     try {
-      // Score sentences by unique information content
+      const contents = cluster.map((record) => record.content.substring(0, 240));
+      const geometry = this.clusterGeometrySummary(cluster);
+      const tags = this.clusterTags(cluster);
       const sentences = contents
         .flatMap(c => c.split(/[.!?]+/).map(s => s.trim()))
         .filter(s => s.length > 20);
 
       if (sentences.length === 0) return null;
 
-      // Deduplicate near-identical sentences
       const unique: string[] = [];
       for (const s of sentences) {
         const isDup = unique.some(u => {
@@ -194,8 +243,16 @@ class MemoryConsolidator {
         if (unique.length >= 5) break;
       }
 
-      const summary = `[Consolidated memory] ${unique.join('. ')}.`;
-      return summary.substring(0, 500);
+      const headerParts = [
+        '[Consolidated memory]',
+        geometry.scripts.length > 0 ? `scripts=${geometry.scripts.join('/')}` : '',
+        geometry.audits.length > 0 ? `audit=${geometry.audits.join('/')}` : '',
+        geometry.shapeKeys.length > 0 ? `shape=${geometry.shapeKeys.join(',')}` : '',
+        tags.length > 0 ? `tags=${tags.join(',')}` : '',
+      ].filter(Boolean);
+
+      const summary = `${headerParts.join(' ')} ${unique.join('. ')}.`;
+      return summary.substring(0, 700);
     } catch {
       return null;
     }
@@ -228,7 +285,16 @@ class MemoryConsolidator {
 
 export const memoryConsolidator = new MemoryConsolidator();
 
-// Auto-start on import (server-side only)
-if (typeof setInterval !== 'undefined') {
-  memoryConsolidator.start();
+declare global {
+  // eslint-disable-next-line no-var
+  var __shapeMemoryConsolidatorStarted: boolean | undefined;
+}
+
+// Auto-start on import (server-side only), but avoid repeated startup in the
+// same process and skip during the production build pipeline.
+if (typeof setInterval !== 'undefined' && process.env.npm_lifecycle_event !== 'build') {
+  if (!globalThis.__shapeMemoryConsolidatorStarted) {
+    memoryConsolidator.start();
+    globalThis.__shapeMemoryConsolidatorStarted = true;
+  }
 }

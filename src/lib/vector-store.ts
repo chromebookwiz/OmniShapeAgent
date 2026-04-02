@@ -5,15 +5,63 @@
 
 import fs from 'fs';
 import { cosineSimilarity } from './embeddings';
-import { PATHS } from './paths';
+import { ensureWorkspacePaths } from './paths-bootstrap';
+import { PATHS } from './paths-core';
+import {
+  buildMemoryGeometry,
+  compareMemoryGeometry,
+  type MemoryGeometrySignature,
+} from './memory-geometry';
 
 const DB_PATH = PATHS.vectorStore;
+const DAY_MS = 86_400_000;
+const LATTICE_REBUILD_DEBOUNCE_MS = 1500;
+const LATTICE_MIN_SIMILARITY = 0.42;
+const LATTICE_NEIGHBOR_LIMIT = 6;
+const TOPOLOGICAL_SIMILARITY_THRESHOLD = 0.84;
+const REPETITION_SIMILARITY_THRESHOLD = 0.93;
+const GEOMETRY_PRIMARY_WEIGHT = 0.68;
+const EMBEDDING_FALLBACK_WEIGHT = 0.22;
+const TEXTUAL_CONTEXT_WEIGHT = 0.1;
+
+ensureWorkspacePaths();
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+export interface MemoryLink {
+  id: string;
+  similarity: number;
+  sharedTags: number;
+  weight: number;
+  updatedAt: number;
+}
+
+export interface MemoryLifecycle {
+  injectionCount: number;
+  acknowledgedCount: number;
+  rejectedCount: number;
+  unacknowledgedStreak: number;
+  lastInjectedAt: number;
+  lastAcknowledgedAt: number;
+  lastRejectedAt: number;
+}
+
+export interface MemoryLatticeState {
+  neighbors: MemoryLink[];
+  degree: number;
+  clusterStrength: number;
+  centrality: number;
+  updatedAt: number;
+}
 
 export interface MemoryRecord {
   id: string;
   content: string;        // Original text stored
   embedding: number[];   // Normalized embedding vector
   dim: number;           // Embedding dimension
+  geometry?: MemoryGeometrySignature;
   metadata: {
     source: 'user' | 'agent' | 'tool' | 'system' | 'vision';
     topic?: string;
@@ -28,12 +76,32 @@ export interface MemoryRecord {
   accessCount: number;   // How many times retrieved
   createdAt: number;     // ms timestamp
   lastAccessedAt: number;
+  lifecycle: MemoryLifecycle;
+  lattice: MemoryLatticeState;
 }
 
 export interface SearchResult {
   record: MemoryRecord;
   score: number;  // Final weighted score (higher = more relevant)
   similarity: number;  // Raw cosine similarity
+}
+
+export interface MemoryInjectionCandidate {
+  record: MemoryRecord;
+  source: 'geometric' | 'semantic' | 'text' | 'hybrid';
+  score: number;
+  similarity: number;
+  geometrySimilarity: number;
+  textHits: number;
+  keywordOverlap: string[];
+  ageDays: number;
+  acknowledgementRatio: number;
+  rejectionRatio: number;
+  latticeSupport: number;
+  centrality: number;
+  repetitionScore: number;
+  repetitionCount: number;
+  geometryVirtue: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +122,7 @@ class LSHIndex {
     this.dim = dim; this.L = L; this.K = K;
     this.projections = [];
     this.tables = Array.from({ length: L }, () => new Map());
-
+    
     // Seeded Gaussian projections (Box-Muller, LCG seed 0x2a) — reproducible
     let s = 0x2a;
     const rand = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000 * 2 - 1; };
@@ -67,6 +135,7 @@ class LSHIndex {
       for (let i = 0; i < proj.length; i++) proj[i] = gauss();
       this.projections.push(proj);
     }
+
   }
 
   private hash(vec: number[], t: number): string {
@@ -118,21 +187,207 @@ class VectorStore {
   private dirty = false;
   private readonly DECAY_LAMBDA = 0.02; // per day — gentler than CGA's 0.05
   private lshIndex: LSHIndex | null = null;
+  private feedbackSinceMaintenance = 0;
+  private lastMaintenanceAt = 0;
 
   private saveTimeout: NodeJS.Timeout | null = null;
+  private latticeTimeout: NodeJS.Timeout | null = null;
+  private latticeDirty = false;
+  private readonly STOPWORDS = new Set([
+    'the','and','for','are','but','not','you','all','can','had','her','was','one',
+    'our','out','day','get','has','him','his','how','its','may','new','now','old',
+    'see','two','who','boy','did','let','put','say','she','too','use','way','will',
+    'with','that','this','have','from','they','know','want','been','good','much',
+    'some','time','very','when','come','here','just','like','long','make','many',
+    'more','only','over','such','take','than','them','then','well','were','into',
+    'what','your','about','there','their','would','could','should','after','before',
+  ]);
 
   constructor() {
     this.load();
     // Periodic auto-save every 30s
     if (typeof setInterval !== 'undefined') {
-      setInterval(() => { if (this.dirty) this.save(); }, 30_000);
+      setInterval(() => {
+        if (this.dirty) this.save();
+      }, 30_000);
+      setInterval(() => {
+        if (this.latticeDirty) this.rebuildLattice();
+      }, 60_000);
     }
+  }
+
+  private defaultLifecycle(raw?: Partial<MemoryLifecycle>): MemoryLifecycle {
+    return {
+      injectionCount: raw?.injectionCount ?? 0,
+      acknowledgedCount: raw?.acknowledgedCount ?? 0,
+      rejectedCount: raw?.rejectedCount ?? 0,
+      unacknowledgedStreak: raw?.unacknowledgedStreak ?? 0,
+      lastInjectedAt: raw?.lastInjectedAt ?? 0,
+      lastAcknowledgedAt: raw?.lastAcknowledgedAt ?? 0,
+      lastRejectedAt: raw?.lastRejectedAt ?? 0,
+    };
+  }
+
+  private defaultLattice(raw?: Partial<MemoryLatticeState>): MemoryLatticeState {
+    return {
+      neighbors: Array.isArray(raw?.neighbors) ? raw!.neighbors!.slice(0, LATTICE_NEIGHBOR_LIMIT) : [],
+      degree: raw?.degree ?? 0,
+      clusterStrength: raw?.clusterStrength ?? 0,
+      centrality: raw?.centrality ?? 0,
+      updatedAt: raw?.updatedAt ?? 0,
+    };
+  }
+
+  private normalizeGeometry(raw: Partial<MemoryGeometrySignature> | undefined, content: string): MemoryGeometrySignature | undefined {
+    const fallback = buildMemoryGeometry(content, false);
+    const base = raw && Array.isArray(raw.fingerprint)
+      ? raw
+      : fallback;
+    if (!base || !Array.isArray(base.fingerprint) || !Array.isArray(base.harmonics) || !Array.isArray(base.vibration)) {
+      return undefined;
+    }
+    return {
+      language: String(base.language ?? fallback?.language ?? 'common'),
+      script: String(base.script ?? fallback?.script ?? 'Common'),
+      glyphCount: Number(base.glyphCount ?? fallback?.glyphCount ?? 0),
+      uniqueGlyphs: Number(base.uniqueGlyphs ?? fallback?.uniqueGlyphs ?? 0),
+      fingerprint: base.fingerprint.map((value) => Number(value)).filter((value) => Number.isFinite(value)),
+      harmonics: base.harmonics.map((value) => Number(value)).filter((value) => Number.isFinite(value)),
+      vibration: base.vibration.map((value) => Number(value)).filter((value) => Number.isFinite(value)),
+      auditLabel: (base.auditLabel ?? fallback?.auditLabel ?? 'noisy') as MemoryGeometrySignature['auditLabel'],
+      coherence: Number(base.coherence ?? fallback?.coherence ?? 0),
+      virtue: Number(base.virtue ?? fallback?.virtue ?? 0),
+      entropy: Number(base.entropy ?? fallback?.entropy ?? 0),
+      closure: Number(base.closure ?? fallback?.closure ?? 0),
+      shapeKey: String(base.shapeKey ?? fallback?.shapeKey ?? 'unknown'),
+      repetitionScore: Number(base.repetitionScore ?? 0),
+      repetitionCount: Number(base.repetitionCount ?? 0),
+      topologicalNeighbors: Array.isArray(base.topologicalNeighbors) ? base.topologicalNeighbors.map(String).slice(0, 6) : [],
+    };
+  }
+
+  private enrichGeometry(geometry: MemoryGeometrySignature | undefined, excludeId?: string): MemoryGeometrySignature | undefined {
+    if (!geometry) return undefined;
+    let repetitionScore = 0;
+    let repetitionCount = 0;
+    const topologicalNeighbors: Array<{ id: string; score: number }> = [];
+
+    for (const record of this.records.values()) {
+      if (excludeId && record.id === excludeId) continue;
+      if (!record.geometry) continue;
+      const comparison = compareMemoryGeometry(geometry, record.geometry);
+      repetitionScore = Math.max(repetitionScore, comparison.score);
+      if (comparison.repeatedShape) repetitionCount++;
+      if (comparison.topologicalSynonym) {
+        topologicalNeighbors.push({ id: record.id, score: comparison.score });
+      }
+    }
+
+    return {
+      ...geometry,
+      repetitionScore,
+      repetitionCount,
+      topologicalNeighbors: topologicalNeighbors
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 6)
+        .map((item) => item.id),
+    };
+  }
+
+  private recordSimilarity(left: MemoryRecord, right: MemoryRecord): number {
+    const geometryScore = compareMemoryGeometry(left.geometry, right.geometry).score;
+    if (geometryScore > 0) return geometryScore;
+    if (left.embedding.length === 0 || left.embedding.length !== right.embedding.length) return 0;
+    return cosineSimilarity(left.embedding, right.embedding);
+  }
+
+  private queryGeometrySimilarity(queryGeometry: MemoryGeometrySignature | undefined, record: MemoryRecord) {
+    const comparison = compareMemoryGeometry(queryGeometry, record.geometry);
+    return {
+      geometrySimilarity: comparison.score,
+      topologicalSynonym: comparison.topologicalSynonym,
+      repeatedShape: comparison.repeatedShape,
+    };
+  }
+
+  private normalizeRecord(raw: Partial<MemoryRecord> & { id: string; content: string }): MemoryRecord {
+    const embedding = Array.isArray(raw.embedding)
+      ? raw.embedding.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+      : [];
+    const metadata = raw.metadata ?? { source: 'agent' as const };
+    return {
+      id: raw.id,
+      content: raw.content,
+      embedding,
+      dim: raw.dim ?? embedding.length,
+      geometry: this.normalizeGeometry(raw.geometry, raw.content),
+      metadata: {
+        source: metadata.source ?? 'agent',
+        topic: metadata.topic,
+        entities: Array.isArray(metadata.entities) ? metadata.entities : [],
+        tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+        spatial: metadata.spatial,
+        contextSummary: metadata.contextSummary,
+        polarity: metadata.polarity,
+      },
+      importance: Number.isFinite(raw.importance) ? Math.max(0.01, Math.min(2.0, raw.importance!)) : 1,
+      correctness: Number.isFinite(raw.correctness) ? Math.max(0, Math.min(1, raw.correctness!)) : 0.75,
+      accessCount: raw.accessCount ?? 0,
+      createdAt: raw.createdAt ?? Date.now(),
+      lastAccessedAt: raw.lastAccessedAt ?? raw.createdAt ?? Date.now(),
+      lifecycle: this.defaultLifecycle(raw.lifecycle),
+      lattice: this.defaultLattice(raw.lattice),
+    };
   }
 
   private debounceSave() {
     this.dirty = true;
     if (this.saveTimeout) clearTimeout(this.saveTimeout);
     this.saveTimeout = setTimeout(() => this.save(), 5000);
+  }
+
+  private scheduleLatticeRebuild(delayMs = LATTICE_REBUILD_DEBOUNCE_MS) {
+    this.latticeDirty = true;
+    if (this.latticeTimeout) clearTimeout(this.latticeTimeout);
+    this.latticeTimeout = setTimeout(() => this.rebuildLattice(), delayMs);
+  }
+
+  private extractKeywords(text: string): string[] {
+    return text
+      .toLowerCase()
+      .split(/\s+/)
+      .map((word) => word.replace(/[^a-z0-9]/g, ''))
+      .filter((word) => word.length > 3 && !this.STOPWORDS.has(word));
+  }
+
+  private keywordOverlap(query: string, content: string): string[] {
+    const queryTerms = new Set(this.extractKeywords(query));
+    if (queryTerms.size === 0) return [];
+    const contentTerms = new Set(this.extractKeywords(content));
+    return Array.from(queryTerms).filter((term) => contentTerms.has(term));
+  }
+
+  private getAcknowledgementRatio(record: MemoryRecord): number {
+    if (record.lifecycle.injectionCount <= 0) return 0.5;
+    return record.lifecycle.acknowledgedCount / record.lifecycle.injectionCount;
+  }
+
+  private getRejectionRatio(record: MemoryRecord): number {
+    if (record.lifecycle.injectionCount <= 0) return 0;
+    return record.lifecycle.rejectedCount / record.lifecycle.injectionCount;
+  }
+
+  private removeLinksTo(id: string) {
+    for (const record of this.records.values()) {
+      if (record.id === id) continue;
+      const nextNeighbors = record.lattice.neighbors.filter((link) => link.id !== id);
+      if (nextNeighbors.length === record.lattice.neighbors.length) continue;
+      record.lattice.neighbors = nextNeighbors;
+      record.lattice.degree = nextNeighbors.length;
+      record.lattice.clusterStrength = nextNeighbors.length > 0
+        ? nextNeighbors.reduce((sum, link) => sum + link.weight, 0) / nextNeighbors.length
+        : 0;
+    }
   }
 
   // ── Persistence ──────────────────────────────────────────────────────────
@@ -142,8 +397,13 @@ class VectorStore {
       if (fs.existsSync(DB_PATH)) {
         const raw = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
         if (Array.isArray(raw)) {
-          for (const r of raw) this.records.set(r.id, r);
+          for (const r of raw) {
+            if (!r?.id || !r?.content) continue;
+            const record = this.normalizeRecord(r);
+            this.records.set(record.id, record);
+          }
           console.log(`[MemoryStore] Loaded ${this.records.size} memory records.`);
+          if (this.records.size > 1) this.scheduleLatticeRebuild(200);
         } else {
           console.warn('[MemoryStore] Invalid vector DB format (not an array).');
         }
@@ -175,16 +435,21 @@ class VectorStore {
 
   // ── Core Operations ───────────────────────────────────────────────────────
 
-  upsert(record: Omit<MemoryRecord, 'id' | 'accessCount' | 'createdAt' | 'lastAccessedAt'>): MemoryRecord {
+  upsert(record: Omit<MemoryRecord, 'id' | 'accessCount' | 'createdAt' | 'lastAccessedAt' | 'lifecycle' | 'lattice'>): MemoryRecord {
     const id = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const full: MemoryRecord = {
-      correctness: 0.75, // default neutral-positive prior
+    const full = this.normalizeRecord({
       ...record,
       id,
       accessCount: 0,
       createdAt: Date.now(),
       lastAccessedAt: Date.now(),
-    };
+      lifecycle: this.defaultLifecycle(),
+      lattice: this.defaultLattice(),
+    });
+    full.geometry = this.enrichGeometry(buildMemoryGeometry(full.content, true) ?? full.geometry, id);
+    if (full.geometry?.repetitionCount) {
+      full.importance = Math.min(2.0, full.importance + Math.min(0.25, full.geometry.repetitionCount * 0.03));
+    }
     this.records.set(id, full);
     if (full.embedding.length > 0) {
       this.ensureLsh(full.embedding.length);
@@ -192,6 +457,7 @@ class VectorStore {
     }
     this.dirty = true;
     this.save(); // Immediate save for new memories
+    this.scheduleLatticeRebuild();
     return full;
   }
 
@@ -203,8 +469,10 @@ class VectorStore {
     const rec = this.records.get(id);
     if (rec) this.lshIndex?.remove(id, rec.embedding);
     this.records.delete(id);
+    this.removeLinksTo(id);
     this.dirty = true;
     this.save();
+    this.scheduleLatticeRebuild();
   }
 
   all(): MemoryRecord[] {
@@ -213,9 +481,8 @@ class VectorStore {
 
   // ── Semantic Search ───────────────────────────────────────────────────────
 
-  search(queryEmbedding: number[], topK: number = 5): SearchResult[] {
+  private searchInternal(queryEmbedding: number[], topK: number, reinforceAccess: boolean): SearchResult[] {
     const now = Date.now();
-    const DAY_MS = 86_400_000;
     const results: SearchResult[] = [];
 
     // For large stores, use LSH to narrow candidates first (O(1) bucket lookup),
@@ -239,18 +506,15 @@ class VectorStore {
       if (similarity < 0.1) continue; // Hard threshold — ignore irrelevant noise
 
       const daysOld = Math.max(0, (now - record.createdAt) / DAY_MS);
-      
-      // Ebbinghaus Forgetting Curve + Leitner Spaced-Repetition:
-      // Base memory strength geometric expansion. S_0 = 1, alpha = 1.6
       const memoryStrength = 1.0 * Math.pow(1.6, record.accessCount);
-      
-      // Retention R = e^(-t/S). Lambda scales decay linearly.
       const decayFactor = Math.exp(-(this.DECAY_LAMBDA * daysOld) / memoryStrength);
-
-      // Final score: semantic similarity * time decay * importance + access bonus
       const correctness = record.correctness ?? 0.75;
+      const ackRatio = this.getAcknowledgementRatio(record);
+      const rejectionRatio = this.getRejectionRatio(record);
       const qualityWeight = record.importance * 0.65 + correctness * 0.35;
-      const score = similarity * decayFactor * qualityWeight + Math.log1p(record.accessCount) * 0.05;
+      const latticeWeight = 1 + Math.min(0.25, record.lattice.clusterStrength * 0.18 + record.lattice.centrality * 0.08);
+      const lifecycleWeight = 1 + ackRatio * 0.25 - rejectionRatio * 0.2 - Math.min(0.25, record.lifecycle.unacknowledgedStreak * 0.05);
+      const score = similarity * decayFactor * qualityWeight * latticeWeight * lifecycleWeight + Math.log1p(record.accessCount) * 0.05;
 
       results.push({ record, score, similarity });
     }
@@ -279,7 +543,7 @@ class VectorStore {
           // Find max similarity between candidate and already selected items (redundancy penalty)
           let maxSimToSelected = 0.0;
           for (const selected of top) {
-            const sim = cosineSimilarity(candidate.record.embedding, selected.record.embedding);
+            const sim = this.recordSimilarity(candidate.record, selected.record);
             if (sim > maxSimToSelected) maxSimToSelected = sim;
           }
 
@@ -296,16 +560,280 @@ class VectorStore {
       }
     }
 
-    // Reinforce accessed memories
-    const now2 = Date.now();
-    for (const r of top) {
-      r.record.accessCount++;
-      r.record.lastAccessedAt = now2;
-      r.record.importance = Math.min(2.0, r.record.importance + 0.05); // access boost
+    if (reinforceAccess && top.length > 0) {
+      const now2 = Date.now();
+      for (const r of top) {
+        r.record.accessCount++;
+        r.record.lastAccessedAt = now2;
+        r.record.importance = Math.min(2.0, r.record.importance + 0.05); // access boost
+      }
+      this.save();
     }
-    if (top.length > 0) this.save();
 
     return top;
+  }
+
+  private searchByGeometryInternal(queryEmbedding: number[], queryText: string, topK: number, reinforceAccess: boolean): SearchResult[] {
+    const queryGeometry = buildMemoryGeometry(queryText, false);
+    if (!queryGeometry) return this.searchInternal(queryEmbedding, topK, reinforceAccess);
+
+    const now = Date.now();
+    const queryKeywords = new Set(this.extractKeywords(queryText));
+    const results: SearchResult[] = [];
+
+    for (const record of this.records.values()) {
+      const embeddingSimilarity = queryEmbedding.length > 0 && record.embedding.length === queryEmbedding.length
+        ? cosineSimilarity(queryEmbedding, record.embedding)
+        : 0;
+      const { geometrySimilarity, topologicalSynonym, repeatedShape } = this.queryGeometrySimilarity(queryGeometry, record);
+      const keywordOverlap = this.keywordOverlap(queryText, record.content);
+      const overlapRatio = queryKeywords.size > 0 ? keywordOverlap.length / queryKeywords.size : 0;
+
+      if (geometrySimilarity < 0.18 && embeddingSimilarity < 0.1 && overlapRatio <= 0) continue;
+
+      const daysOld = Math.max(0, (now - record.createdAt) / DAY_MS);
+      const memoryStrength = 1.0 * Math.pow(1.6, record.accessCount);
+      const decayFactor = Math.exp(-(this.DECAY_LAMBDA * daysOld) / memoryStrength);
+      const correctness = record.correctness ?? 0.75;
+      const ackRatio = this.getAcknowledgementRatio(record);
+      const rejectionRatio = this.getRejectionRatio(record);
+      const qualityWeight = record.importance * 0.65 + correctness * 0.35;
+      const latticeWeight = 1 + Math.min(0.25, record.lattice.clusterStrength * 0.18 + record.lattice.centrality * 0.08);
+      const lifecycleWeight = 1 + ackRatio * 0.25 - rejectionRatio * 0.2 - Math.min(0.25, record.lifecycle.unacknowledgedStreak * 0.05);
+      const repetitionWeight = repeatedShape
+        ? 1.14
+        : 1 + Math.min(0.1, (record.geometry?.repetitionScore ?? 0) * 0.08 + (record.geometry?.repetitionCount ?? 0) * 0.015);
+      const geometryWeight = 1 + Math.min(0.12, (record.geometry?.virtue ?? 0) * 0.08 + (record.geometry?.coherence ?? 0) * 0.04);
+      const blendedSimilarity = clamp01(
+        geometrySimilarity * GEOMETRY_PRIMARY_WEIGHT +
+        embeddingSimilarity * EMBEDDING_FALLBACK_WEIGHT +
+        overlapRatio * TEXTUAL_CONTEXT_WEIGHT
+      );
+      const score = blendedSimilarity * decayFactor * qualityWeight * latticeWeight * lifecycleWeight * repetitionWeight * geometryWeight
+        + (topologicalSynonym ? 0.05 : 0)
+        + Math.log1p(record.accessCount) * 0.05;
+
+      results.push({ record, score, similarity: Math.max(geometrySimilarity, embeddingSimilarity) });
+    }
+
+    results.sort((a, b) => b.score - a.score);
+
+    const selected: SearchResult[] = [];
+    const pool = [...results];
+    while (selected.length < topK && pool.length > 0) {
+      if (selected.length === 0) {
+        selected.push(pool.shift()!);
+        continue;
+      }
+
+      let bestIndex = -1;
+      let bestScore = -Infinity;
+      for (let index = 0; index < pool.length; index++) {
+        const candidate = pool[index];
+        let maxSimilarityToSelected = 0;
+        for (const existing of selected) {
+          maxSimilarityToSelected = Math.max(maxSimilarityToSelected, this.recordSimilarity(candidate.record, existing.record));
+        }
+        const mmr = candidate.score * 0.72 - maxSimilarityToSelected * 0.28;
+        if (mmr > bestScore) {
+          bestScore = mmr;
+          bestIndex = index;
+        }
+      }
+      selected.push(pool.splice(bestIndex, 1)[0]);
+    }
+
+    if (reinforceAccess && selected.length > 0) {
+      const accessedAt = Date.now();
+      for (const result of selected) {
+        result.record.accessCount++;
+        result.record.lastAccessedAt = accessedAt;
+        result.record.importance = Math.min(2.0, result.record.importance + 0.05);
+      }
+      this.save();
+    }
+
+    return selected;
+  }
+
+  search(queryEmbedding: number[], topK: number = 5, queryText?: string): SearchResult[] {
+    return queryText?.trim()
+      ? this.searchByGeometryInternal(queryEmbedding, queryText, topK, true)
+      : this.searchInternal(queryEmbedding, topK, true);
+  }
+
+  getInjectionCandidates(queryEmbedding: number[], query: string, limit: number = 12): MemoryInjectionCandidate[] {
+    const queryGeometry = buildMemoryGeometry(query, false);
+    const semantic = this.searchInternal(queryEmbedding, Math.max(limit, 8), false);
+    const geometric = this.searchByGeometryInternal(queryEmbedding, query, Math.max(limit * 2, 16), false);
+    const textMatches = this.searchByText(query, Math.max(limit, 8), 2);
+    const candidates = new Map<string, MemoryInjectionCandidate>();
+    const semanticMap = new Map(semantic.map((result) => [result.record.id, result]));
+
+    for (const result of geometric) {
+      const overlap = this.keywordOverlap(query, result.record.content);
+      const geometrySimilarity = this.queryGeometrySimilarity(queryGeometry, result.record).geometrySimilarity;
+      candidates.set(result.record.id, {
+        record: result.record,
+        source: result.record.geometry ? 'geometric' : 'semantic',
+        score: result.score,
+        similarity: result.similarity,
+        geometrySimilarity,
+        textHits: overlap.length,
+        keywordOverlap: overlap,
+        ageDays: Math.max(0, (Date.now() - result.record.createdAt) / DAY_MS),
+        acknowledgementRatio: this.getAcknowledgementRatio(result.record),
+        rejectionRatio: this.getRejectionRatio(result.record),
+        latticeSupport: result.record.lattice.clusterStrength,
+        centrality: result.record.lattice.centrality,
+        repetitionScore: result.record.geometry?.repetitionScore ?? 0,
+        repetitionCount: result.record.geometry?.repetitionCount ?? 0,
+        geometryVirtue: result.record.geometry?.virtue ?? 0,
+      });
+    }
+
+    for (const result of semantic) {
+      const existing = candidates.get(result.record.id);
+      if (existing) {
+        existing.score = Math.max(existing.score, result.score);
+        existing.similarity = Math.max(existing.similarity, result.similarity);
+        continue;
+      }
+      const overlap = this.keywordOverlap(query, result.record.content);
+      candidates.set(result.record.id, {
+        record: result.record,
+        source: 'semantic',
+        score: result.score,
+        similarity: result.similarity,
+        geometrySimilarity: this.queryGeometrySimilarity(queryGeometry, result.record).geometrySimilarity,
+        textHits: overlap.length,
+        keywordOverlap: overlap,
+        ageDays: Math.max(0, (Date.now() - result.record.createdAt) / DAY_MS),
+        acknowledgementRatio: this.getAcknowledgementRatio(result.record),
+        rejectionRatio: this.getRejectionRatio(result.record),
+        latticeSupport: result.record.lattice.clusterStrength,
+        centrality: result.record.lattice.centrality,
+        repetitionScore: result.record.geometry?.repetitionScore ?? 0,
+        repetitionCount: result.record.geometry?.repetitionCount ?? 0,
+        geometryVirtue: result.record.geometry?.virtue ?? 0,
+      });
+    }
+
+    for (const record of textMatches) {
+      const overlap = this.keywordOverlap(query, record.content);
+      const existing = candidates.get(record.id);
+      if (existing) {
+        existing.source = 'hybrid';
+        existing.textHits = Math.max(existing.textHits, overlap.length);
+        existing.keywordOverlap = Array.from(new Set([...existing.keywordOverlap, ...overlap]));
+        existing.score = Math.max(existing.score, existing.score + overlap.length * 0.08 + existing.geometrySimilarity * 0.06);
+        continue;
+      }
+
+      const semanticResult = semanticMap.get(record.id);
+      candidates.set(record.id, {
+        record,
+        source: semanticResult ? 'hybrid' : 'text',
+        score: semanticResult?.score ?? (record.importance * 0.4 + overlap.length * 0.12),
+        similarity: semanticResult?.similarity ?? 0,
+        geometrySimilarity: this.queryGeometrySimilarity(queryGeometry, record).geometrySimilarity,
+        textHits: overlap.length,
+        keywordOverlap: overlap,
+        ageDays: Math.max(0, (Date.now() - record.createdAt) / DAY_MS),
+        acknowledgementRatio: this.getAcknowledgementRatio(record),
+        rejectionRatio: this.getRejectionRatio(record),
+        latticeSupport: record.lattice.clusterStrength,
+        centrality: record.lattice.centrality,
+        repetitionScore: record.geometry?.repetitionScore ?? 0,
+        repetitionCount: record.geometry?.repetitionCount ?? 0,
+        geometryVirtue: record.geometry?.virtue ?? 0,
+      });
+    }
+
+    return Array.from(candidates.values())
+      .filter((candidate) => candidate.geometrySimilarity >= 0.45 || candidate.similarity >= 0.22 || candidate.textHits >= 2 || candidate.source === 'hybrid')
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+  }
+
+  inferAcknowledgements(memoryIds: string[], text: string, minOverlap: number = 1): string[] {
+    const acknowledged: string[] = [];
+    const responseGeometry = buildMemoryGeometry(text, false);
+    for (const id of memoryIds) {
+      const record = this.records.get(id);
+      if (!record) continue;
+      const overlap = this.keywordOverlap(text, record.content);
+      const geometrySimilarity = compareMemoryGeometry(responseGeometry, record.geometry).score;
+      if (overlap.length >= minOverlap || geometrySimilarity >= 0.74) acknowledged.push(id);
+    }
+    return acknowledged;
+  }
+
+  recordInjectionFeedback(injectedIds: string[], acknowledgedIds: string[], rejectedIds: string[] = []) {
+    const now = Date.now();
+    const acknowledged = new Set(acknowledgedIds);
+    const rejected = new Set(rejectedIds.filter((id) => !acknowledged.has(id)));
+    let touched = false;
+
+    for (const id of injectedIds) {
+      const record = this.records.get(id);
+      if (!record) continue;
+      touched = true;
+      record.lifecycle.injectionCount++;
+      record.lifecycle.lastInjectedAt = now;
+
+      if (acknowledged.has(id)) {
+        record.lifecycle.acknowledgedCount++;
+        record.lifecycle.unacknowledgedStreak = 0;
+        record.lifecycle.lastAcknowledgedAt = now;
+        record.importance = Math.min(2.0, record.importance + 0.04);
+      } else {
+        record.lifecycle.unacknowledgedStreak++;
+      }
+
+      if (rejected.has(id)) {
+        record.lifecycle.rejectedCount++;
+        record.lifecycle.lastRejectedAt = now;
+        record.importance = Math.max(0.05, record.importance - 0.08);
+      }
+    }
+
+    if (touched) {
+      this.feedbackSinceMaintenance += injectedIds.length;
+      this.debounceSave();
+      this.scheduleLatticeRebuild();
+      this.maybeRunMaintenance();
+    }
+  }
+
+  private maybeRunMaintenance() {
+    const now = Date.now();
+    if (this.feedbackSinceMaintenance < 24 && now - this.lastMaintenanceAt < DAY_MS) return;
+    this.feedbackSinceMaintenance = 0;
+    this.lastMaintenanceAt = now;
+    this.maintenancePass({ rebuildLattice: true });
+  }
+
+  acknowledge(id: string, strength: number = 1) {
+    const record = this.records.get(id);
+    if (!record) return false;
+    record.lifecycle.acknowledgedCount += Math.max(1, Math.round(strength));
+    record.lifecycle.unacknowledgedStreak = 0;
+    record.lifecycle.lastAcknowledgedAt = Date.now();
+    record.importance = Math.min(2.0, record.importance + 0.05 * Math.max(1, strength));
+    this.debounceSave();
+    return true;
+  }
+
+  reject(id: string, strength: number = 1) {
+    const record = this.records.get(id);
+    if (!record) return false;
+    record.lifecycle.rejectedCount += Math.max(1, Math.round(strength));
+    record.lifecycle.unacknowledgedStreak += Math.max(1, Math.round(strength));
+    record.lifecycle.lastRejectedAt = Date.now();
+    record.importance = Math.max(0.05, record.importance - 0.08 * Math.max(1, strength));
+    this.debounceSave();
+    return true;
   }
 
   // ── Maintenance ───────────────────────────────────────────────────────────
@@ -316,7 +844,6 @@ class VectorStore {
    */
   prune(importanceThreshold: number = 0.05): number {
     const now = Date.now();
-    const DAY_MS = 86_400_000;
     let pruned = 0;
 
     for (const [id, record] of this.records.entries()) {
@@ -325,16 +852,46 @@ class VectorStore {
       const daysOld = Math.max(0, (now - record.createdAt) / DAY_MS);
       const memoryStrength = 1.0 * Math.pow(1.6, record.accessCount);
       const retention = Math.exp(-(this.DECAY_LAMBDA * daysOld) / memoryStrength);
-      const effective = record.importance * retention;
+      const lifecyclePenalty = Math.max(0.4, 1 - this.getRejectionRatio(record) * 0.6 - record.lifecycle.unacknowledgedStreak * 0.06);
+      const effective = record.importance * retention * lifecyclePenalty;
       
       if (effective < importanceThreshold) {
+        this.lshIndex?.remove(id, record.embedding);
         this.records.delete(id);
+        this.removeLinksTo(id);
         pruned++;
       }
     }
-    if (pruned > 0) this.save();
+    if (pruned > 0) {
+      this.save();
+      this.scheduleLatticeRebuild();
+    }
     console.log(`[MemoryStore] Pruned ${pruned} decayed memories. ${this.records.size} remain.`);
     return pruned;
+  }
+
+  forgetUnacknowledged(maxStreak: number = 4, minInjectionCount: number = 4, maxImportance: number = 0.9): number {
+    let removed = 0;
+    for (const [id, record] of this.records.entries()) {
+      const ackRatio = this.getAcknowledgementRatio(record);
+      if (
+        record.lifecycle.injectionCount >= minInjectionCount &&
+        record.lifecycle.unacknowledgedStreak >= maxStreak &&
+        ackRatio < 0.15 &&
+        record.importance <= maxImportance &&
+        record.accessCount <= 2
+      ) {
+        this.lshIndex?.remove(id, record.embedding);
+        this.records.delete(id);
+        this.removeLinksTo(id);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.save();
+      this.scheduleLatticeRebuild();
+    }
+    return removed;
   }
 
   /**
@@ -382,18 +939,7 @@ class VectorStore {
    * injecting irrelevant memories based on common words like "the", "how", "can".
    */
   searchByText(query: string, topK: number = 10, minHits: number = 2): MemoryRecord[] {
-    const STOPWORDS = new Set([
-      'the','and','for','are','but','not','you','all','can','had','her','was','one',
-      'our','out','day','get','has','him','his','how','its','may','new','now','old',
-      'see','two','who','boy','did','its','let','put','say','she','too','use','way',
-      'will','with','that','this','have','from','they','know','want','been','good',
-      'much','some','time','very','when','come','here','just','like','long','make',
-      'many','more','only','over','such','take','than','them','then','well','were',
-    ]);
-    const q = query.toLowerCase();
-    const words = q.split(/\s+/)
-      .map(w => w.replace(/[^a-z0-9]/g, ''))
-      .filter(w => w.length > 3 && !STOPWORDS.has(w));
+    const words = this.extractKeywords(query);
 
     // If query has very few meaningful words, require only 1 hit to avoid over-filtering
     const effectiveMinHits = words.length <= 2 ? 1 : minHits;
@@ -404,8 +950,7 @@ class VectorStore {
       const content = record.content.toLowerCase();
       const hits = words.filter(w => content.includes(w)).length;
       if (hits >= effectiveMinHits) {
-        // Score = hits ratio * importance — rewards records that match more query words
-        const score = (hits / words.length) * record.importance;
+        const score = (hits / words.length) * record.importance * (1 + this.getAcknowledgementRatio(record) * 0.2 - this.getRejectionRatio(record) * 0.15);
         results.push({ record, hits, score });
       }
     }
@@ -424,21 +969,35 @@ class VectorStore {
     newestMs: number;
     topTags: Array<{ tag: string; count: number }>;
     sourceBreakdown: Record<string, number>;
+    avgAcknowledgementRatio: number;
+    avgLatticeDegree: number;
+    staleUnacknowledged: number;
+    geometryCoverage: number;
+    avgGeometryVirtue: number;
+    repeatedShapeMemories: number;
   } {
     const all = this.all();
     if (all.length === 0) {
-      return { total: 0, avgImportance: 0, avgAccessCount: 0, oldestMs: 0, newestMs: 0, topTags: [], sourceBreakdown: {} };
+      return { total: 0, avgImportance: 0, avgAccessCount: 0, oldestMs: 0, newestMs: 0, topTags: [], sourceBreakdown: {}, avgAcknowledgementRatio: 0, avgLatticeDegree: 0, staleUnacknowledged: 0, geometryCoverage: 0, avgGeometryVirtue: 0, repeatedShapeMemories: 0 };
     }
 
     const tagCounts: Record<string, number> = {};
     const sourceCounts: Record<string, number> = {};
-    let sumImportance = 0, sumAccess = 0, oldest = Infinity, newest = 0;
+    let sumImportance = 0, sumAccess = 0, sumAckRatio = 0, sumDegree = 0, sumGeometryVirtue = 0, geometryCount = 0, repeatedShapeMemories = 0, oldest = Infinity, newest = 0, staleUnacknowledged = 0;
 
     for (const r of all) {
       sumImportance += r.importance;
       sumAccess += r.accessCount;
+      sumAckRatio += this.getAcknowledgementRatio(r);
+      sumDegree += r.lattice.degree;
+      if (r.geometry) {
+        geometryCount++;
+        sumGeometryVirtue += r.geometry.virtue;
+        if (r.geometry.repetitionCount > 0) repeatedShapeMemories++;
+      }
       if (r.createdAt < oldest) oldest = r.createdAt;
       if (r.createdAt > newest) newest = r.createdAt;
+      if (r.lifecycle.unacknowledgedStreak >= 3) staleUnacknowledged++;
       for (const tag of r.metadata.tags ?? []) {
         tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
       }
@@ -459,6 +1018,12 @@ class VectorStore {
       newestMs: newest,
       topTags,
       sourceBreakdown: sourceCounts,
+      avgAcknowledgementRatio: parseFloat((sumAckRatio / all.length).toFixed(3)),
+      avgLatticeDegree: parseFloat((sumDegree / all.length).toFixed(2)),
+      staleUnacknowledged,
+      geometryCoverage: parseFloat((geometryCount / all.length).toFixed(3)),
+      avgGeometryVirtue: parseFloat((geometryCount > 0 ? sumGeometryVirtue / geometryCount : 0).toFixed(3)),
+      repeatedShapeMemories,
     };
   }
 
@@ -558,11 +1123,146 @@ class VectorStore {
       .slice(0, 20);
   }
 
+  rebuildLattice(limitNeighbors: number = LATTICE_NEIGHBOR_LIMIT, minSimilarity: number = LATTICE_MIN_SIMILARITY): number {
+    const records = this.all();
+    for (const record of records) {
+      record.lattice = this.defaultLattice({ updatedAt: Date.now() });
+    }
+
+    if (records.length <= 1) {
+      this.latticeDirty = false;
+      this.debounceSave();
+      return records.length;
+    }
+
+    const adjacency = new Map<string, Array<{ id: string; weight: number; similarity: number; sharedTags: number }>>();
+    for (const record of records) adjacency.set(record.id, []);
+
+    for (let i = 0; i < records.length; i++) {
+      for (let j = i + 1; j < records.length; j++) {
+        const a = records[i];
+        const b = records[j];
+        const embeddingSimilarity = a.embedding.length > 0 && a.embedding.length === b.embedding.length
+          ? cosineSimilarity(a.embedding, b.embedding)
+          : 0;
+        const geometrySimilarity = compareMemoryGeometry(a.geometry, b.geometry).score;
+        const similarity = Math.max(geometrySimilarity, embeddingSimilarity);
+        const tagsA = new Set(a.metadata.tags ?? []);
+        const sharedTags = (b.metadata.tags ?? []).filter((tag) => tagsA.has(tag)).length;
+        if (similarity < minSimilarity && sharedTags === 0) continue;
+        const weight = parseFloat((geometrySimilarity * 0.72 + embeddingSimilarity * 0.28 + sharedTags * 0.08).toFixed(4));
+        adjacency.get(a.id)!.push({ id: b.id, weight, similarity, sharedTags });
+        adjacency.get(b.id)!.push({ id: a.id, weight, similarity, sharedTags });
+      }
+    }
+
+    const centrality = new Map<string, number>();
+    for (const record of records) centrality.set(record.id, 1 / records.length);
+    for (let iteration = 0; iteration < 8; iteration++) {
+      const next = new Map<string, number>();
+      let total = 0;
+      for (const record of records) {
+        const neighbors = adjacency.get(record.id)!;
+        let value = 0.15 / records.length;
+        for (const neighbor of neighbors) {
+          const neighborWeightSum = adjacency.get(neighbor.id)!.reduce((sum, item) => sum + item.weight, 0) || 1;
+          value += 0.85 * (centrality.get(neighbor.id) ?? 0) * (neighbor.weight / neighborWeightSum);
+        }
+        next.set(record.id, value);
+        total += value;
+      }
+      for (const [id, value] of next) centrality.set(id, total > 0 ? value / total : value);
+    }
+
+    const updatedAt = Date.now();
+    for (const record of records) {
+      const neighbors = adjacency.get(record.id)!
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, limitNeighbors)
+        .map((link) => ({
+          id: link.id,
+          similarity: parseFloat(link.similarity.toFixed(4)),
+          sharedTags: link.sharedTags,
+          weight: parseFloat(link.weight.toFixed(4)),
+          updatedAt,
+        }));
+      record.lattice = {
+        neighbors,
+        degree: neighbors.length,
+        clusterStrength: neighbors.length > 0
+          ? parseFloat((neighbors.reduce((sum, link) => sum + link.weight, 0) / neighbors.length).toFixed(4))
+          : 0,
+        centrality: parseFloat((centrality.get(record.id) ?? 0).toFixed(4)),
+        updatedAt,
+      };
+    }
+
+    this.latticeDirty = false;
+    this.debounceSave();
+    return records.length;
+  }
+
+  getLattice(id?: string, limit: number = 20) {
+    if (id) {
+      const record = this.records.get(id);
+      if (!record) return null;
+      return {
+        id: record.id,
+        content: record.content,
+        centrality: record.lattice.centrality,
+        clusterStrength: record.lattice.clusterStrength,
+        neighbors: record.lattice.neighbors.slice(0, limit).map((link) => ({
+          ...link,
+          content: this.records.get(link.id)?.content ?? '',
+        })),
+      };
+    }
+
+    return this.all()
+      .sort((a, b) => b.lattice.centrality - a.lattice.centrality || b.lattice.clusterStrength - a.lattice.clusterStrength)
+      .slice(0, limit)
+      .map((record) => ({
+        id: record.id,
+        content: record.content,
+        centrality: record.lattice.centrality,
+        clusterStrength: record.lattice.clusterStrength,
+        degree: record.lattice.degree,
+        neighbors: record.lattice.neighbors.slice(0, 3),
+      }));
+  }
+
+  maintenancePass(opts?: {
+    pruneThreshold?: number;
+    maxUnacknowledgedStreak?: number;
+    minInjectionCount?: number;
+    maxImportance?: number;
+    rebuildLattice?: boolean;
+  }) {
+    this.lastMaintenanceAt = Date.now();
+    this.feedbackSinceMaintenance = 0;
+    const prunedDecay = this.prune(opts?.pruneThreshold ?? 0.05);
+    const forgottenUnacknowledged = this.forgetUnacknowledged(
+      opts?.maxUnacknowledgedStreak ?? 4,
+      opts?.minInjectionCount ?? 4,
+      opts?.maxImportance ?? 0.9,
+    );
+    const latticeNodes = opts?.rebuildLattice === false ? 0 : this.rebuildLattice();
+    return {
+      prunedDecay,
+      forgottenUnacknowledged,
+      latticeNodes,
+      remaining: this.records.size,
+    };
+  }
+
   /** Wipe all records and the LSH index — used by factory reset. */
   clear() {
     this.records.clear();
     this.lshIndex?.clear();
     this.lshIndex = null;
+    this.latticeDirty = false;
+    this.feedbackSinceMaintenance = 0;
+    this.lastMaintenanceAt = 0;
     this.save();
   }
 

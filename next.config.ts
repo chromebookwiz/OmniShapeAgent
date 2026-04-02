@@ -2,6 +2,13 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  outputFileTracingExcludes: {
+    '*': [
+      '**/.agent_venv/**',
+      '**/environment_files/**',
+      '**/tmp/**',
+    ],
+  },
   // discord.js, @discordjs/* and their optional native addons (zlib-sync, erlpack, sodium, etc.)
   // are Node.js-only packages. They must NOT be bundled by the browser-side webpack/SWC.
   // Marking them as server externals tells Next.js to require() them at runtime on the server

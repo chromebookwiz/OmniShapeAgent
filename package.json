@@ -15,7 +15,8 @@
   "scripts": {
     "cli": "node bin/shapagent.js",
     "install-cli": "npm link",
-    "dev": "next dev -H 0.0.0.0",
+    "dev": "next dev --webpack -H 0.0.0.0",
+    "dev:turbo": "next dev -H 0.0.0.0",
     "dev:lan": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start -H 0.0.0.0",

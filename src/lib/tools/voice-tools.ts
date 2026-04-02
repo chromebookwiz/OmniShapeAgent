@@ -153,7 +153,7 @@ export async function searchVoiceHistory(
   topK: number = 5
 ): Promise<{ interaction: VoiceInteraction; score: number }[]> {
   const queryEmbedding = await generateEmbedding(query);
-  const results = vectorStore.search(queryEmbedding, topK * 3); // Over-fetch then filter
+  const results = vectorStore.search(queryEmbedding, topK * 3, query); // Over-fetch then filter
 
   // Filter to only voice records
   const voiceResults = results.filter(r => r.record.metadata.topic === 'voice');
