@@ -93,9 +93,12 @@ async function walletApi(body: Record<string, unknown>): Promise<unknown> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const json = await res.json() as { result?: string; error?: string };
+  const json = await res.json() as { result?: unknown; error?: string };
   if (json.error) throw new Error(json.error);
-  return json.result ? JSON.parse(json.result as string) : json;
+  if (typeof json.result === 'string') {
+    return JSON.parse(json.result);
+  }
+  return json.result ?? json;
 }
 
 // ---------------------------------------------------------------------------

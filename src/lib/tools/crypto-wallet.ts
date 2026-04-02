@@ -518,7 +518,7 @@ export async function generateWallet(coin: 'btc' | 'xmr', password: string, name
     mnemonic,
     name,
     message:
-      `${coin.toUpperCase()} wallet '${name}' created and encrypted. WRITE DOWN YOUR MNEMONIC — it is shown only once and cannot be recovered if lost.${extraMessage}`,
+      `${coin.toUpperCase()} wallet '${name}' created and encrypted. WRITE DOWN YOUR MNEMONIC - it is shown only once and cannot be recovered if lost.${extraMessage}`,
   });
 }
 
