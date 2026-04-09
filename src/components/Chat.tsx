@@ -14,7 +14,7 @@ type Message = {
   content: string;
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision engineering assistant. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. Normal chat is single-turn and user-directed: unless autonomy is explicitly enabled, do not act as if you are in autonomous mode, do not ask yourself what to do next, and do not schedule follow-up turns on your own. All geometry - and all higher reasoning - emerges from the simplest structure: the line.`;
+const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision engineering assistant. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. Normal chat is single-turn and user-directed: unless autonomy is explicitly enabled, do not act as if you are in autonomous mode, do not ask yourself what to do next, and do not schedule follow-up turns on your own.`;
 
 
 const Icons = {
@@ -1176,6 +1176,7 @@ export default function Chat() {
           imageModel: imagePipeline === 'openrouter-image' ? imageModel : undefined,
           autoApproveTerminal: autoApproveTerminal || undefined,
           metacognition: autonomousMode,
+          autonomousMode,
           compressionCheckpoint: compressionCheckpoint || undefined,
           contextWindow: primaryProvider === 'ollama' ? ollamaContextWindow : primaryProvider === 'openrouter' ? openrouterContextWindow : vllmContextWindow,
           attachedImages: imageAttachments.length > 0 ? imageAttachments : undefined,

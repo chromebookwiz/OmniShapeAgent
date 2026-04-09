@@ -13,7 +13,12 @@ interface PhysicsObject {
   velocity: import("three").Vector3;
   angularVelocity: import("three").Vector3;
   mass: number;
+  invMass: number;
+  invInertia: import("three").Vector3;
   radius: number;       // effective collision radius
+  shape: NonNullable<PhysicsCmd['shape']>;
+  size: [number, number, number];
+  fixed: boolean;
   restitution: number;
   friction: number;
   sleeping: boolean;
@@ -39,6 +44,15 @@ interface HingeConstraint {
   maxAngle: number;
   motorSpeed: number;    // 0 = no motor
   motorForce: number;
+}
+
+interface ActiveController {
+  rootId: string;
+  hingeIds: string[];
+  net: NeuralNet;
+  step: number;
+  maxMotorSpeed: number;
+  baseMotorForce: number;
 }
 
 // ── Minimal Neural Network (no deps) ─────────────────────────────────────────
@@ -123,6 +137,7 @@ export default function PhysicsSimulator({
     orbitRadius: number;
     orbitTarget: import("three").Vector3;
     trainingLog: string[];
+    activeController: ActiveController | null;
   }>({
     THREE: null, renderer: null, scene: null, camera: null,
     objects: new Map(), springs: new Map(), hinges: new Map(),
@@ -133,6 +148,7 @@ export default function PhysicsSimulator({
     orbitTheta: 0.6, orbitPhi: 0.42, orbitRadius: 18,
     orbitTarget: null as any,
     trainingLog: [],
+    activeController: null,
   });
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -179,6 +195,271 @@ export default function PhysicsSimulator({
     if (!s.THREE || !s.scene) return;
     const THREE = s.THREE;
     let shouldPublishState = false;
+    const safeInverse = (value: number) => value > 1e-8 ? 1 / value : 0;
+    const computeInvInertia = (shape: NonNullable<PhysicsCmd['shape']>, size: [number, number, number], radius: number, mass: number) => {
+      if (!(mass > 0) || !Number.isFinite(mass)) return new THREE.Vector3();
+      let ix = mass * radius * radius * 0.4;
+      let iy = ix;
+      let iz = ix;
+      if (shape === 'box') {
+        const [sx, sy, sz] = size;
+        ix = (mass * (sy * sy + sz * sz)) / 12;
+        iy = (mass * (sx * sx + sz * sz)) / 12;
+        iz = (mass * (sx * sx + sy * sy)) / 12;
+      } else if (shape === 'cylinder' || shape === 'cone') {
+        const r = Math.max(size[0], size[2]) * 0.5;
+        const h = size[1];
+        ix = iz = (mass * (3 * r * r + h * h)) / 12;
+        iy = 0.5 * mass * r * r;
+      } else if (shape === 'capsule') {
+        const r = radius;
+        const h = Math.max(0, size[1] - 2 * r);
+        ix = iz = (mass * (3 * r * r + h * h)) / 12;
+        iy = 0.5 * mass * r * r;
+      }
+      return new THREE.Vector3(safeInverse(ix), safeInverse(iy), safeInverse(iz));
+    };
+    type SimBody = {
+      id: string;
+      position: import('three').Vector3;
+      quaternion: import('three').Quaternion;
+      velocity: import('three').Vector3;
+      angularVelocity: import('three').Vector3;
+      mass: number;
+      invMass: number;
+      invInertia: import('three').Vector3;
+      radius: number;
+      shape: NonNullable<PhysicsCmd['shape']>;
+      size: [number, number, number];
+      fixed: boolean;
+      restitution: number;
+      friction: number;
+      contactedGround: boolean;
+    };
+    type SimHinge = {
+      id: string;
+      a: string;
+      b: string;
+      axis: import('three').Vector3;
+      anchorA: import('three').Vector3;
+      anchorB: import('three').Vector3;
+      angle: number;
+      minAngle: number;
+      maxAngle: number;
+      motorSpeed: number;
+      motorForce: number;
+    };
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    const supportExtentAlong = (body: { shape: NonNullable<PhysicsCmd['shape']>; size: [number, number, number]; radius: number; quaternion?: import('three').Quaternion; mesh?: import('three').Mesh }, normal: import('three').Vector3) => {
+      const dir = normal.clone().normalize();
+      const quaternion = body.quaternion ?? body.mesh?.quaternion;
+      if (!quaternion) return body.radius;
+      if (body.shape === 'sphere' || body.shape === 'icosahedron' || body.shape === 'tetrahedron' || body.shape === 'torus') return body.radius;
+      if (body.shape === 'box') {
+        const half = new THREE.Vector3(body.size[0] * 0.5, body.size[1] * 0.5, body.size[2] * 0.5);
+        const axes = [
+          new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion),
+          new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion),
+          new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion),
+        ];
+        return Math.abs(dir.dot(axes[0])) * half.x + Math.abs(dir.dot(axes[1])) * half.y + Math.abs(dir.dot(axes[2])) * half.z;
+      }
+      if (body.shape === 'capsule' || body.shape === 'cylinder' || body.shape === 'cone') {
+        const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
+        const halfLine = Math.max(0, body.size[1] * 0.5 - body.radius);
+        return body.radius + Math.abs(dir.dot(axis)) * halfLine;
+      }
+      return body.radius;
+    };
+    const applyAxisTorqueToBody = (body: { quaternion?: import('three').Quaternion; mesh?: import('three').Mesh; invInertia: import('three').Vector3; angularVelocity: import('three').Vector3; fixed: boolean }, worldAxis: import('three').Vector3, torqueMagnitude: number) => {
+      if (body.fixed || Math.abs(torqueMagnitude) < 1e-8) return;
+      const quaternion = body.quaternion ?? body.mesh?.quaternion;
+      if (!quaternion) return;
+      const localAxis = worldAxis.clone().applyQuaternion(quaternion.clone().invert()).normalize();
+      const invInertia =
+        localAxis.x * localAxis.x * body.invInertia.x +
+        localAxis.y * localAxis.y * body.invInertia.y +
+        localAxis.z * localAxis.z * body.invInertia.z;
+      if (invInertia <= 0) return;
+      body.angularVelocity.addScaledVector(worldAxis, torqueMagnitude * invInertia);
+    };
+    const selectRootObjectId = (bodies: Map<string, PhysicsObject>, hinges: Map<string, HingeConstraint>) => {
+      const children = new Set(Array.from(hinges.values()).map((hinge) => hinge.b));
+      const candidates = Array.from(bodies.values()).filter((body) => !body.fixed);
+      const pool = candidates.filter((body) => !children.has(body.id));
+      const ranked = (pool.length > 0 ? pool : candidates).sort((left, right) => right.mass - left.mass);
+      return ranked[0]?.id ?? null;
+    };
+    const controlledHingeIdsForRoot = (rootId: string, hinges: Map<string, HingeConstraint>) => {
+      const prefix = rootId.split('_').slice(0, -1).join('_');
+      const related = Array.from(hinges.values()).filter((hinge) => hinge.a === rootId || hinge.b === rootId || (prefix && hinge.id.includes(prefix)));
+      return (related.length > 0 ? related : Array.from(hinges.values())).map((hinge) => hinge.id).sort();
+    };
+    const buildObservation = (bodies: Map<string, SimBody>, hinges: SimHinge[], rootId: string) => {
+      const root = bodies.get(rootId);
+      if (!root) return { values: [0, 0, 0, 0, 0, 0, 1, 0] };
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
+      const values = [
+        root.position.x / 10,
+        root.position.y / 5,
+        root.position.z / 10,
+        root.velocity.x / 6,
+        root.velocity.y / 6,
+        root.velocity.z / 6,
+        up.y,
+      ];
+      for (const hinge of hinges) values.push(hinge.angle / Math.PI, hinge.motorSpeed / 8);
+      values.push(Array.from(bodies.values()).filter((body) => body.contactedGround).length / Math.max(1, bodies.size));
+      return { values };
+    };
+    const cloneSimulationState = () => {
+      const bodies = new Map<string, SimBody>();
+      for (const [id, body] of s.objects.entries()) {
+        bodies.set(id, {
+          id,
+          position: body.mesh.position.clone(),
+          quaternion: body.mesh.quaternion.clone(),
+          velocity: body.velocity.clone(),
+          angularVelocity: body.angularVelocity.clone(),
+          mass: body.mass,
+          invMass: body.invMass,
+          invInertia: body.invInertia.clone(),
+          radius: body.radius,
+          shape: body.shape,
+          size: [...body.size] as [number, number, number],
+          fixed: body.fixed,
+          restitution: body.restitution,
+          friction: body.friction,
+          contactedGround: false,
+        });
+      }
+      const hinges = Array.from(s.hinges.values()).map((hinge) => ({
+        id: hinge.id,
+        a: hinge.a,
+        b: hinge.b,
+        axis: hinge.axis.clone(),
+        anchorA: hinge.anchorA.clone(),
+        anchorB: hinge.anchorB.clone(),
+        angle: hinge.angle,
+        minAngle: hinge.minAngle,
+        maxAngle: hinge.maxAngle,
+        motorSpeed: hinge.motorSpeed,
+        motorForce: hinge.motorForce,
+      }));
+      return { bodies, hinges };
+    };
+    const simulateBodiesStep = (bodies: Map<string, SimBody>, hinges: SimHinge[], dtStep: number) => {
+      for (const body of bodies.values()) body.contactedGround = false;
+      for (const hinge of hinges) {
+        const a = bodies.get(hinge.a);
+        const b = bodies.get(hinge.b);
+        if (!a || !b) continue;
+        const worldAnchorA = hinge.anchorA.clone().applyQuaternion(a.quaternion).add(a.position);
+        const worldAnchorB = hinge.anchorB.clone().applyQuaternion(b.quaternion).add(b.position);
+        const correction = worldAnchorB.clone().sub(worldAnchorA);
+        const corrLen = correction.length();
+        const invMassSum = a.invMass + b.invMass;
+        if (corrLen > 1e-4 && invMassSum > 0) {
+          const corrDir = correction.normalize();
+          const correctionSpeed = clamp(corrLen * 18, 0, 4);
+          if (a.invMass > 0) a.velocity.addScaledVector(corrDir, correctionSpeed * (a.invMass / invMassSum));
+          if (b.invMass > 0) b.velocity.addScaledVector(corrDir, -correctionSpeed * (b.invMass / invMassSum));
+        }
+        const worldAxis = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
+        const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
+        hinge.angle = clamp(hinge.angle + relOmega * dtStep, -Math.PI * 4, Math.PI * 4);
+        let torque = clamp((hinge.motorSpeed - relOmega) * 14, -hinge.motorForce, hinge.motorForce);
+        const limitedAngle = clamp(hinge.angle, hinge.minAngle, hinge.maxAngle);
+        if (Math.abs(limitedAngle - hinge.angle) > 1e-5) {
+          const limitError = limitedAngle - hinge.angle;
+          torque += clamp(limitError * 90 - relOmega * 8, -hinge.motorForce * 1.35, hinge.motorForce * 1.35);
+          hinge.angle = limitedAngle;
+        }
+        applyAxisTorqueToBody(a, worldAxis, torque * dtStep);
+        applyAxisTorqueToBody(b, worldAxis, -torque * dtStep);
+      }
+      for (const body of bodies.values()) {
+        if (body.fixed) continue;
+        body.velocity.addScaledVector(s.gravity, dtStep);
+        body.velocity.multiplyScalar(Math.pow(0.985, dtStep * 60));
+        body.angularVelocity.multiplyScalar(Math.pow(0.88, dtStep * 60));
+        body.position.addScaledVector(body.velocity, dtStep);
+        const omega = body.angularVelocity.length();
+        if (omega > 1e-5) {
+          const dq = new THREE.Quaternion().setFromAxisAngle(body.angularVelocity.clone().normalize(), omega * dtStep);
+          body.quaternion.premultiply(dq).normalize();
+        }
+        const floor = supportExtentAlong(body, new THREE.Vector3(0, 1, 0));
+        if (body.position.y < floor) {
+          body.position.y = floor;
+          body.contactedGround = true;
+          if (body.velocity.y < 0) body.velocity.y *= -body.restitution;
+          const grip = clamp(1 - body.friction * dtStep * 18, 0.2, 1);
+          body.velocity.x *= grip;
+          body.velocity.z *= grip;
+        }
+      }
+      const list = Array.from(bodies.values());
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          if (a.fixed && b.fixed) continue;
+          const delta = b.position.clone().sub(a.position);
+          const dist2 = delta.lengthSq();
+          const minDist = a.radius + b.radius;
+          if (dist2 >= minDist * minDist || dist2 < 1e-8) continue;
+          const dist = Math.sqrt(dist2);
+          const normal = delta.multiplyScalar(1 / dist);
+          const invMassSum = a.invMass + b.invMass;
+          if (invMassSum <= 0) continue;
+          const penetration = minDist - dist;
+          if (a.invMass > 0) a.position.addScaledVector(normal, -(penetration * (a.invMass / invMassSum)));
+          if (b.invMass > 0) b.position.addScaledVector(normal, penetration * (b.invMass / invMassSum));
+          const relVel = b.velocity.clone().sub(a.velocity).dot(normal);
+          if (relVel >= 0) continue;
+          const restitution = Math.min(a.restitution, b.restitution);
+          const impulse = (-(1 + restitution) * relVel) / invMassSum;
+          if (a.invMass > 0) a.velocity.addScaledVector(normal, -impulse * a.invMass);
+          if (b.invMass > 0) b.velocity.addScaledVector(normal, impulse * b.invMass);
+        }
+      }
+    };
+    const evaluateNetworkOnCreature = (net: NeuralNet, rootId: string, hingeIds: string[], simSteps: number, rewardFn: (creature: Record<string, unknown>, step: number) => number) => {
+      const { bodies, hinges } = cloneSimulationState();
+      const controlled = hingeIds.map((hingeId) => hinges.find((hinge) => hinge.id === hingeId)).filter((hinge): hinge is SimHinge => Boolean(hinge));
+      if (!bodies.has(rootId) || controlled.length === 0) return { reward: -Infinity };
+      const maxMotorSpeed = 7;
+      const baseMotorForce = Math.max(20, ...controlled.map((hinge) => hinge.motorForce || 0), 45);
+      let totalReward = 0;
+      for (let step = 0; step < simSteps; step++) {
+        const actions = net.forward(buildObservation(bodies, controlled, rootId).values);
+        for (let i = 0; i < controlled.length; i++) {
+          controlled[i].motorSpeed = clamp(actions[i] ?? 0, -1, 1) * maxMotorSpeed;
+          controlled[i].motorForce = baseMotorForce;
+        }
+        for (let sub = 0; sub < 4; sub++) simulateBodiesStep(bodies, hinges, 0.016 / 4);
+        const root = bodies.get(rootId)!;
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
+        const creature = {
+          pos: root.position.toArray(),
+          vel: root.velocity.toArray(),
+          up: up.toArray(),
+          hingeAngles: controlled.map((hinge) => hinge.angle),
+          hingeSpeeds: controlled.map((hinge) => hinge.motorSpeed),
+          contacts: Array.from(bodies.values()).filter((body) => body.contactedGround).map((body) => body.id),
+          fallen: up.y < 0.2 || root.position.y < 0.35,
+          step,
+        };
+        try {
+          totalReward += rewardFn(creature, step);
+        } catch {
+          totalReward += root.position.x - Math.abs(root.velocity.y) * 0.2;
+        }
+        if (creature.fallen) totalReward -= 8;
+      }
+      return { reward: totalReward };
+    };
 
     const publishState = () => {
       const objState: Record<string, object> = {};
@@ -192,7 +473,7 @@ export default function PhysicsSimulator({
           radius: obj.radius,
           restitution: obj.restitution,
           friction: obj.friction,
-          fixed: obj.mass >= 1e8,
+          fixed: obj.fixed,
         };
       }
       const hingeState: Record<string, object> = {};
@@ -301,6 +582,18 @@ export default function PhysicsSimulator({
           }
 
           const isFixed = cmd.fixed ?? false;
+          const resolvedShape = shape as NonNullable<PhysicsCmd['shape']>;
+          const resolvedSize: [number, number, number] =
+            resolvedShape === "sphere" || resolvedShape === "icosahedron" || resolvedShape === "tetrahedron"
+              ? [radius * 2, radius * 2, radius * 2]
+              : resolvedShape === "capsule"
+                ? [radius * 2, (cmd.size?.[1] ?? 1.0) + radius * 2, radius * 2]
+                : resolvedShape === "cylinder" || resolvedShape === "cone"
+                  ? [(cmd.radius ?? 0.4) * 2, cmd.size?.[1] ?? 1.2, (cmd.radius ?? 0.4) * 2]
+                  : resolvedShape === "torus"
+                    ? [radius * 2.8, radius * 0.8, radius * 2.8]
+                    : (cmd.size ?? [1, 1, 1]);
+          const invInertia = isFixed ? new THREE.Vector3() : computeInvInertia(resolvedShape, resolvedSize, radius, mass);
           const mat = new THREE.MeshStandardMaterial({
             color: isFixed ? (cmd.color ?? "#888888") : color,
             metalness: isFixed ? 0.8 : metalness,
@@ -322,8 +615,13 @@ export default function PhysicsSimulator({
               id: cmd.objId, mesh,
               velocity: new THREE.Vector3(),
               angularVelocity: new THREE.Vector3(),
-              mass: isFixed ? 1e9 : mass,  // effectively infinite mass
+              mass: isFixed ? 1e9 : mass,
+              invMass: isFixed ? 0 : safeInverse(mass),
+              invInertia,
               radius, restitution, friction,
+              shape: resolvedShape,
+              size: resolvedSize,
+              fixed: isFixed,
               sleeping: isFixed,  // fixed bodies don't simulate
               sleepTimer: isFixed ? 999 : 0,
             });
@@ -506,6 +804,7 @@ export default function PhysicsSimulator({
           removeObject(cmd.objId);
           s.hinges.clear();
           s.trainingLog = [];
+          s.activeController = null;
           s.gravity.set(0, -9.81, 0);
           s.orbitTarget.set(0, 0, 0);
           s.orbitTheta = 0.6; s.orbitPhi = 0.42; s.orbitRadius = 18;
@@ -619,7 +918,14 @@ export default function PhysicsSimulator({
               id: partId, mesh,
               velocity: new THREE.Vector3(),
               angularVelocity: new THREE.Vector3(),
-              mass, radius, restitution: 0.2, friction: 0.7,
+              mass,
+              invMass: safeInverse(mass),
+              invInertia: computeInvInertia((part.shape as NonNullable<PhysicsCmd['shape']>) ?? 'box', part.shape === "sphere" ? [radius * 2, radius * 2, radius * 2] : part.shape === "capsule" ? [radius * 2, (part.size?.[1] ?? 0.8) + radius * 2, radius * 2] : (part.size ?? [0.6, 0.6, 0.6]), radius, mass),
+              radius,
+              shape: ((part.shape as NonNullable<PhysicsCmd['shape']>) ?? 'box'),
+              size: part.shape === "sphere" ? [radius * 2, radius * 2, radius * 2] : part.shape === "capsule" ? [radius * 2, (part.size?.[1] ?? 0.8) + radius * 2, radius * 2] : (part.size ?? [0.6, 0.6, 0.6]),
+              fixed: false,
+              restitution: 0.2, friction: 0.7,
               sleeping: false, sleepTimer: 0,
             });
           }
@@ -653,13 +959,22 @@ export default function PhysicsSimulator({
           const popSize = cmd.populationSize ?? 20;
           const simSteps = cmd.simSteps ?? 300;
           const mutRate = cmd.mutationRate ?? 0.15;
-          const layers = cmd.networkLayers ?? [6, 12, 4];
-          const rewardSrc = cmd.rewardFn ?? "(creature) => creature.pos ? creature.pos[0] : 0";
+          const rewardSrc = cmd.rewardFn ?? "(creature) => creature.pos ? creature.pos[0] - 0.25 * Math.abs(creature.vel?.[1] ?? 0) + 0.6 * (creature.up?.[1] ?? 0) - (creature.fallen ? 4 : 0) : 0";
+          const rootId = selectRootObjectId(s.objects, s.hinges);
+          const hingeIds = rootId ? controlledHingeIdsForRoot(rootId, s.hinges) : [];
 
-          s.trainingLog = [`Training: ${generations} gens × ${popSize} creatures × ${simSteps} steps`];
+          if (!rootId || hingeIds.length === 0) {
+            s.trainingLog = ['ERROR: build an articulated creature with at least one hinge before training.'];
+            break;
+          }
+
+          const inputDim = buildObservation(cloneSimulationState().bodies, hingeIds.map((hingeId) => cloneSimulationState().hinges.find((hinge) => hinge.id === hingeId)).filter((hinge): hinge is SimHinge => Boolean(hinge)), rootId).values.length;
+          const hiddenLayers = Array.isArray(cmd.networkLayers) && cmd.networkLayers.length > 0 ? cmd.networkLayers : [48, 32];
+          const layerSizes = [inputDim, ...hiddenLayers, hingeIds.length];
+
+          s.trainingLog = [`Training articulated creature: ${generations} gens × ${popSize} policies × ${simSteps} steps on ${hingeIds.length} hinges`];
           console.info("[PhysicsSimulator] Training start:", s.trainingLog[0]);
 
-          // Build reward function
           let rewardFn: (creature: object, step: number) => number;
           try {
             rewardFn = new Function("creature", "step", `return (${rewardSrc})(creature, step)`) as any;
@@ -669,43 +984,13 @@ export default function PhysicsSimulator({
             break;
           }
 
-          // Evolutionary training (runs synchronously — may block briefly per generation)
-          let population: NeuralNet[] = Array.from({ length: popSize }, () => new NeuralNet(layers));
+          let population: NeuralNet[] = Array.from({ length: popSize }, () => new NeuralNet(layerSizes));
           let bestNet: NeuralNet = population[0];
           let bestReward = -Infinity;
 
           for (let gen = 0; gen < generations; gen++) {
-            const rewards: number[] = population.map((net) => {
-              // Simple creature simulation (decoupled from render)
-              let px = 0, py = 2, pz = 0;
-              let vx = 0, vy = 0, vz = 0;
-              let totalReward = 0;
+            const rewards: number[] = population.map((net) => evaluateNetworkOnCreature(net, rootId, hingeIds, simSteps, rewardFn).reward);
 
-              for (let step = 0; step < simSteps; step++) {
-                // State vector: position (3), velocity (3) → 6 inputs
-                const state = [px / 10, py / 5, pz / 10, vx / 5, vy / 5, vz / 5];
-                const actions = net.forward(state);
-                // Actions → forces (clamp to [-1, 1])
-                const fx = Math.tanh(actions[0] ?? 0) * 3;
-                const fy = Math.tanh(actions[1] ?? 0) * 3;
-                const fz = Math.tanh(actions[2] ?? 0) * 3;
-
-                // Verlet integration
-                vx += fx * 0.016 - vx * 0.02;
-                vy += (fy - 9.81) * 0.016 - vy * 0.02;
-                vz += fz * 0.016 - vz * 0.02;
-                px += vx * 0.016;
-                py = Math.max(0.3, py + vy * 0.016);
-                pz += vz * 0.016;
-                if (py <= 0.3) { vy = Math.abs(vy) * 0.4; }
-
-                const creature = { pos: [px, py, pz], vel: [vx, vy, vz], step };
-                try { totalReward += rewardFn(creature, step); } catch { /* bad reward fn */ }
-              }
-              return totalReward;
-            });
-
-            // Sort by reward
             const ranked = population.map((net, i) => ({ net, reward: rewards[i] }))
               .sort((a, b) => b.reward - a.reward);
 
@@ -720,56 +1005,30 @@ export default function PhysicsSimulator({
               console.info("[PhysicsSimulator]", msg);
             }
 
-            // Next generation: keep top 50%, mutate rest
-            const eliteCount = Math.max(1, Math.floor(popSize * 0.5));
+            const eliteCount = Math.max(2, Math.floor(popSize * 0.25));
             population = [
               ...ranked.slice(0, eliteCount).map(r => r.net),
               ...Array.from({ length: popSize - eliteCount }, (_, i) => ranked[i % eliteCount].net.mutate(mutRate)),
             ];
           }
 
-          // Spawn best creature in scene as a demo sphere
-          const demoId = `trained_${Date.now()}`;
-          const demoGeo = new THREE.SphereGeometry(0.45, 24, 16);
-          const demoMat = new THREE.MeshStandardMaterial({ color: 0x00ff88, metalness: 0.4, roughness: 0.3, emissive: '#003322' });
-          const demoMesh = new THREE.Mesh(demoGeo, demoMat);
-          demoMesh.position.set(0, 2, 0);
-          demoMesh.castShadow = true;
-          s.scene.add(demoMesh);
-          s.objects.set(demoId, {
-            id: demoId, mesh: demoMesh,
-            velocity: new THREE.Vector3(),
-            angularVelocity: new THREE.Vector3(),
-            mass: 1, radius: 0.45, restitution: 0.4, friction: 0.6,
-            sleeping: false, sleepTimer: 0,
-          });
+          s.activeController = {
+            rootId,
+            hingeIds,
+            net: bestNet.clone(),
+            step: 0,
+            maxMotorSpeed: 7,
+            baseMotorForce: Math.max(20, ...hingeIds.map((hingeId) => s.hinges.get(hingeId)?.motorForce ?? 0), 45),
+          };
 
-          // Drive demo sphere with trained net for a few seconds via run_script override
-          let demoStep = 0;
-          const demoNet = bestNet;
-          const demoInterval = setInterval(() => {
-            const obj = s.objects.get(demoId);
-            if (!obj || demoStep > 600) { clearInterval(demoInterval); return; }
-            const state = [
-              obj.mesh.position.x / 10, obj.mesh.position.y / 5, obj.mesh.position.z / 10,
-              obj.velocity.x / 5, obj.velocity.y / 5, obj.velocity.z / 5,
-            ];
-            const actions = demoNet.forward(state);
-            obj.velocity.x += Math.tanh(actions[0] ?? 0) * 3 * 0.016;
-            obj.velocity.y += Math.tanh(actions[1] ?? 0) * 3 * 0.016;
-            obj.velocity.z += Math.tanh(actions[2] ?? 0) * 3 * 0.016;
-            obj.sleeping = false;
-            demoStep++;
-          }, 16);
-
-          s.trainingLog.push(`Done! Best reward: ${bestReward.toFixed(2)}. Spawned trained agent (green sphere) id='${demoId}'.`);
+          s.trainingLog.push(`Done! Best reward: ${bestReward.toFixed(2)}. Installed trained controller on ${hingeIds.length} live hinges for root '${rootId}'.`);
           console.info("[PhysicsSimulator] Training complete. Best reward:", bestReward.toFixed(2));
-          // Post training results to server so agent can read them
           fetch('/api/physics-state', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trainingLog: s.trainingLog, bestReward, trainedId: demoId, timestamp: Date.now() }),
+            body: JSON.stringify({ trainingLog: s.trainingLog, bestReward, trainedRootId: rootId, trainedHinges: hingeIds, timestamp: Date.now() }),
           }).catch(() => {});
+          shouldPublishState = true;
           break;
         }
 
@@ -892,6 +1151,325 @@ export default function PhysicsSimulator({
 
       // ── Animation loop ────────────────────────────────────────────────────
       const tmpVec = new THREE.Vector3();
+      const tmpQuat = new THREE.Quaternion();
+
+      type SimBody = {
+        id: string;
+        position: import('three').Vector3;
+        quaternion: import('three').Quaternion;
+        velocity: import('three').Vector3;
+        angularVelocity: import('three').Vector3;
+        mass: number;
+        invMass: number;
+        invInertia: import('three').Vector3;
+        radius: number;
+        shape: NonNullable<PhysicsCmd['shape']>;
+        size: [number, number, number];
+        fixed: boolean;
+        restitution: number;
+        friction: number;
+        contactedGround: boolean;
+      };
+
+      type SimHinge = {
+        id: string;
+        a: string;
+        b: string;
+        axis: import('three').Vector3;
+        anchorA: import('three').Vector3;
+        anchorB: import('three').Vector3;
+        angle: number;
+        minAngle: number;
+        maxAngle: number;
+        motorSpeed: number;
+        motorForce: number;
+      };
+
+      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+      const safeInverse = (value: number) => value > 1e-8 ? 1 / value : 0;
+
+      const computeInvInertia = (shape: NonNullable<PhysicsCmd['shape']>, size: [number, number, number], radius: number, mass: number) => {
+        if (!(mass > 0) || !Number.isFinite(mass)) return new THREE.Vector3();
+        let ix = mass * radius * radius * 0.4;
+        let iy = ix;
+        let iz = ix;
+        if (shape === 'box') {
+          const [sx, sy, sz] = size;
+          ix = (mass * (sy * sy + sz * sz)) / 12;
+          iy = (mass * (sx * sx + sz * sz)) / 12;
+          iz = (mass * (sx * sx + sy * sy)) / 12;
+        } else if (shape === 'cylinder' || shape === 'cone') {
+          const r = Math.max(size[0], size[2]) * 0.5;
+          const h = size[1];
+          ix = iz = (mass * (3 * r * r + h * h)) / 12;
+          iy = 0.5 * mass * r * r;
+        } else if (shape === 'capsule') {
+          const r = radius;
+          const h = Math.max(0, size[1] - 2 * r);
+          ix = iz = (mass * (3 * r * r + h * h)) / 12;
+          iy = 0.5 * mass * r * r;
+        }
+        return new THREE.Vector3(safeInverse(ix), safeInverse(iy), safeInverse(iz));
+      };
+
+      const supportExtentAlong = (body: { shape: NonNullable<PhysicsCmd['shape']>; size: [number, number, number]; radius: number; quaternion?: import('three').Quaternion; mesh?: import('three').Mesh }, normal: import('three').Vector3) => {
+        const dir = normal.clone().normalize();
+        const quaternion = body.quaternion ?? body.mesh?.quaternion;
+        if (!quaternion) return body.radius;
+        if (body.shape === 'sphere' || body.shape === 'icosahedron' || body.shape === 'tetrahedron' || body.shape === 'torus') {
+          return body.radius;
+        }
+        if (body.shape === 'box') {
+          const half = new THREE.Vector3(body.size[0] * 0.5, body.size[1] * 0.5, body.size[2] * 0.5);
+          const axes = [
+            new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion),
+            new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion),
+            new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion),
+          ];
+          return Math.abs(dir.dot(axes[0])) * half.x + Math.abs(dir.dot(axes[1])) * half.y + Math.abs(dir.dot(axes[2])) * half.z;
+        }
+        if (body.shape === 'capsule' || body.shape === 'cylinder' || body.shape === 'cone') {
+          const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
+          const halfLine = Math.max(0, body.size[1] * 0.5 - body.radius);
+          return body.radius + Math.abs(dir.dot(axis)) * halfLine;
+        }
+        return body.radius;
+      };
+
+      const applyAxisTorqueToBody = (body: { quaternion?: import('three').Quaternion; mesh?: import('three').Mesh; invInertia: import('three').Vector3; angularVelocity: import('three').Vector3; fixed: boolean }, worldAxis: import('three').Vector3, torqueMagnitude: number) => {
+        if (body.fixed || Math.abs(torqueMagnitude) < 1e-8) return;
+        const quaternion = body.quaternion ?? body.mesh?.quaternion;
+        if (!quaternion) return;
+        tmpQuat.copy(quaternion).invert();
+        const localAxis = worldAxis.clone().applyQuaternion(tmpQuat).normalize();
+        const invInertia =
+          localAxis.x * localAxis.x * body.invInertia.x +
+          localAxis.y * localAxis.y * body.invInertia.y +
+          localAxis.z * localAxis.z * body.invInertia.z;
+        if (invInertia <= 0) return;
+        body.angularVelocity.addScaledVector(worldAxis, torqueMagnitude * invInertia);
+      };
+
+      const selectRootObjectId = (bodies: Map<string, PhysicsObject>, hinges: Map<string, HingeConstraint>) => {
+        const children = new Set(Array.from(hinges.values()).map((hinge) => hinge.b));
+        const candidates = Array.from(bodies.values()).filter((body) => !body.fixed);
+        if (candidates.length === 0) return null;
+        const nonChildren = candidates.filter((body) => !children.has(body.id));
+        const pool = nonChildren.length > 0 ? nonChildren : candidates;
+        pool.sort((left, right) => right.mass - left.mass);
+        return pool[0]?.id ?? null;
+      };
+
+      const controlledHingeIdsForRoot = (rootId: string, hinges: Map<string, HingeConstraint>) => {
+        const related = Array.from(hinges.values()).filter((hinge) => hinge.a === rootId || hinge.b === rootId || hinge.id.includes(rootId.split('_').slice(0, -1).join('_')));
+        return (related.length > 0 ? related : Array.from(hinges.values()))
+          .map((hinge) => hinge.id)
+          .sort();
+      };
+
+      const buildObservation = (bodies: Map<string, SimBody>, hinges: SimHinge[], rootId: string) => {
+        const root = bodies.get(rootId);
+        if (!root) return { values: [0, 0, 0, 0, 0, 0, 1], contacts: 0 };
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
+        const contacts = Array.from(bodies.values()).reduce((sum, body) => sum + (body.contactedGround ? 1 : 0), 0);
+        const values = [
+          root.position.x / 10,
+          root.position.y / 5,
+          root.position.z / 10,
+          root.velocity.x / 6,
+          root.velocity.y / 6,
+          root.velocity.z / 6,
+          up.y,
+        ];
+        for (const hinge of hinges) {
+          values.push(hinge.angle / Math.PI, hinge.motorSpeed / 8);
+        }
+        values.push(contacts / Math.max(1, bodies.size));
+        return { values, contacts };
+      };
+
+      const cloneSimulationState = () => {
+        const bodies = new Map<string, SimBody>();
+        for (const [id, body] of s.objects.entries()) {
+          bodies.set(id, {
+            id,
+            position: body.mesh.position.clone(),
+            quaternion: body.mesh.quaternion.clone(),
+            velocity: body.velocity.clone(),
+            angularVelocity: body.angularVelocity.clone(),
+            mass: body.mass,
+            invMass: body.invMass,
+            invInertia: body.invInertia.clone(),
+            radius: body.radius,
+            shape: body.shape,
+            size: [...body.size] as [number, number, number],
+            fixed: body.fixed,
+            restitution: body.restitution,
+            friction: body.friction,
+            contactedGround: false,
+          });
+        }
+        const hinges = Array.from(s.hinges.values()).map((hinge) => ({
+          id: hinge.id,
+          a: hinge.a,
+          b: hinge.b,
+          axis: hinge.axis.clone(),
+          anchorA: hinge.anchorA.clone(),
+          anchorB: hinge.anchorB.clone(),
+          angle: hinge.angle,
+          minAngle: hinge.minAngle,
+          maxAngle: hinge.maxAngle,
+          motorSpeed: hinge.motorSpeed,
+          motorForce: hinge.motorForce,
+        }));
+        return { bodies, hinges };
+      };
+
+      const simulateBodiesStep = (bodies: Map<string, SimBody>, hinges: SimHinge[], dtStep: number) => {
+        for (const body of bodies.values()) {
+          body.contactedGround = false;
+        }
+
+        for (const hinge of hinges) {
+          const a = bodies.get(hinge.a);
+          const b = bodies.get(hinge.b);
+          if (!a || !b) continue;
+          const worldAnchorA = hinge.anchorA.clone().applyQuaternion(a.quaternion).add(a.position);
+          const worldAnchorB = hinge.anchorB.clone().applyQuaternion(b.quaternion).add(b.position);
+          const correction = worldAnchorB.clone().sub(worldAnchorA);
+          const corrLen = correction.length();
+          const invMassSum = a.invMass + b.invMass;
+          if (corrLen > 1e-4 && invMassSum > 0) {
+            const corrDir = correction.normalize();
+            const correctionSpeed = clamp(corrLen * 18, 0, 4);
+            if (a.invMass > 0) a.velocity.addScaledVector(corrDir, correctionSpeed * (a.invMass / invMassSum));
+            if (b.invMass > 0) b.velocity.addScaledVector(corrDir, -correctionSpeed * (b.invMass / invMassSum));
+          }
+
+          const worldAxis = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
+          const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
+          hinge.angle = clamp(hinge.angle + relOmega * dtStep, -Math.PI * 4, Math.PI * 4);
+
+          let torque = clamp((hinge.motorSpeed - relOmega) * 14, -hinge.motorForce, hinge.motorForce);
+          const limitedAngle = clamp(hinge.angle, hinge.minAngle, hinge.maxAngle);
+          if (Math.abs(limitedAngle - hinge.angle) > 1e-5) {
+            const limitError = limitedAngle - hinge.angle;
+            torque += clamp(limitError * 90 - relOmega * 8, -hinge.motorForce * 1.35, hinge.motorForce * 1.35);
+            hinge.angle = limitedAngle;
+          }
+
+          applyAxisTorqueToBody(a, worldAxis, torque * dtStep);
+          applyAxisTorqueToBody(b, worldAxis, -torque * dtStep);
+        }
+
+        for (const body of bodies.values()) {
+          if (body.fixed) continue;
+          body.velocity.addScaledVector(s.gravity, dtStep);
+          body.velocity.multiplyScalar(Math.pow(LINEAR_DAMPING, dtStep * 60));
+          body.angularVelocity.multiplyScalar(Math.pow(ANGULAR_DAMPING, dtStep * 60));
+          body.position.addScaledVector(body.velocity, dtStep);
+          const omega = body.angularVelocity.length();
+          if (omega > 1e-5) {
+            const dq = new THREE.Quaternion().setFromAxisAngle(body.angularVelocity.clone().normalize(), omega * dtStep);
+            body.quaternion.premultiply(dq).normalize();
+          }
+
+          const floor = GROUND_Y + supportExtentAlong(body, new THREE.Vector3(0, 1, 0));
+          if (body.position.y < floor) {
+            body.position.y = floor;
+            body.contactedGround = true;
+            if (body.velocity.y < 0) body.velocity.y *= -body.restitution;
+            const groundGrip = clamp(1 - body.friction * dtStep * 18, 0.2, 1);
+            body.velocity.x *= groundGrip;
+            body.velocity.z *= groundGrip;
+            body.angularVelocity.multiplyScalar(clamp(1 - body.friction * dtStep * 8, 0.35, 1));
+          }
+
+          const WALL = 19;
+          for (const axis of ['x', 'z'] as const) {
+            if (body.position[axis] > WALL) {
+              body.position[axis] = WALL;
+              if (body.velocity[axis] > 0) body.velocity[axis] *= -body.restitution;
+            } else if (body.position[axis] < -WALL) {
+              body.position[axis] = -WALL;
+              if (body.velocity[axis] < 0) body.velocity[axis] *= -body.restitution;
+            }
+          }
+        }
+
+        const list = Array.from(bodies.values());
+        for (let i = 0; i < list.length; i++) {
+          for (let j = i + 1; j < list.length; j++) {
+            const a = list[i];
+            const b = list[j];
+            if (a.fixed && b.fixed) continue;
+            const delta = b.position.clone().sub(a.position);
+            const dist2 = delta.lengthSq();
+            const minDist = a.radius + b.radius;
+            if (dist2 >= minDist * minDist || dist2 < 1e-8) continue;
+            const dist = Math.sqrt(dist2);
+            const normal = delta.multiplyScalar(1 / dist);
+            const invMassSum = a.invMass + b.invMass;
+            if (invMassSum <= 0) continue;
+            const penetration = minDist - dist;
+            if (a.invMass > 0) a.position.addScaledVector(normal, -(penetration * (a.invMass / invMassSum)));
+            if (b.invMass > 0) b.position.addScaledVector(normal, penetration * (b.invMass / invMassSum));
+
+            const relVel = b.velocity.clone().sub(a.velocity).dot(normal);
+            if (relVel >= 0) continue;
+            const restitution = Math.min(a.restitution, b.restitution);
+            const impulse = (-(1 + restitution) * relVel) / invMassSum;
+            if (a.invMass > 0) a.velocity.addScaledVector(normal, -impulse * a.invMass);
+            if (b.invMass > 0) b.velocity.addScaledVector(normal, impulse * b.invMass);
+          }
+        }
+      };
+
+      const evaluateNetworkOnCreature = (net: NeuralNet, rootId: string, hingeIds: string[], simSteps: number, rewardFn: (creature: Record<string, unknown>, step: number) => number) => {
+        const { bodies, hinges } = cloneSimulationState();
+        const controlled = hingeIds
+          .map((hingeId) => hinges.find((hinge) => hinge.id === hingeId))
+          .filter((hinge): hinge is SimHinge => Boolean(hinge));
+        if (!bodies.has(rootId) || controlled.length === 0) {
+          return { reward: -Infinity, observations: 0 };
+        }
+        const maxMotorSpeed = 7;
+        const baseMotorForce = Math.max(20, ...controlled.map((hinge) => hinge.motorForce || 0), 45);
+        let totalReward = 0;
+        for (let step = 0; step < simSteps; step++) {
+          const observation = buildObservation(bodies, controlled, rootId).values;
+          const actions = net.forward(observation);
+          for (let i = 0; i < controlled.length; i++) {
+            controlled[i].motorSpeed = clamp(actions[i] ?? 0, -1, 1) * maxMotorSpeed;
+            controlled[i].motorForce = baseMotorForce;
+          }
+          for (let sub = 0; sub < SUB_STEPS; sub++) {
+            simulateBodiesStep(bodies, hinges, 0.016 / SUB_STEPS);
+          }
+          const root = bodies.get(rootId)!;
+          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
+          const creature = {
+            pos: root.position.toArray(),
+            vel: root.velocity.toArray(),
+            up: up.toArray(),
+            hingeAngles: controlled.map((hinge) => hinge.angle),
+            hingeSpeeds: controlled.map((hinge) => hinge.motorSpeed),
+            contacts: Array.from(bodies.values()).filter((body) => body.contactedGround).map((body) => body.id),
+            fallen: up.y < 0.2 || root.position.y < 0.35,
+            step,
+          };
+          try {
+            totalReward += rewardFn(creature, step);
+          } catch {
+            totalReward += root.position.x - Math.abs(root.velocity.y) * 0.2;
+          }
+          if (creature.fallen) {
+            totalReward -= 8;
+          }
+        }
+        return { reward: totalReward, observations: controlled.length };
+      };
 
       const animate = (now: number) => {
         if (destroyed) return;
@@ -912,6 +1490,50 @@ export default function PhysicsSimulator({
         const subDt = dt / SUB_STEPS;
 
         for (let step = 0; step < SUB_STEPS; step++) {
+          if (s.activeController) {
+            const controlledHinges = s.activeController.hingeIds
+              .map((hingeId) => s.hinges.get(hingeId))
+              .filter((hinge): hinge is HingeConstraint => Boolean(hinge));
+            const simBodies = new Map<string, SimBody>();
+            for (const [id, body] of s.objects.entries()) {
+              simBodies.set(id, {
+                id,
+                position: body.mesh.position.clone(),
+                quaternion: body.mesh.quaternion.clone(),
+                velocity: body.velocity.clone(),
+                angularVelocity: body.angularVelocity.clone(),
+                mass: body.mass,
+                invMass: body.invMass,
+                invInertia: body.invInertia.clone(),
+                radius: body.radius,
+                shape: body.shape,
+                size: [...body.size] as [number, number, number],
+                fixed: body.fixed,
+                restitution: body.restitution,
+                friction: body.friction,
+                contactedGround: false,
+              });
+            }
+            const observation = buildObservation(simBodies, controlledHinges.map((hinge) => ({
+              id: hinge.id,
+              a: hinge.a,
+              b: hinge.b,
+              axis: hinge.axis,
+              anchorA: hinge.anchorA,
+              anchorB: hinge.anchorB,
+              angle: hinge.angle,
+              minAngle: hinge.minAngle,
+              maxAngle: hinge.maxAngle,
+              motorSpeed: hinge.motorSpeed,
+              motorForce: hinge.motorForce,
+            })), s.activeController.rootId).values;
+            const actions = s.activeController.net.forward(observation);
+            for (let i = 0; i < controlledHinges.length; i++) {
+              controlledHinges[i].motorSpeed = clamp(actions[i] ?? 0, -1, 1) * s.activeController.maxMotorSpeed;
+              controlledHinges[i].motorForce = Math.max(controlledHinges[i].motorForce, s.activeController.baseMotorForce);
+            }
+            s.activeController.step += 1;
+          }
 
           // Spring forces
           for (const sp of s.springs.values()) {
@@ -927,8 +1549,8 @@ export default function PhysicsSimulator({
             );
             const fMag = sp.stiffness * extension + sp.damping * relVel;
             const f = tmpVec.clone().normalize().multiplyScalar(fMag);
-            a.velocity.addScaledVector(f,  subDt / a.mass);
-            b.velocity.addScaledVector(f, -subDt / b.mass);
+            if (!a.fixed) a.velocity.addScaledVector(f,  subDt * a.invMass);
+            if (!b.fixed) b.velocity.addScaledVector(f, -subDt * b.invMass);
             a.sleeping = false; b.sleeping = false;
           }
 
@@ -947,27 +1569,37 @@ export default function PhysicsSimulator({
             const corrLen = correction.length();
             if (corrLen > 0.001) {
               const corrDir = correction.clone().normalize();
-              const invMassSum = 1 / a.mass + 1 / b.mass;
+              const invMassSum = a.invMass + b.invMass;
+              if (invMassSum <= 0) continue;
               const baumFactor = Math.min(corrLen * 0.4, 0.2); // Baumgarte stabilisation
-              a.velocity.addScaledVector(corrDir,  baumFactor * (1 / a.mass) / invMassSum * 60 * subDt);
-              b.velocity.addScaledVector(corrDir, -baumFactor * (1 / b.mass) / invMassSum * 60 * subDt);
+              if (!a.fixed) a.velocity.addScaledVector(corrDir,  baumFactor * a.invMass / invMassSum * 60 * subDt);
+              if (!b.fixed) b.velocity.addScaledVector(corrDir, -baumFactor * b.invMass / invMassSum * 60 * subDt);
             }
 
-            // Motor: apply torque along hinge axis to reach motorSpeed
+            const worldAxis = hinge.axis.clone().applyQuaternion(a.mesh.quaternion).normalize();
+            const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
+            hinge.angle = clamp(hinge.angle + relOmega * subDt, -Math.PI * 4, Math.PI * 4);
+            let torqueMag = 0;
             if (hinge.motorForce > 0) {
-              const worldAxis = hinge.axis.clone().applyQuaternion(a.mesh.quaternion).normalize();
-              const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
               const speedErr = hinge.motorSpeed - relOmega;
-              const torqueMag = Math.max(-hinge.motorForce, Math.min(hinge.motorForce, speedErr * 8)) * subDt;
-              a.angularVelocity.addScaledVector(worldAxis,  torqueMag / a.mass);
-              b.angularVelocity.addScaledVector(worldAxis, -torqueMag / b.mass);
+              torqueMag += clamp(speedErr * 14, -hinge.motorForce, hinge.motorForce) * subDt;
+            }
+            const limitedAngle = clamp(hinge.angle, hinge.minAngle, hinge.maxAngle);
+            if (Math.abs(limitedAngle - hinge.angle) > 1e-5) {
+              const limitError = limitedAngle - hinge.angle;
+              torqueMag += clamp(limitError * 80 - relOmega * 8, -Math.max(hinge.motorForce, 25), Math.max(hinge.motorForce, 25)) * subDt;
+              hinge.angle = limitedAngle;
+            }
+            if (Math.abs(torqueMag) > 1e-8) {
+              applyAxisTorqueToBody(a, worldAxis, torqueMag);
+              applyAxisTorqueToBody(b, worldAxis, -torqueMag);
               a.sleeping = false; b.sleeping = false;
             }
           }
 
           // Per-object integration
           for (const obj of s.objects.values()) {
-            if (obj.sleeping) continue;
+            if (obj.fixed || obj.sleeping) continue;
 
             // Gravity
             obj.velocity.addScaledVector(s.gravity, subDt);
@@ -989,7 +1621,7 @@ export default function PhysicsSimulator({
             }
 
             // Ground collision
-            const floor = GROUND_Y + obj.radius;
+            const floor = GROUND_Y + supportExtentAlong(obj, new THREE.Vector3(0, 1, 0));
             if (obj.mesh.position.y < floor) {
               obj.mesh.position.y = floor;
               if (obj.velocity.y < 0) {
@@ -1030,7 +1662,7 @@ export default function PhysicsSimulator({
           for (let i = 0; i < objs.length; i++) {
             for (let j = i + 1; j < objs.length; j++) {
               const a = objs[i], b = objs[j];
-              if (a.sleeping && b.sleeping) continue;
+              if ((a.sleeping && b.sleeping) || (a.fixed && b.fixed)) continue;
               const dx = b.mesh.position.x - a.mesh.position.x;
               const dy = b.mesh.position.y - a.mesh.position.y;
               const dz = b.mesh.position.z - a.mesh.position.z;
@@ -1042,15 +1674,20 @@ export default function PhysicsSimulator({
               const nx = dx / dist, ny = dy / dist, nz = dz / dist;
               // Penetration correction
               const pen = (minDist - dist) * 0.5;
-              const invMassSum = 1 / a.mass + 1 / b.mass;
-              const corrA = pen / (invMassSum * a.mass);
-              const corrB = pen / (invMassSum * b.mass);
-              a.mesh.position.x -= nx * corrA;
-              a.mesh.position.y -= ny * corrA;
-              a.mesh.position.z -= nz * corrA;
-              b.mesh.position.x += nx * corrB;
-              b.mesh.position.y += ny * corrB;
-              b.mesh.position.z += nz * corrB;
+              const invMassSum = a.invMass + b.invMass;
+              if (invMassSum <= 0) continue;
+              const corrA = pen * (a.invMass / invMassSum);
+              const corrB = pen * (b.invMass / invMassSum);
+              if (!a.fixed) {
+                a.mesh.position.x -= nx * corrA;
+                a.mesh.position.y -= ny * corrA;
+                a.mesh.position.z -= nz * corrA;
+              }
+              if (!b.fixed) {
+                b.mesh.position.x += nx * corrB;
+                b.mesh.position.y += ny * corrB;
+                b.mesh.position.z += nz * corrB;
+              }
 
               // Velocity response
               const restitution = Math.min(a.restitution, b.restitution);
@@ -1060,12 +1697,16 @@ export default function PhysicsSimulator({
               if (relVel > 0) continue; // already separating
               const j2 = -(1 + restitution) * relVel / invMassSum;
               const jx = nx * j2, jy = ny * j2, jz = nz * j2;
-              a.velocity.x -= jx / a.mass;
-              a.velocity.y -= jy / a.mass;
-              a.velocity.z -= jz / a.mass;
-              b.velocity.x += jx / b.mass;
-              b.velocity.y += jy / b.mass;
-              b.velocity.z += jz / b.mass;
+              if (!a.fixed) {
+                a.velocity.x -= jx * a.invMass;
+                a.velocity.y -= jy * a.invMass;
+                a.velocity.z -= jz * a.invMass;
+              }
+              if (!b.fixed) {
+                b.velocity.x += jx * b.invMass;
+                b.velocity.y += jy * b.invMass;
+                b.velocity.z += jz * b.invMass;
+              }
               a.sleeping = false; a.sleepTimer = 0;
               b.sleeping = false; b.sleepTimer = 0;
             }

@@ -115,6 +115,8 @@ export interface AgentOptions {
   vllmUrl?: string;
   /** Run end-of-turn metacognitive check ("complete or continue?"). Default: false; enable only for explicit autonomous execution. */
   metacognition?: boolean;
+  /** Explicit autonomy switch from the client. Normal chat should leave this false. */
+  autonomousMode?: boolean;
   /** Persisted compressed conversation checkpoint from prior turns. */
   compressionCheckpoint?: string;
   /** Self-improve mode: agent has full access to self-analysis/patch tools. */
@@ -1227,8 +1229,8 @@ Examples:
 
 **Neural / ML locomotion**:
 - \`physics_run_training_loop(rewardFn, networkLayers?, generations?, populationSize?, simSteps?, mutationRate?)\`
-  - rewardFn: JS string e.g. \`"(c) => c.pos[0]"\` (maximize X = run right). creature = \`{pos,vel,step}\`
-  - After training: green sphere spawns driven by best policy. Call physics_get_state() to read trainingLog.
+  - rewardFn: JS string e.g. \`"(c) => c.pos[0] - 0.25 * Math.abs(c.vel[1])"\` (forward progress + stability). creature = \`{pos,vel,up,hingeAngles,hingeSpeeds,contacts,fallen,step}\`
+  - After training: the best controller is installed onto the live articulated creature's hinges. Call physics_get_state() to read trainingLog.
 - \`physics_spawn_creature(creatureId, bodyPlan)\` — multi-body articulated creature with auto-hinges
 
 **Scene / utility**:
@@ -1625,6 +1627,7 @@ async function consumeGenerator(gen: AsyncGenerator<{ type: string, content?: st
   let reasoning = "";
   for await (const chunk of gen) {
     if (chunk.type === 'text' || chunk.type === 'content') content += chunk.content ?? '';
+    if (chunk.type === 'done' && !content.trim()) content = chunk.content ?? content;
     if (chunk.type === 'reasoning' || chunk.type === 'thought') reasoning += chunk.content ?? '';
   }
   return { content, reasoning };
@@ -2004,11 +2007,50 @@ async function compressHistory(
 
 /** Convert messages array to a plain text prompt (for legacy /v1/completions endpoint) */
 function messagesToPrompt(messages: Array<{ role: string; content: string }>): string {
-  return messages.map(m => {
-    if (m.role === 'system') return `System: ${m.content}`;
-    if (m.role === 'user') return `Human: ${m.content}`;
-    return `Assistant: ${m.content}`;
-  }).join('\n') + '\nAssistant:';
+  return [
+    '<conversation>',
+    ...messages.map((message) => {
+      const role = message.role === 'user' ? 'user' : message.role === 'system' ? 'system' : 'assistant';
+      return `<${role}>\n${message.content}\n</${role}>`;
+    }),
+    '</conversation>',
+    '<assistant_response>',
+  ].join('\n');
+}
+
+function sanitizeAssistantOutput(text: string): string {
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/^(?:\[(?:ARCHITECT|AUDITOR)\]\s*)+/g, '').trim();
+  cleaned = cleaned.replace(/^(?:ARCHITECT|AUDITOR|Neural Reflection)\s*\n+/i, '').trim();
+  cleaned = cleaned.replace(/^(?:>\s*)?(?:Human|User|Nathan):\s*/gim, '').trim();
+
+  if (/(?:^|\n)(?:Human|User):\s*/.test(cleaned) && /(?:^|\n)Assistant:\s*/.test(cleaned)) {
+    const parts = cleaned.split(/(?:^|\n)Assistant:\s*/);
+    cleaned = parts[parts.length - 1]?.trim() || cleaned;
+  }
+
+  cleaned = cleaned.replace(/(?:^|\n)(?:>\s*)?(?:Human|User|Nathan):\s*[\s\S]*$/i, '').trim();
+  cleaned = cleaned.replace(/^(?:The user said .+?\n\n)/i, '').trim();
+  cleaned = cleaned.replace(/^According to the response policy,[\s\S]*?(?:\n\n|$)/i, '').trim();
+  return cleaned;
+}
+
+function sanitizeInjectedDirective(text: string): string {
+  return text
+    .replace(/^(?:>\s*)?(?:Human|User|Assistant|Nathan):\s*/gim, '')
+    .replace(/^The user said .*$/gim, '')
+    .replace(/^According to the response policy,.*$/gim, '')
+    .replace(/^I should .*$/gim, '')
+    .replace(/^Let me .*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function tightenMemoryForNormalChat(decisions: ReturnType<typeof memoryPolicy.select>) {
+  return decisions
+    .filter((decision) => decision.decisionScore >= 0.78)
+    .filter((decision) => decision.keywordOverlap.length > 0 || decision.triggerHits > 0 || decision.goalResonance >= 0.62 || decision.cognitiveLayer === 'working')
+    .slice(0, 1);
 }
 
 /** No longer needed: parseSseText is integrated into callVllm for stream control */
@@ -2633,7 +2675,7 @@ export async function runAgentLoopText(
   options: { model?: string; systemPrompt?: string; synergyMode?: 'off' | 'neural' | 'parallel'; companionModel?: string; temperature?: number; openrouterApiKey?: string } = {}
 ): Promise<string> {
   const { content } = await consumeGenerator(runAgentLoop(userMessage, history, options));
-  return content;
+  return content.trim() || '⚠ The agent returned no reply text. Check the configured model endpoint and try again.';
 }
 
 export async function* runAgentLoop(
@@ -2670,6 +2712,7 @@ export async function* runAgentLoop(
     sessionId = `session-${Date.now()}`,
     ollamaUrl: optOllamaUrl,
     vllmUrl: optVllmUrl,
+    autonomousMode = false,
     compressionCheckpoint,
   } = options;
   // Per-request URL overrides — forwarded from CLI config or web app settings panel
@@ -2751,9 +2794,15 @@ export async function* runAgentLoop(
 
   // ── ORCHESTRATOR PHASE: Grand Directive ─────────────────────────────
   // Fetch directive from the Neural Orchestrator (PyTorch model)
-  const directive = await fetchDirective(sessionId);
+  const directive = autonomousMode ? await fetchDirective(sessionId) : null;
   if (directive) {
-    messages.push({ role: 'system', content: formatDirectiveInjection(directive) });
+    const formattedDirective = formatDirectiveInjection({
+      ...directive,
+      directive: sanitizeInjectedDirective(directive.directive),
+    });
+    if (formattedDirective.trim()) {
+      messages.push({ role: 'system', content: formattedDirective });
+    }
   }
 
   // ── PHASE 1: Semantic Context Retrieval ─────────────────────────────
@@ -2764,8 +2813,9 @@ export async function* runAgentLoop(
 
   // 1. Embed the query
   const queryEmbedding = await generateEmbedding(userMessage);
-  const memoryCandidates = vectorStore.getInjectionCandidates(queryEmbedding, userMessage, 10);
-  const injectedMemoryDecisions = memoryPolicy.select(userMessage, memoryCandidates, 3);
+  const memoryCandidates = vectorStore.getInjectionCandidates(queryEmbedding, userMessage, autonomousMode ? 10 : 6);
+  const memorySelections = memoryPolicy.select(userMessage, memoryCandidates, autonomousMode ? 3 : 2);
+  const injectedMemoryDecisions = autonomousMode ? memorySelections : tightenMemoryForNormalChat(memorySelections);
   const recentUserContext = messages
     .filter((message) => message.role === 'user')
     .slice(-3)
@@ -2781,8 +2831,8 @@ export async function* runAgentLoop(
   contextBlock += "Rule: recalled memory is advisory only. Prefer memories with strong goal resonance and mature consolidation; ignore weak, stale, or intrusive recall.\n";
   contextBlock += "</WORKING_SET>\n";
   const subtleMemoryHints = injectedMemoryDecisions
-    .filter((decision) => decision.decisionScore >= 0.72 || decision.triggerHits > 0 || decision.cognitiveLayer === 'working')
-    .slice(0, 2);
+    .filter((decision) => decision.decisionScore >= (autonomousMode ? 0.72 : 0.8) || decision.triggerHits > 0 || decision.cognitiveLayer === 'working')
+    .slice(0, autonomousMode ? 2 : 1);
   if (subtleMemoryHints.length > 0) {
     contextBlock += "\n<MEMORY_HINTS>\n";
     subtleMemoryHints.forEach((decision) => {
@@ -2991,7 +3041,7 @@ export async function* runAgentLoop(
       }
 
       const { content: finalContentRaw, reasoning } = extractThinking(rawContent, rawThought);
-      responseText = finalContentRaw;
+      responseText = sanitizeAssistantOutput(finalContentRaw);
 
       // Detect empty/stalled responses — break before infinite loop
       if (!responseText.trim()) {
@@ -3037,8 +3087,7 @@ export async function* runAgentLoop(
         finalAppendedOutput += `\n[THINKING] (${isVllm ? 'ARCHITECT' : 'AUDITOR'})\n${reasoning}\n[THOUGHT_END]\n`;
       }
       
-      const outputPrefix = synergyMode !== 'off' ? `[${isVllm ? 'ARCHITECT' : 'AUDITOR'}] ` : '';
-      const finalContent = outputPrefix + responseText;
+      const finalContent = responseText;
       finalAppendedOutput += finalContent + "\n";
       messages.push({ role: 'assistant', content: finalContent });
 
@@ -3516,7 +3565,7 @@ export async function* runAgentLoop(
                 simSteps: args.simSteps,
                 mutationRate: args.mutationRate,
               }))) yield event;
-              toolResult = JSON.stringify({ status: 'training_started', note: 'Evolutionary training running. Check physics window overlay for progress. Best agent spawns as green sphere when complete. Call physics_get_state() to read trainingLog.' });
+              toolResult = JSON.stringify({ status: 'training_started', note: 'Evolutionary training running on the articulated creature already in the scene. Check the physics window overlay for progress. The best controller will be installed on the creature\'s hinges when complete. Call physics_get_state() to read trainingLog.' });
               break;
             }
             case 'physics_spawn_creature': {

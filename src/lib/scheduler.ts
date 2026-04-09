@@ -264,7 +264,7 @@ class AdvancedScheduler {
             console.log(`[POLL] Processing message from ${chatId}: "${msg.text}"`);
             const model = process.env.VLLM_MODEL || process.env.OLLAMA_MODEL || 'llama3';
             try {
-              const response = await runAgentLoopText(msg.text, [], { model });
+              const response = (await runAgentLoopText(msg.text, [], { model })).trim() || '⚠ OmniShapeAgent produced no visible reply text for that message. Check the active model and runtime settings.';
               await sendTelegramMessage(response, chatId);
             } catch (error: unknown) {
               await sendTelegramMessage(`OmniShapeAgent hit an error while processing that message: ${error instanceof Error ? error.message : String(error)}`, chatId);

@@ -60,6 +60,7 @@ export async function POST(req: NextRequest) {
     } catch (error: unknown) {
       response = `OmniShapeAgent hit an error while processing that message: ${error instanceof Error ? error.message : String(error)}`;
     }
+    response = response.trim() || '⚠ OmniShapeAgent produced no visible reply text for that message. Check the active model and runtime settings.';
 
     // ── Reply ───────────────────────────────────────────────────────────────
     console.log(`[Telegram Webhook] Sending reply to ${chatId}: "${response.substring(0, 50)}..."`);
