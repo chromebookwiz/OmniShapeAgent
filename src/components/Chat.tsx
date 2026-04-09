@@ -156,6 +156,14 @@ const Icons = {
       <path d="M3 12h4l2.5-5 3 10 2.5-5H21" />
     </svg>
   ),
+  Architect: () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 20h16" />
+      <path d="M6 20V8l6-4 6 4v12" />
+      <path d="M9 12h6" />
+      <path d="M12 8v8" />
+    </svg>
+  ),
   Mic: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
@@ -193,6 +201,7 @@ const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { command: 'parallel', usage: '/parallel on', description: 'Keep parallel discourse mode active.', icon: 'Synergy', section: 'modes', persistent: true, autocomplete: '/parallel on' },
   { command: 'autonomous', usage: '/autonomous on', description: 'Let the agent keep working until it stops itself.', icon: 'Autonomous', section: 'modes', persistent: true, autocomplete: '/autonomous on' },
   { command: 'heartbeat', usage: '/heartbeat 15', description: 'Enable scheduled heartbeat turns at a minute interval.', icon: 'Heartbeat', section: 'modes', persistent: true, autocomplete: '/heartbeat 15' },
+  { command: 'surveyor', usage: '/surveyor on', description: 'Architect and supervise app creation through the local LocalClawd CLI.', icon: 'Architect', section: 'modes', persistent: true, autocomplete: '/surveyor on' },
   { command: 'doctor', usage: '/doctor', description: 'Run a full runtime and tool diagnosis.', icon: 'Gear', section: 'more' },
   { command: 'observe', usage: '/observe', description: 'Snapshot current system state and memory health.', icon: 'Memory', section: 'more' },
   { command: 'reflect', usage: '/reflect', description: 'Trigger a focused reflection loop on the current task.', icon: 'Autonomous', section: 'more' },
@@ -469,6 +478,7 @@ export default function Chat() {
       return 15;
     }
   });
+  const [surveyorMode, setSurveyorMode] = useState(false);
   // Autonomous mode
   const [autonomousMode, setAutonomousMode] = useState(false);
   const physicsModeActive = useMemo(
@@ -830,6 +840,7 @@ export default function Chat() {
           '/parallel [on|off] - toggle parallel mode\n' +
           '/autonomous [on|off] - toggle autonomous mode\n' +
           '/heartbeat [minutes|on|off] - schedule periodic heartbeat turns\n' +
+          '/surveyor [on|off] - supervise app creation through LocalClawd\n' +
           '/doctor - run runtime and tool diagnostics\n' +
           '/observe - snapshot system state\n' +
           '/reflect - run a focused reasoning loop\n' +
@@ -885,6 +896,14 @@ export default function Chat() {
         const nextInterval = Number.isFinite(heartbeatMinutes) ? heartbeatMinutes : heartbeatIntervalMinutes;
         applyHeartbeatSetting(true, nextInterval);
         appendSystemMessage(`Heartbeat mode enabled every ${Math.max(1, nextInterval)} minute${Math.max(1, nextInterval) === 1 ? '' : 's'}.`);
+        break;
+      }
+      case 'surveyor': {
+        const next = boolArg ?? !surveyorMode;
+        setSurveyorMode(next);
+        appendSystemMessage(next
+          ? 'Coding surveyor mode enabled. The architect will supervise application creation through LocalClawd and install it with npm if the CLI is missing.'
+          : 'Coding surveyor mode disabled.');
         break;
       }
       case 'history':
@@ -973,7 +992,7 @@ export default function Chat() {
 
     setShowActionMenu(false);
     return true;
-  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, heartbeatIntervalMinutes, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, windowManager]);
+  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, heartbeatIntervalMinutes, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, surveyorMode, windowManager]);
 
   const normalizedComposerInput = input.trimStart();
   const composerCommandToken = normalizedComposerInput.startsWith('/')
@@ -1123,6 +1142,7 @@ export default function Chat() {
             let sp = systemPrompt;
             if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
             if (physicsModeActive) sp += '\n\n[PHYSICS MODE ACTIVE] When building a machine, use a concrete workflow: physics_reset(), physics_spawn() a fixed chassis or axle, physics_spawn() the moving part, physics_add_hinge() to connect them, physics_set_motor() to automate it, then physics_get_state() or vision_self_check() to verify the result. Give at least one explicit machine example when you explain or act.';
+            if (surveyorMode) sp += '\n\n[CODING SURVEYOR MODE ACTIVE] You are the architect and reviewer supervising application creation through the LocalClawd CLI. Before using it, verify the CLI is available with a terminal command. If LocalClawd is missing, install it with npm install -g localclawd. Then use LocalClawd to generate or iterate on the application while you oversee architecture, validate outputs, inspect files, correct mistakes, and decide the next step. Do not hand-wave the process: explicitly supervise creation, check generated artifacts, and keep control of requirements and quality.';
             return sp;
           })(),
           temperature,
@@ -1608,7 +1628,7 @@ export default function Chat() {
         {/* Messaging Zone */}
         <div className="flex-1 relative overflow-hidden flex flex-col">
           {showActionMenu && (
-            <div className="pointer-events-none absolute left-4 top-4 z-20 flex justify-start md:left-6 md:top-5" ref={actionMenuRef}>
+            <div className="pointer-events-none absolute right-4 top-4 z-20 flex justify-end md:right-6 md:top-5" ref={actionMenuRef}>
               <div className="pointer-events-auto w-[min(380px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[10px] border border-white/10 bg-[#111] shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
                 <div className="flex h-8 items-center gap-2 border-b border-white/10 bg-[#1a1a1a] px-3">
                   <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
@@ -1629,6 +1649,7 @@ export default function Chat() {
                         <ActionMenuButton icon={<Icons.Synergy />} label="Parallel Mode" command="/parallel" description="Run a second model alongside the primary model." active={parallelMode} onClick={toggleParallel} />
                         <ActionMenuButton icon={<Icons.Autonomous active={autonomousMode} running={autonomousMode && isAutoRunningRef.current} />} label="Autonomous Mode" command="/autonomous" description="Keep working until stop_agent is called or you turn it off." active={autonomousMode} onClick={() => { setAutonomousMode(v => !v); }} />
                         <ActionMenuButton icon={<Icons.Heartbeat />} label="Heartbeat Mode" command={`/heartbeat ${heartbeatIntervalMinutes}`} description={`Schedule an automatic check-in every ${heartbeatIntervalMinutes} minute${heartbeatIntervalMinutes === 1 ? '' : 's'}.`} active={heartbeatMode} onClick={() => { applyHeartbeatSetting(!heartbeatMode, heartbeatIntervalMinutes); }} />
+                        <ActionMenuButton icon={<Icons.Architect />} label="Coding Surveyor" command="/surveyor" description="Use LocalClawd as the builder while the architect supervises application design and quality." active={surveyorMode} onClick={() => { setSurveyorMode(v => !v); }} />
                         <ActionMenuButton icon={<Icons.Mic />} label="Voice Input" command="/voice input" description="Start or stop microphone transcription." active={voiceControlState.listening} onClick={() => { voiceRef.current?.toggleListening(); }} />
                         <ActionMenuButton icon={<Icons.Speaker />} label="Voice Output" command="/voice output" description="Enable or disable automatic spoken responses." active={voiceControlState.voiceOutputEnabled} onClick={() => { voiceRef.current?.setVoiceOutputEnabled(!voiceControlState.voiceOutputEnabled); }} />
                       </div>
@@ -1644,7 +1665,7 @@ export default function Chat() {
                           {[5, 15, 30, 60].map((minutes) => (
                             <button
                               key={minutes}
-                              onClick={() => applyHeartbeatSetting(true, minutes)}
+                              onClick={() => setHeartbeatIntervalMinutes(minutes)}
                               className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] transition-colors ${heartbeatIntervalMinutes === minutes ? 'border-black bg-black text-[#FDFCF0]' : 'border-black/10 bg-[#FDFCF0] text-black/50 hover:border-black/35 hover:text-black'}`}
                             >
                               {minutes}m
