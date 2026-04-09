@@ -711,7 +711,9 @@ export async function discordShareOnMoltbook(
 export async function discordUploadFile(channelId: string, filepath: string, content?: string): Promise<string> {
   const fs = await import('fs');
   const path = await import('path');
-  const absPath = path.default.isAbsolute(filepath) ? filepath : path.default.resolve(process.cwd(), filepath);
+  const absPath = path.default.isAbsolute(filepath)
+    ? filepath
+    : path.default.resolve(/*turbopackIgnore: true*/ process.cwd(), filepath);
   if (!fs.default.existsSync(absPath)) return `File not found: ${filepath}`;
   const fileBuffer = fs.default.readFileSync(absPath);
   const filename = path.default.basename(absPath);

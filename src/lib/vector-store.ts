@@ -56,17 +56,37 @@ export interface MemoryLatticeState {
   updatedAt: number;
 }
 
+export interface MemoryConsolidationState {
+  level: number;
+  support: number;
+  volatility: number;
+  abstraction: 'episodic' | 'gist' | 'semantic' | 'procedural';
+  timesConsolidated: number;
+  lastConsolidatedAt: number;
+  sourceMemoryIds: string[];
+}
+
+export type CognitiveLayer = 'working' | 'episodic' | 'semantic' | 'procedural';
+export type MemoryEmotion = 'neutral' | 'focused' | 'curious' | 'urgent' | 'cautious' | 'confident' | 'frustrated' | 'satisfied';
+
 export interface MemoryRecord {
   id: string;
   content: string;        // Original text stored
   embedding: number[];   // Normalized embedding vector
   dim: number;           // Embedding dimension
   geometry?: MemoryGeometrySignature;
+  consolidation?: MemoryConsolidationState;
   metadata: {
     source: 'user' | 'agent' | 'tool' | 'system' | 'vision';
     topic?: string;
     entities?: string[];  // Extracted key entities
     tags?: string[];
+    cognitiveLayer?: CognitiveLayer;
+    taskScope?: string;
+    taskSalience?: number;
+    emotion?: MemoryEmotion;
+    triggerKeywords?: string[];
+    suppressedUntil?: number;
     spatial?: { x: number; y: number; z?: number; w?: number; h?: number };
     contextSummary?: string;  // Short summary of the conversation that produced this memory
     polarity?: 'positive' | 'neutral' | 'negative';  // Whether memory records a success or failure
@@ -91,10 +111,21 @@ export interface MemoryInjectionCandidate {
   source: 'geometric' | 'semantic' | 'text' | 'hybrid';
   score: number;
   similarity: number;
+  activationScore: number;
+  cognitiveLayer: CognitiveLayer;
+  taskSalience: number;
+  emotion: MemoryEmotion;
+  goalResonance: number;
+  novelty: number;
+  consolidationLevel: number;
+  stabilityScore: number;
+  triggerHits: number;
+  emotionWeight: number;
   geometrySimilarity: number;
   textHits: number;
   keywordOverlap: string[];
   ageDays: number;
+  recentInjectionPenalty: number;
   acknowledgementRatio: number;
   rejectionRatio: number;
   latticeSupport: number;
@@ -238,6 +269,31 @@ class VectorStore {
     };
   }
 
+  private defaultConsolidation(
+    raw?: Partial<MemoryConsolidationState>,
+    metadata?: MemoryRecord['metadata'],
+    content?: string,
+    layer?: CognitiveLayer,
+  ): MemoryConsolidationState {
+    const inferredLayer = layer ?? this.inferCognitiveLayer(metadata ?? ({ source: 'agent' } as MemoryRecord['metadata']), content ?? '');
+    const tags = new Set((metadata?.tags ?? []).map((tag) => tag.toLowerCase()));
+    let abstraction: MemoryConsolidationState['abstraction'] = raw?.abstraction ?? 'episodic';
+    if (!raw?.abstraction) {
+      if (inferredLayer === 'procedural' || tags.has('strategy') || tags.has('workflow') || tags.has('playbook')) abstraction = 'procedural';
+      else if (inferredLayer === 'semantic') abstraction = 'semantic';
+      else if (inferredLayer === 'working') abstraction = 'gist';
+    }
+    return {
+      level: clamp01(raw?.level ?? (abstraction === 'episodic' ? 0.12 : abstraction === 'gist' ? 0.34 : abstraction === 'semantic' ? 0.56 : 0.72)),
+      support: clamp01(raw?.support ?? 0.28),
+      volatility: clamp01(raw?.volatility ?? (metadata?.polarity === 'negative' ? 0.5 : 0.22)),
+      abstraction,
+      timesConsolidated: Math.max(0, Math.round(raw?.timesConsolidated ?? 0)),
+      lastConsolidatedAt: Math.max(0, raw?.lastConsolidatedAt ?? 0),
+      sourceMemoryIds: Array.isArray(raw?.sourceMemoryIds) ? raw!.sourceMemoryIds!.map(String).slice(0, 24) : [],
+    };
+  }
+
   private normalizeGeometry(raw: Partial<MemoryGeometrySignature> | undefined, content: string): MemoryGeometrySignature | undefined {
     const fallback = buildMemoryGeometry(content, false);
     const base = raw && Array.isArray(raw.fingerprint)
@@ -315,17 +371,26 @@ class VectorStore {
       ? raw.embedding.map((value) => Number(value)).filter((value) => Number.isFinite(value))
       : [];
     const metadata = raw.metadata ?? { source: 'agent' as const };
+    const cognitiveLayer = this.inferCognitiveLayer(metadata as MemoryRecord['metadata'], raw.content);
+    const emotion = this.inferEmotion(metadata as MemoryRecord['metadata'], raw.content, cognitiveLayer);
     return {
       id: raw.id,
       content: raw.content,
       embedding,
       dim: raw.dim ?? embedding.length,
       geometry: this.normalizeGeometry(raw.geometry, raw.content),
+      consolidation: this.defaultConsolidation(raw.consolidation, metadata as MemoryRecord['metadata'], raw.content, cognitiveLayer),
       metadata: {
         source: metadata.source ?? 'agent',
         topic: metadata.topic,
         entities: Array.isArray(metadata.entities) ? metadata.entities : [],
         tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+        cognitiveLayer,
+        taskScope: metadata.taskScope,
+        taskSalience: this.normalizeTaskSalience(metadata as MemoryRecord['metadata'], cognitiveLayer),
+        emotion,
+        triggerKeywords: this.normalizeTriggerKeywords(metadata as MemoryRecord['metadata'], raw.content),
+        suppressedUntil: metadata.suppressedUntil,
         spatial: metadata.spatial,
         contextSummary: metadata.contextSummary,
         polarity: metadata.polarity,
@@ -360,11 +425,246 @@ class VectorStore {
       .filter((word) => word.length > 3 && !this.STOPWORDS.has(word));
   }
 
-  private keywordOverlap(query: string, content: string): string[] {
+  private normalizeTriggerKeywords(metadata: MemoryRecord['metadata'], content: string): string[] {
+    const explicit = Array.isArray(metadata.triggerKeywords)
+      ? metadata.triggerKeywords.map((keyword) => String(keyword).trim().toLowerCase()).filter(Boolean)
+      : [];
+    const inferred = this.extractKeywords(`${content} ${metadata.contextSummary ?? ''} ${(metadata.tags ?? []).join(' ')}`)
+      .slice(0, 12);
+    return Array.from(new Set([...explicit, ...inferred])).slice(0, 12);
+  }
+
+  private inferEmotion(metadata: MemoryRecord['metadata'], content: string, layer: CognitiveLayer): MemoryEmotion {
+    if (metadata.emotion) return metadata.emotion;
+    const tags = new Set((metadata.tags ?? []).map((tag) => tag.toLowerCase()));
+    const normalizedContent = content.toLowerCase();
+    if (tags.has('urgent') || normalizedContent.includes('asap') || normalizedContent.includes('immediately')) return 'urgent';
+    if (tags.has('focused') || layer === 'working') return 'focused';
+    if (tags.has('curious') || normalizedContent.includes('?') || normalizedContent.includes('explore')) return 'curious';
+    if (tags.has('cautious') || normalizedContent.includes('warning') || normalizedContent.includes('careful')) return 'cautious';
+    if (tags.has('confident') || normalizedContent.includes('confirmed') || normalizedContent.includes('works')) return 'confident';
+    if (metadata.polarity === 'negative' || tags.has('frustrated') || normalizedContent.includes('failed') || normalizedContent.includes('broken')) return 'frustrated';
+    if (metadata.polarity === 'positive' || tags.has('satisfied') || normalizedContent.includes('success') || normalizedContent.includes('fixed')) return 'satisfied';
+    return 'neutral';
+  }
+
+  private keywordOverlap(query: string, content: string, triggerKeywords: string[] = []): string[] {
     const queryTerms = new Set(this.extractKeywords(query));
     if (queryTerms.size === 0) return [];
-    const contentTerms = new Set(this.extractKeywords(content));
+    const contentTerms = new Set(this.extractKeywords(`${content} ${triggerKeywords.join(' ')}`));
     return Array.from(queryTerms).filter((term) => contentTerms.has(term));
+  }
+
+  private getTriggerHits(record: MemoryRecord, overlap: string[]): number {
+    const triggers = new Set((record.metadata.triggerKeywords ?? []).map((keyword) => keyword.toLowerCase()));
+    return overlap.filter((term) => triggers.has(term)).length;
+  }
+
+  private getEmotionWeight(emotion: MemoryEmotion): number {
+    switch (emotion) {
+      case 'focused':
+        return 0.12;
+      case 'urgent':
+        return 0.14;
+      case 'cautious':
+        return 0.09;
+      case 'curious':
+        return 0.07;
+      case 'confident':
+      case 'satisfied':
+        return 0.05;
+      case 'frustrated':
+        return 0.03;
+      default:
+        return 0;
+    }
+  }
+
+  private inferCognitiveLayer(metadata: MemoryRecord['metadata'], content: string): CognitiveLayer {
+    if (metadata.cognitiveLayer) return metadata.cognitiveLayer;
+    const tags = new Set((metadata.tags ?? []).map((tag) => tag.toLowerCase()));
+    const normalizedContent = content.toLowerCase();
+    if (
+      tags.has('working') ||
+      tags.has('current-task') ||
+      tags.has('active-task') ||
+      tags.has('todo') ||
+      tags.has('scratchpad') ||
+      tags.has('focus') ||
+      normalizedContent.includes('current task')
+    ) {
+      return 'working';
+    }
+    if (
+      tags.has('strategy') ||
+      tags.has('procedure') ||
+      tags.has('playbook') ||
+      tags.has('workflow') ||
+      tags.has('howto')
+    ) {
+      return 'procedural';
+    }
+    if (metadata.source === 'user' || metadata.source === 'tool' || metadata.source === 'vision') {
+      return 'episodic';
+    }
+    return 'semantic';
+  }
+
+  private normalizeTaskSalience(metadata: MemoryRecord['metadata'], layer: CognitiveLayer): number {
+    const explicit = Number(metadata.taskSalience ?? Number.NaN);
+    if (Number.isFinite(explicit)) return clamp01(explicit);
+    if (layer === 'working') return 1;
+    if (layer === 'procedural') return 0.78;
+    if (layer === 'episodic') return 0.62;
+    return 0.46;
+  }
+
+  private isSuppressed(record: MemoryRecord): boolean {
+    const until = record.metadata.suppressedUntil;
+    return typeof until === 'number' && until > Date.now();
+  }
+
+  private maybeSuppressFixation(record: MemoryRecord, hours: number = 12) {
+    const rejectionRatio = this.getRejectionRatio(record);
+    const fixationRisk =
+      record.lifecycle.unacknowledgedStreak >= 4 ||
+      (record.lifecycle.injectionCount >= 3 && rejectionRatio >= 0.6 && record.accessCount <= 3);
+    if (!fixationRisk) return false;
+    record.metadata.suppressedUntil = Date.now() + hours * 3_600_000;
+    record.importance = Math.max(0.05, record.importance - 0.12);
+    return true;
+  }
+
+  private inferTaskSalience(record: MemoryRecord, query: string, overlap: string[]): number {
+    const layer = record.metadata.cognitiveLayer ?? this.inferCognitiveLayer(record.metadata, record.content);
+    const queryTerms = this.extractKeywords(query);
+    const overlapRatio = queryTerms.length > 0 ? overlap.length / queryTerms.length : 0;
+    const triggerHits = this.getTriggerHits(record, overlap);
+    const ageDays = Math.max(0, (Date.now() - record.createdAt) / DAY_MS);
+    const freshness = 1 / (1 + ageDays / (layer === 'working' ? 1.5 : 10));
+    const explicit = this.normalizeTaskSalience(record.metadata, layer);
+    const layerBoost = layer === 'working' ? 0.25 : layer === 'procedural' ? 0.12 : 0.04;
+    return clamp01(explicit * 0.62 + overlapRatio * 0.17 + Math.min(0.16, triggerHits * 0.08) + freshness * 0.08 + layerBoost + this.getEmotionWeight(record.metadata.emotion ?? 'neutral'));
+  }
+
+  private getGoalResonance(record: MemoryRecord, query: string, overlap: string[]): number {
+    const queryTerms = this.extractKeywords(query);
+    const overlapRatio = queryTerms.length > 0 ? overlap.length / queryTerms.length : 0;
+    const triggerHits = this.getTriggerHits(record, overlap);
+    const taskScope = (record.metadata.taskScope ?? '').toLowerCase();
+    const queryText = query.toLowerCase();
+    const scopeMatch = taskScope && queryText.includes(taskScope) ? 1 : 0;
+    const contextMatch = (record.metadata.contextSummary ?? '').toLowerCase().includes(queryText.slice(0, 48)) ? 1 : 0;
+    return clamp01(overlapRatio * 0.45 + Math.min(0.24, triggerHits * 0.12) + this.inferTaskSalience(record, query, overlap) * 0.2 + scopeMatch * 0.08 + contextMatch * 0.03);
+  }
+
+  private getNoveltyScore(record: MemoryRecord): number {
+    const ageHours = Math.max(0, (Date.now() - record.createdAt) / 3_600_000);
+    const freshness = ageHours <= 24 ? 1 - ageHours / 24 : Math.max(0, 0.4 - (ageHours - 24) / (24 * 14));
+    const sparsity = 1 - clamp01(record.lattice.degree / 8);
+    const lowExposure = 1 - clamp01(record.accessCount / 6);
+    const consolidation = record.consolidation ?? this.defaultConsolidation(undefined, record.metadata, record.content, record.metadata.cognitiveLayer);
+    return clamp01(freshness * 0.45 + sparsity * 0.3 + lowExposure * 0.15 + (1 - consolidation.level) * 0.1);
+  }
+
+  private getStabilityScore(record: MemoryRecord): number {
+    const consolidation = record.consolidation ?? this.defaultConsolidation(undefined, record.metadata, record.content, record.metadata.cognitiveLayer);
+    const acknowledgement = this.getAcknowledgementRatio(record);
+    const rejection = this.getRejectionRatio(record);
+    return clamp01(consolidation.level * 0.36 + consolidation.support * 0.26 + acknowledgement * 0.22 + Math.min(0.16, record.lattice.clusterStrength * 0.2) - consolidation.volatility * 0.18 - rejection * 0.14);
+  }
+
+  private computeActivationScore(candidate: Omit<MemoryInjectionCandidate, 'activationScore'>): number {
+    return clamp01(
+      candidate.goalResonance * 0.34 +
+      candidate.taskSalience * 0.18 +
+      candidate.stabilityScore * 0.18 +
+      candidate.consolidationLevel * 0.12 +
+      Math.min(1, candidate.score) * 0.08 +
+      candidate.geometrySimilarity * 0.05 +
+      Math.min(1, candidate.novelty * 0.4) +
+      candidate.emotionWeight * 0.15 -
+      candidate.recentInjectionPenalty * 0.2 -
+      candidate.rejectionRatio * 0.12
+    );
+  }
+
+  private reinforceConsolidation(record: MemoryRecord, outcome: 'acknowledged' | 'ignored' | 'rejected') {
+    const consolidation = record.consolidation ?? this.defaultConsolidation(undefined, record.metadata, record.content, record.metadata.cognitiveLayer);
+    if (outcome === 'acknowledged') {
+      consolidation.support = clamp01(consolidation.support + 0.08);
+      consolidation.volatility = clamp01(consolidation.volatility - 0.06);
+      consolidation.level = clamp01(consolidation.level + 0.035);
+    } else if (outcome === 'rejected') {
+      consolidation.support = clamp01(consolidation.support - 0.06);
+      consolidation.volatility = clamp01(consolidation.volatility + 0.12);
+      consolidation.level = clamp01(consolidation.level - 0.03);
+    } else {
+      consolidation.volatility = clamp01(consolidation.volatility + 0.035);
+      consolidation.level = clamp01(consolidation.level - 0.01);
+    }
+    record.consolidation = consolidation;
+  }
+
+  private promoteStableMemories(): number {
+    let promoted = 0;
+    for (const record of this.records.values()) {
+      const consolidation = record.consolidation ?? this.defaultConsolidation(undefined, record.metadata, record.content, record.metadata.cognitiveLayer);
+      const ackRatio = this.getAcknowledgementRatio(record);
+      const rehearsal = record.lifecycle.acknowledgedCount + record.accessCount;
+      const tags = new Set((record.metadata.tags ?? []).map((tag) => tag.toLowerCase()));
+      let nextLayer = record.metadata.cognitiveLayer ?? 'semantic';
+      let nextAbstraction = consolidation.abstraction;
+
+      if (
+        nextLayer === 'episodic' &&
+        rehearsal >= 3 &&
+        ackRatio >= 0.55 &&
+        consolidation.support >= 0.52 &&
+        consolidation.volatility <= 0.45
+      ) {
+        nextLayer = tags.has('strategy') || tags.has('workflow') || tags.has('playbook') ? 'procedural' : 'semantic';
+        nextAbstraction = nextLayer === 'procedural' ? 'procedural' : 'semantic';
+      } else if (
+        nextLayer !== 'procedural' &&
+        (tags.has('strategy') || tags.has('procedure') || tags.has('workflow') || tags.has('playbook') || tags.has('howto')) &&
+        rehearsal >= 4 &&
+        ackRatio >= 0.62 &&
+        consolidation.support >= 0.64 &&
+        consolidation.volatility <= 0.4
+      ) {
+        nextLayer = 'procedural';
+        nextAbstraction = 'procedural';
+      }
+
+      const maturedLevel = clamp01(Math.max(consolidation.level, consolidation.support * 0.78 + ackRatio * 0.22));
+      const changed = nextLayer !== (record.metadata.cognitiveLayer ?? 'semantic') || nextAbstraction !== consolidation.abstraction || maturedLevel > consolidation.level + 0.01;
+      if (!changed) continue;
+
+      record.metadata.cognitiveLayer = nextLayer;
+      record.consolidation = {
+        ...consolidation,
+        abstraction: nextAbstraction,
+        level: maturedLevel,
+        timesConsolidated: consolidation.timesConsolidated + 1,
+        lastConsolidatedAt: Date.now(),
+      };
+      record.importance = Math.min(2.0, record.importance + 0.03);
+      promoted++;
+    }
+    if (promoted > 0) this.debounceSave();
+    return promoted;
+  }
+
+  private getRecentInjectionPenalty(record: MemoryRecord): number {
+    const lastInjectedAt = record.lifecycle.lastInjectedAt;
+    if (!lastInjectedAt) return 0;
+    const hoursSince = (Date.now() - lastInjectedAt) / 3_600_000;
+    if (hoursSince >= 24) return 0;
+    if (hoursSince < 0.1) return 1;
+    if (hoursSince < 1) return 0.85;
+    if (hoursSince < 6) return 0.5;
+    return 0.2;
   }
 
   private getAcknowledgementRatio(record: MemoryRecord): number {
@@ -502,6 +802,7 @@ class VectorStore {
     }
 
     for (const record of candidates) {
+      if (this.isSuppressed(record)) continue;
       const similarity = cosineSimilarity(queryEmbedding, record.embedding);
       if (similarity < 0.1) continue; // Hard threshold — ignore irrelevant noise
 
@@ -582,11 +883,12 @@ class VectorStore {
     const results: SearchResult[] = [];
 
     for (const record of this.records.values()) {
+      if (this.isSuppressed(record)) continue;
       const embeddingSimilarity = queryEmbedding.length > 0 && record.embedding.length === queryEmbedding.length
         ? cosineSimilarity(queryEmbedding, record.embedding)
         : 0;
       const { geometrySimilarity, topologicalSynonym, repeatedShape } = this.queryGeometrySimilarity(queryGeometry, record);
-      const keywordOverlap = this.keywordOverlap(queryText, record.content);
+      const keywordOverlap = this.keywordOverlap(queryText, record.content, record.metadata.triggerKeywords ?? []);
       const overlapRatio = queryKeywords.size > 0 ? keywordOverlap.length / queryKeywords.size : 0;
 
       if (geometrySimilarity < 0.18 && embeddingSimilarity < 0.1 && overlapRatio <= 0) continue;
@@ -671,17 +973,30 @@ class VectorStore {
     const semanticMap = new Map(semantic.map((result) => [result.record.id, result]));
 
     for (const result of geometric) {
-      const overlap = this.keywordOverlap(query, result.record.content);
+      const overlap = this.keywordOverlap(query, result.record.content, result.record.metadata.triggerKeywords ?? []);
+      const taskSalience = this.inferTaskSalience(result.record, query, overlap);
+      const triggerHits = this.getTriggerHits(result.record, overlap);
       const geometrySimilarity = this.queryGeometrySimilarity(queryGeometry, result.record).geometrySimilarity;
       candidates.set(result.record.id, {
         record: result.record,
         source: result.record.geometry ? 'geometric' : 'semantic',
         score: result.score,
         similarity: result.similarity,
+        activationScore: 0,
+        cognitiveLayer: result.record.metadata.cognitiveLayer ?? 'semantic',
+        taskSalience,
+        emotion: result.record.metadata.emotion ?? 'neutral',
+        goalResonance: this.getGoalResonance(result.record, query, overlap),
+        novelty: this.getNoveltyScore(result.record),
+        consolidationLevel: result.record.consolidation?.level ?? 0,
+        stabilityScore: this.getStabilityScore(result.record),
+        triggerHits,
+        emotionWeight: this.getEmotionWeight(result.record.metadata.emotion ?? 'neutral'),
         geometrySimilarity,
         textHits: overlap.length,
         keywordOverlap: overlap,
         ageDays: Math.max(0, (Date.now() - result.record.createdAt) / DAY_MS),
+        recentInjectionPenalty: this.getRecentInjectionPenalty(result.record),
         acknowledgementRatio: this.getAcknowledgementRatio(result.record),
         rejectionRatio: this.getRejectionRatio(result.record),
         latticeSupport: result.record.lattice.clusterStrength,
@@ -699,16 +1014,29 @@ class VectorStore {
         existing.similarity = Math.max(existing.similarity, result.similarity);
         continue;
       }
-      const overlap = this.keywordOverlap(query, result.record.content);
+      const overlap = this.keywordOverlap(query, result.record.content, result.record.metadata.triggerKeywords ?? []);
+      const taskSalience = this.inferTaskSalience(result.record, query, overlap);
+      const triggerHits = this.getTriggerHits(result.record, overlap);
       candidates.set(result.record.id, {
         record: result.record,
         source: 'semantic',
         score: result.score,
         similarity: result.similarity,
+        activationScore: 0,
+        cognitiveLayer: result.record.metadata.cognitiveLayer ?? 'semantic',
+        taskSalience,
+        emotion: result.record.metadata.emotion ?? 'neutral',
+        goalResonance: this.getGoalResonance(result.record, query, overlap),
+        novelty: this.getNoveltyScore(result.record),
+        consolidationLevel: result.record.consolidation?.level ?? 0,
+        stabilityScore: this.getStabilityScore(result.record),
+        triggerHits,
+        emotionWeight: this.getEmotionWeight(result.record.metadata.emotion ?? 'neutral'),
         geometrySimilarity: this.queryGeometrySimilarity(queryGeometry, result.record).geometrySimilarity,
         textHits: overlap.length,
         keywordOverlap: overlap,
         ageDays: Math.max(0, (Date.now() - result.record.createdAt) / DAY_MS),
+        recentInjectionPenalty: this.getRecentInjectionPenalty(result.record),
         acknowledgementRatio: this.getAcknowledgementRatio(result.record),
         rejectionRatio: this.getRejectionRatio(result.record),
         latticeSupport: result.record.lattice.clusterStrength,
@@ -720,13 +1048,23 @@ class VectorStore {
     }
 
     for (const record of textMatches) {
-      const overlap = this.keywordOverlap(query, record.content);
+      const overlap = this.keywordOverlap(query, record.content, record.metadata.triggerKeywords ?? []);
+      const taskSalience = this.inferTaskSalience(record, query, overlap);
+      const triggerHits = this.getTriggerHits(record, overlap);
       const existing = candidates.get(record.id);
       if (existing) {
         existing.source = 'hybrid';
         existing.textHits = Math.max(existing.textHits, overlap.length);
         existing.keywordOverlap = Array.from(new Set([...existing.keywordOverlap, ...overlap]));
-        existing.score = Math.max(existing.score, existing.score + overlap.length * 0.08 + existing.geometrySimilarity * 0.06);
+        existing.score = Math.max(existing.score, existing.score + overlap.length * 0.08 + existing.geometrySimilarity * 0.06 + triggerHits * 0.07);
+        existing.taskSalience = Math.max(existing.taskSalience, taskSalience);
+        existing.triggerHits = Math.max(existing.triggerHits, triggerHits);
+        existing.emotionWeight = Math.max(existing.emotionWeight, this.getEmotionWeight(record.metadata.emotion ?? 'neutral'));
+        existing.recentInjectionPenalty = Math.max(existing.recentInjectionPenalty, this.getRecentInjectionPenalty(record));
+        existing.goalResonance = Math.max(existing.goalResonance, this.getGoalResonance(record, query, overlap));
+        existing.novelty = Math.max(existing.novelty, this.getNoveltyScore(record));
+        existing.consolidationLevel = Math.max(existing.consolidationLevel, record.consolidation?.level ?? 0);
+        existing.stabilityScore = Math.max(existing.stabilityScore, this.getStabilityScore(record));
         continue;
       }
 
@@ -736,10 +1074,21 @@ class VectorStore {
         source: semanticResult ? 'hybrid' : 'text',
         score: semanticResult?.score ?? (record.importance * 0.4 + overlap.length * 0.12),
         similarity: semanticResult?.similarity ?? 0,
+        activationScore: 0,
+        cognitiveLayer: record.metadata.cognitiveLayer ?? 'semantic',
+        taskSalience,
+        emotion: record.metadata.emotion ?? 'neutral',
+        goalResonance: this.getGoalResonance(record, query, overlap),
+        novelty: this.getNoveltyScore(record),
+        consolidationLevel: record.consolidation?.level ?? 0,
+        stabilityScore: this.getStabilityScore(record),
+        triggerHits,
+        emotionWeight: this.getEmotionWeight(record.metadata.emotion ?? 'neutral'),
         geometrySimilarity: this.queryGeometrySimilarity(queryGeometry, record).geometrySimilarity,
         textHits: overlap.length,
         keywordOverlap: overlap,
         ageDays: Math.max(0, (Date.now() - record.createdAt) / DAY_MS),
+        recentInjectionPenalty: this.getRecentInjectionPenalty(record),
         acknowledgementRatio: this.getAcknowledgementRatio(record),
         rejectionRatio: this.getRejectionRatio(record),
         latticeSupport: record.lattice.clusterStrength,
@@ -751,8 +1100,19 @@ class VectorStore {
     }
 
     return Array.from(candidates.values())
-      .filter((candidate) => candidate.geometrySimilarity >= 0.45 || candidate.similarity >= 0.22 || candidate.textHits >= 2 || candidate.source === 'hybrid')
-      .sort((a, b) => b.score - a.score)
+      .map((candidate) => ({
+        ...candidate,
+        activationScore: this.computeActivationScore(candidate),
+      }))
+      .filter((candidate) => {
+        const relevant = candidate.geometrySimilarity >= 0.45 || candidate.similarity >= 0.22 || candidate.textHits >= 2 || candidate.source === 'hybrid';
+        if (!relevant) return false;
+        if (candidate.recentInjectionPenalty >= 0.85 && candidate.triggerHits === 0 && candidate.taskSalience < 0.88) return false;
+        if (candidate.goalResonance < 0.2 && candidate.stabilityScore < 0.4 && candidate.novelty < 0.45) return false;
+        if (candidate.activationScore < 0.33) return false;
+        return true;
+      })
+      .sort((a, b) => b.activationScore - a.activationScore || b.score - a.score)
       .slice(0, limit);
   }
 
@@ -787,15 +1147,20 @@ class VectorStore {
         record.lifecycle.unacknowledgedStreak = 0;
         record.lifecycle.lastAcknowledgedAt = now;
         record.importance = Math.min(2.0, record.importance + 0.04);
+        this.reinforceConsolidation(record, 'acknowledged');
       } else {
         record.lifecycle.unacknowledgedStreak++;
+        this.reinforceConsolidation(record, 'ignored');
       }
 
       if (rejected.has(id)) {
         record.lifecycle.rejectedCount++;
         record.lifecycle.lastRejectedAt = now;
         record.importance = Math.max(0.05, record.importance - 0.08);
+        this.reinforceConsolidation(record, 'rejected');
       }
+
+      this.maybeSuppressFixation(record);
     }
 
     if (touched) {
@@ -821,6 +1186,7 @@ class VectorStore {
     record.lifecycle.unacknowledgedStreak = 0;
     record.lifecycle.lastAcknowledgedAt = Date.now();
     record.importance = Math.min(2.0, record.importance + 0.05 * Math.max(1, strength));
+    this.reinforceConsolidation(record, 'acknowledged');
     this.debounceSave();
     return true;
   }
@@ -832,6 +1198,8 @@ class VectorStore {
     record.lifecycle.unacknowledgedStreak += Math.max(1, Math.round(strength));
     record.lifecycle.lastRejectedAt = Date.now();
     record.importance = Math.max(0.05, record.importance - 0.08 * Math.max(1, strength));
+    this.maybeSuppressFixation(record, Math.max(6, Math.round(strength) * 6));
+    this.reinforceConsolidation(record, 'rejected');
     this.debounceSave();
     return true;
   }
@@ -947,10 +1315,12 @@ class VectorStore {
 
     const results: Array<{ record: MemoryRecord; hits: number; score: number }> = [];
     for (const record of this.records.values()) {
-      const content = record.content.toLowerCase();
+      if (this.isSuppressed(record)) continue;
+      const content = `${record.content.toLowerCase()} ${(record.metadata.triggerKeywords ?? []).join(' ').toLowerCase()}`;
       const hits = words.filter(w => content.includes(w)).length;
       if (hits >= effectiveMinHits) {
-        const score = (hits / words.length) * record.importance * (1 + this.getAcknowledgementRatio(record) * 0.2 - this.getRejectionRatio(record) * 0.15);
+        const triggerHits = words.filter((word) => (record.metadata.triggerKeywords ?? []).includes(word)).length;
+        const score = (hits / words.length) * record.importance * (1 + this.getAcknowledgementRatio(record) * 0.2 - this.getRejectionRatio(record) * 0.15 + triggerHits * 0.08 + this.getEmotionWeight(record.metadata.emotion ?? 'neutral'));
         results.push({ record, hits, score });
       }
     }
@@ -970,26 +1340,33 @@ class VectorStore {
     topTags: Array<{ tag: string; count: number }>;
     sourceBreakdown: Record<string, number>;
     avgAcknowledgementRatio: number;
+    avgConsolidationLevel: number;
     avgLatticeDegree: number;
     staleUnacknowledged: number;
+    suppressedCount: number;
     geometryCoverage: number;
     avgGeometryVirtue: number;
     repeatedShapeMemories: number;
+    matureKnowledgeCount: number;
+    proceduralMemoryCount: number;
   } {
     const all = this.all();
     if (all.length === 0) {
-      return { total: 0, avgImportance: 0, avgAccessCount: 0, oldestMs: 0, newestMs: 0, topTags: [], sourceBreakdown: {}, avgAcknowledgementRatio: 0, avgLatticeDegree: 0, staleUnacknowledged: 0, geometryCoverage: 0, avgGeometryVirtue: 0, repeatedShapeMemories: 0 };
+      return { total: 0, avgImportance: 0, avgAccessCount: 0, oldestMs: 0, newestMs: 0, topTags: [], sourceBreakdown: {}, avgAcknowledgementRatio: 0, avgConsolidationLevel: 0, avgLatticeDegree: 0, staleUnacknowledged: 0, suppressedCount: 0, geometryCoverage: 0, avgGeometryVirtue: 0, repeatedShapeMemories: 0, matureKnowledgeCount: 0, proceduralMemoryCount: 0 };
     }
 
     const tagCounts: Record<string, number> = {};
     const sourceCounts: Record<string, number> = {};
-    let sumImportance = 0, sumAccess = 0, sumAckRatio = 0, sumDegree = 0, sumGeometryVirtue = 0, geometryCount = 0, repeatedShapeMemories = 0, oldest = Infinity, newest = 0, staleUnacknowledged = 0;
+    let sumImportance = 0, sumAccess = 0, sumAckRatio = 0, sumConsolidation = 0, sumDegree = 0, sumGeometryVirtue = 0, geometryCount = 0, repeatedShapeMemories = 0, oldest = Infinity, newest = 0, staleUnacknowledged = 0, suppressedCount = 0, matureKnowledgeCount = 0, proceduralMemoryCount = 0;
 
     for (const r of all) {
       sumImportance += r.importance;
       sumAccess += r.accessCount;
       sumAckRatio += this.getAcknowledgementRatio(r);
+      sumConsolidation += r.consolidation?.level ?? 0;
       sumDegree += r.lattice.degree;
+      if ((r.consolidation?.level ?? 0) >= 0.6) matureKnowledgeCount++;
+      if ((r.metadata.cognitiveLayer ?? 'semantic') === 'procedural') proceduralMemoryCount++;
       if (r.geometry) {
         geometryCount++;
         sumGeometryVirtue += r.geometry.virtue;
@@ -998,6 +1375,7 @@ class VectorStore {
       if (r.createdAt < oldest) oldest = r.createdAt;
       if (r.createdAt > newest) newest = r.createdAt;
       if (r.lifecycle.unacknowledgedStreak >= 3) staleUnacknowledged++;
+      if (this.isSuppressed(r)) suppressedCount++;
       for (const tag of r.metadata.tags ?? []) {
         tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
       }
@@ -1019,11 +1397,15 @@ class VectorStore {
       topTags,
       sourceBreakdown: sourceCounts,
       avgAcknowledgementRatio: parseFloat((sumAckRatio / all.length).toFixed(3)),
+      avgConsolidationLevel: parseFloat((sumConsolidation / all.length).toFixed(3)),
       avgLatticeDegree: parseFloat((sumDegree / all.length).toFixed(2)),
       staleUnacknowledged,
+      suppressedCount,
       geometryCoverage: parseFloat((geometryCount / all.length).toFixed(3)),
       avgGeometryVirtue: parseFloat((geometryCount > 0 ? sumGeometryVirtue / geometryCount : 0).toFixed(3)),
       repeatedShapeMemories,
+      matureKnowledgeCount,
+      proceduralMemoryCount,
     };
   }
 
@@ -1246,10 +1628,12 @@ class VectorStore {
       opts?.minInjectionCount ?? 4,
       opts?.maxImportance ?? 0.9,
     );
+    const promotedConsolidations = this.promoteStableMemories();
     const latticeNodes = opts?.rebuildLattice === false ? 0 : this.rebuildLattice();
     return {
       prunedDecay,
       forgottenUnacknowledged,
+      promotedConsolidations,
       latticeNodes,
       remaining: this.records.size,
     };

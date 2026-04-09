@@ -38,12 +38,16 @@ declare global {
 
 export interface VoiceButtonHandle {
   speakText: (text: string) => void;
+  toggleListening: () => void;
+  setVoiceOutputEnabled: (enabled: boolean) => void;
+  getState: () => { listening: boolean; speaking: boolean; voiceOutputEnabled: boolean };
 }
 
 export interface VoiceButtonProps {
   onTranscript: (text: string) => void;
   lastAssistantMessage?: string;
   disabled?: boolean;
+  onStateChange?: (state: { listening: boolean; speaking: boolean; voiceOutputEnabled: boolean }) => void;
 }
 
 // GöÇGöÇ Icons GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
@@ -106,7 +110,7 @@ const CloseIcon = () => (
 // GöÇGöÇ Component GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
 const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function VoiceButton(
-  { onTranscript, lastAssistantMessage, disabled = false },
+  { onTranscript, lastAssistantMessage, disabled = false, onStateChange },
   ref
 ) {
   const [listening, setListening] = useState(false);
@@ -126,6 +130,10 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
   const levelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prevMessageRef = useRef<string | undefined>(undefined);
   const settingsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    onStateChange?.({ listening, speaking, voiceOutputEnabled });
+  }, [listening, onStateChange, speaking, voiceOutputEnabled]);
 
   // GöÇGöÇ Voice list GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
@@ -237,8 +245,6 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
     [availableVoices, selectedVoiceURI, rate, pitch]
   );
 
-  useImperativeHandle(ref, () => ({ speakText }), [speakText]);
-
   // GöÇGöÇ Auto-speak when assistant message changes GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
   useEffect(() => {
@@ -251,7 +257,7 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
 
   // GöÇGöÇ Listen toggle GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
-  const toggleListening = () => {
+  const toggleListening = useCallback(() => {
     if (notSupported) {
       setShowTooltip(true);
       setTimeout(() => setShowTooltip(false), 3000);
@@ -272,18 +278,31 @@ const VoiceButton = forwardRef<VoiceButtonHandle, VoiceButtonProps>(function Voi
         setListening(false);
       }
     }
-  };
+  }, [listening, notSupported]);
 
   // GöÇGöÇ Speaker toggle GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 
-  const toggleSpeaker = () => {
+  const toggleSpeaker = useCallback(() => {
     if (speaking) {
       window.speechSynthesis.cancel();
       setSpeaking(false);
     } else {
       setVoiceOutputEnabled((v) => !v);
     }
-  };
+  }, [speaking]);
+
+  useImperativeHandle(ref, () => ({
+    speakText,
+    toggleListening,
+    setVoiceOutputEnabled: (enabled: boolean) => {
+      setVoiceOutputEnabled(enabled);
+      if (!enabled && typeof window !== 'undefined') {
+        window.speechSynthesis.cancel();
+        setSpeaking(false);
+      }
+    },
+    getState: () => ({ listening, speaking, voiceOutputEnabled }),
+  }), [listening, speakText, speaking, toggleListening, voiceOutputEnabled]);
 
   // GöÇGöÇ Click-outside to close settings GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
 

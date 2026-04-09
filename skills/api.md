@@ -9,6 +9,7 @@
 | GET/POST/DELETE | `/api/chats` | Chat persistence |
 | GET | `/api/memory` | Memory/graph stats |
 | POST | `/api/telegram` | Telegram webhook |
+| GET/POST | `/api/telegram/setup` | Telegram shared-runtime setup and status |
 | POST | `/api/email` | Email webhook |
 
 ## Using http_request
@@ -58,7 +59,22 @@ export async function POST(req: Request) {
 
 ### Telegram
 ```
-telegram_provision("BOT_TOKEN", "https://your-domain.com")
+telegram_setup("BOT_TOKEN", "polling")
+telegram_setup("BOT_TOKEN", "webhook", "https://your-domain.com")
+```
+
+HTTP setup endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/telegram/setup \
+  -H "Content-Type: application/json" \
+  -d '{"token":"BOT_TOKEN","mode":"polling"}'
+```
+
+Status endpoint:
+
+```bash
+curl http://127.0.0.1:3000/api/telegram/setup
 ```
 
 ### Email (Mailgun)

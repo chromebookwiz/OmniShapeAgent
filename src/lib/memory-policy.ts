@@ -49,10 +49,23 @@ class MemoryPolicy {
       similarity: 1.25,
       geometrySimilarity: 1.55,
       baseScore: 0.95,
+      activationScore: 1.35,
       importance: 0.85,
       textHits: 0.7,
       overlapCoverage: 0.95,
       querySpecificity: 0.35,
+      taskSalience: 1.2,
+      goalResonance: 1.3,
+      novelty: 0.18,
+      consolidationLevel: 0.52,
+      stabilityScore: 0.72,
+      triggerHits: 0.8,
+      emotionWeight: 0.35,
+      recentInjectionPenalty: -1.25,
+      workingLayer: 1.1,
+      episodicLayer: 0.4,
+      semanticLayer: 0.15,
+      proceduralLayer: 0.65,
       acknowledgementRatio: 0.65,
       latticeSupport: 0.45,
       centrality: 0.2,
@@ -109,10 +122,23 @@ class MemoryPolicy {
       similarity: Math.max(0, candidate.similarity),
       geometrySimilarity: Math.max(0, candidate.geometrySimilarity),
       baseScore: Math.max(0, Math.min(1.5, candidate.score)),
+      activationScore: candidate.activationScore,
       importance: candidate.record.importance / 2,
       textHits: Math.min(1, candidate.textHits / 4),
       overlapCoverage,
       querySpecificity: specificity,
+      taskSalience: candidate.taskSalience,
+      goalResonance: candidate.goalResonance,
+      novelty: candidate.novelty,
+      consolidationLevel: candidate.consolidationLevel,
+      stabilityScore: candidate.stabilityScore,
+      triggerHits: Math.min(1, candidate.triggerHits / 3),
+      emotionWeight: candidate.emotionWeight,
+      recentInjectionPenalty: candidate.recentInjectionPenalty,
+      workingLayer: candidate.cognitiveLayer === 'working' ? 1 : 0,
+      episodicLayer: candidate.cognitiveLayer === 'episodic' ? 1 : 0,
+      semanticLayer: candidate.cognitiveLayer === 'semantic' ? 1 : 0,
+      proceduralLayer: candidate.cognitiveLayer === 'procedural' ? 1 : 0,
       acknowledgementRatio: candidate.acknowledgementRatio,
       latticeSupport: Math.min(1, candidate.latticeSupport),
       centrality: Math.min(1, candidate.centrality * 4),
@@ -146,22 +172,27 @@ class MemoryPolicy {
     return this.sigmoid(score);
   }
 
-  select(query: string, candidates: MemoryInjectionCandidate[], maxCount = 6): MemoryInjectionDecision[] {
+  select(query: string, candidates: MemoryInjectionCandidate[], maxCount = 4): MemoryInjectionDecision[] {
     const ranked = candidates
       .map((candidate) => ({ ...candidate, decisionScore: this.scoreCandidate(query, candidate) }))
       .sort((a, b) => b.decisionScore - a.decisionScore);
 
     const selected: MemoryInjectionDecision[] = [];
     const seenTags = new Set<string>();
+    const layerCounts = { working: 0, episodic: 0, semantic: 0, procedural: 0 };
+    const layerCaps = { working: 3, episodic: 2, semantic: 2, procedural: 2 };
 
     for (const candidate of ranked) {
       if (candidate.decisionScore < this.state.minScore) continue;
       if (candidate.keywordOverlap.length === 0 && candidate.similarity < 0.45 && candidate.geometrySimilarity < 0.55 && candidate.source !== 'hybrid' && candidate.source !== 'geometric') continue;
+      if (candidate.activationScore < 0.4 && candidate.goalResonance < 0.32) continue;
+      if (layerCounts[candidate.cognitiveLayer] >= layerCaps[candidate.cognitiveLayer]) continue;
       const tags = candidate.record.metadata.tags ?? [];
       const overlapPenalty = tags.filter((tag) => seenTags.has(tag)).length * DIVERSITY_PENALTY;
       const adjustedScore = candidate.decisionScore - overlapPenalty;
       if (adjustedScore < this.state.minScore) continue;
       selected.push({ ...candidate, decisionScore: adjustedScore });
+      layerCounts[candidate.cognitiveLayer] += 1;
       tags.forEach((tag) => seenTags.add(tag));
       if (selected.length >= maxCount) break;
     }
@@ -230,10 +261,23 @@ class MemoryPolicy {
       similarity: 1.25,
       geometrySimilarity: 1.55,
       baseScore: 0.95,
+      activationScore: 1.35,
       importance: 0.85,
       textHits: 0.7,
       overlapCoverage: 0.95,
       querySpecificity: 0.35,
+      taskSalience: 1.2,
+      goalResonance: 1.3,
+      novelty: 0.18,
+      consolidationLevel: 0.52,
+      stabilityScore: 0.72,
+      triggerHits: 0.8,
+      emotionWeight: 0.35,
+      recentInjectionPenalty: -1.25,
+      workingLayer: 1.1,
+      episodicLayer: 0.4,
+      semanticLayer: 0.15,
+      proceduralLayer: 0.65,
       acknowledgementRatio: 0.65,
       latticeSupport: 0.45,
       centrality: 0.2,

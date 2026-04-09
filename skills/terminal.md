@@ -1,34 +1,11 @@
 # Terminal Mastery Skill
 
-## ShapeAgent CLI
+## Web Runtime Focus
 
-### Install to PATH
-```
-install_cli()                         # runs npm link, registers `shapagent`
-check_installed("shapagent")          # verify installation
-```
-
-### Usage after install
-```bash
-shapagent                             # interactive terminal session
-shapagent --run "explain package.json"
-shapagent --model "ollama:llama3" --run "task"
-echo "task" | shapagent              # pipe mode
-shapagent --server http://remote:3000 --run "task"
-```
-
-### CLI Commands (inside interactive session)
-| Command | Description |
-|---------|-------------|
-| `/model <name>` | Set primary model |
-| `/companion <name>` | Set companion for synergy |
-| `/mode parallel\|neural\|off` | Set synergy mode |
-| `/temp 0.7` | Set temperature |
-| `/memory` | Show memory stats |
-| `/tools` | List all tools |
-| `/save <name>` | Save conversation |
-| `/reset` | Clear history |
-| `/exit` | Quit |
+Use the Next.js web environment as the primary control surface for the agent.
+- Start the app with `npm run dev`
+- Build with `npm run build`
+- Run production locally with `npm run start`
 
 ## Essential Shell Patterns
 

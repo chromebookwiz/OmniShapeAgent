@@ -1,4 +1,4 @@
-// src/lib/tools/installer.ts — Package and CLI installation tools
+// src/lib/tools/installer.ts — Package and Python installation tools
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -33,6 +33,12 @@ export async function installNpm(pkg: string, global = false): Promise<string> {
 
 export async function installPip(pkg: string): Promise<string> {
   if (!pkg) return 'Package name required.';
+  const normalizedPackages = pkg
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (!normalizedPackages) return 'Package name required.';
 
   // Ensure the venv exists — create it if missing
   if (!fs.existsSync(VENV_DIR)) {
@@ -47,12 +53,12 @@ export async function installPip(pkg: string): Promise<string> {
 
   // Use venv pip when available, fall back to system pip
   const pipCmd = fs.existsSync(VENV_PIP)
-    ? `"${VENV_PIP}" install --upgrade ${pkg}`
-    : `pip install ${pkg}`;
+    ? `"${VENV_PIP}" install --upgrade ${normalizedPackages}`
+    : `pip install ${normalizedPackages}`;
 
   const result = await run(pipCmd, CWD, 180_000);
   if (result.startsWith('Error') && !fs.existsSync(VENV_PIP)) {
-    return await run(`pip3 install ${pkg}`, CWD, 180_000);
+    return await run(`pip3 install ${normalizedPackages}`, CWD, 180_000);
   }
   return result;
 }
@@ -86,37 +92,6 @@ export async function ensureTorch(): Promise<string> {
 export async function checkTorch(): Promise<string> {
   if (!fs.existsSync(VENV_PYTHON)) return 'venv not found.';
   return run(`"${VENV_PYTHON}" -c "import torch; print(torch.__version__)"`, CWD, 10_000);
-}
-
-export async function installCli(): Promise<string> {
-  // Ensure the bin script is executable
-  const binPath = path.join(CWD, 'bin', 'shapagent.js');
-  if (!fs.existsSync(binPath)) {
-    return `bin/shapagent.js not found. It should exist in the project root's bin/ directory.`;
-  }
-
-  // Mark executable on Unix
-  if (process.platform !== 'win32') {
-    try { fs.chmodSync(binPath, '755'); } catch {}
-  }
-
-  // npm link registers the bin entries in package.json globally
-  const linkResult = await run('npm link', CWD, 30_000);
-
-  // Verify
-  const whereCmd = process.platform === 'win32' ? 'where shapagent' : 'which shapagent';
-  const location = await run(whereCmd, CWD, 5_000);
-
-  return [
-    `CLI install result: ${linkResult}`,
-    `Location: ${location}`,
-    `Run 'shapagent' from any directory to start the terminal interface.`,
-    `Or: shapagent --run "your task"`,
-  ].join('\n');
-}
-
-export async function uninstallCli(): Promise<string> {
-  return run('npm unlink -g e8-agent', CWD, 30_000);
 }
 
 export async function checkInstalled(tool: string): Promise<string> {

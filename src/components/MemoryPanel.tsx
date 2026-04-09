@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import FloatingPanel from './FloatingPanel';
 
 interface MemoryRecord {
@@ -9,6 +9,11 @@ interface MemoryRecord {
   importance: number;
   accessCount: number;
   tags: string[];
+  cognitiveLayer?: 'working' | 'episodic' | 'semantic' | 'procedural';
+  taskSalience?: number;
+  emotion?: 'neutral' | 'focused' | 'curious' | 'urgent' | 'cautious' | 'confident' | 'frustrated' | 'satisfied';
+  triggerKeywords?: string[];
+  suppressedUntil?: number | null;
   source: string;
   topic?: string;
   createdAt: number;
@@ -29,6 +34,7 @@ interface MemoryStats {
   avgAcknowledgementRatio: number;
   avgLatticeDegree: number;
   staleUnacknowledged: number;
+  suppressedCount?: number;
 }
 
 interface MemoryPolicySummary {
@@ -74,6 +80,13 @@ function MemoryCard({
   onBoost: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const contentStyle: CSSProperties = {
+    overflow: expanded ? 'visible' : 'hidden',
+    display: expanded ? 'block' : '-webkit-box',
+    WebkitLineClamp: expanded ? undefined : 3,
+    WebkitBoxOrient: 'vertical',
+    whiteSpace: 'pre-wrap',
+  };
   // eslint-disable-next-line react-hooks/purity -- Date.now() is needed here to compute display age relative to record creation; this component intentionally shows a snapshot age on render
   const age = Date.now() - record.createdAt;
   const ageStr = age < 3600000
@@ -81,6 +94,7 @@ function MemoryCard({
     : age < 86400000
     ? `${Math.floor(age / 3600000)}h ago`
     : `${Math.floor(age / 86400000)}d ago`;
+  const isSuppressed = Boolean(record.suppressedUntil && record.suppressedUntil > record.createdAt + age);
 
   return (
     <div className="group border border-black/10 bg-white hover:border-black/30 transition-all p-3 rounded-lg">
@@ -89,8 +103,26 @@ function MemoryCard({
           <span className="text-[8px] font-black uppercase tracking-widest text-black/40 border border-black/20 px-1.5 py-0.5 rounded">
             {record.source}
           </span>
+          {record.cognitiveLayer && (
+            <span className="text-[8px] font-black uppercase tracking-widest text-black/40 border border-black/10 px-1.5 py-0.5 rounded bg-black/[0.03]">
+              {record.cognitiveLayer}
+            </span>
+          )}
           {record.searchType === 'semantic' && record.similarity !== undefined && (
             <span className="text-[8px] font-black text-black/40">{(record.similarity * 100).toFixed(0)}% sim</span>
+          )}
+          {typeof record.taskSalience === 'number' && (
+            <span className="text-[8px] font-black text-black/35">task {(record.taskSalience * 100).toFixed(0)}%</span>
+          )}
+          {record.emotion && record.emotion !== 'neutral' && (
+            <span className="text-[8px] font-black uppercase tracking-widest text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded bg-rose-50">
+              {record.emotion}
+            </span>
+          )}
+          {isSuppressed && (
+            <span className="text-[8px] font-black text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded bg-amber-50">
+              suppressed
+            </span>
           )}
           {record.tags.slice(0, 3).map(tag => (
             <span key={tag} className="text-[8px] bg-black/5 text-black/40 px-1.5 py-0.5 rounded font-black">
@@ -106,21 +138,22 @@ function MemoryCard({
       <p
         onClick={() => setExpanded(e => !e)}
         className="text-xs text-black/70 leading-relaxed cursor-pointer"
-        style={{
-          overflow: expanded ? 'visible' : 'hidden',
-          display: expanded ? 'block' : '-webkit-box',
-          WebkitLineClamp: expanded ? undefined : 3,
-          WebkitBoxOrient: 'vertical' as any,
-          whiteSpace: 'pre-wrap',
-        }}
+        style={contentStyle}
       >
         {record.content}
       </p>
 
       <div className="flex items-center justify-between mt-2">
-        <span className="text-[8px] text-black/25 font-black">
-          imp {record.importance.toFixed(2)} · {record.accessCount}× accessed
-        </span>
+        <div className="flex flex-col gap-1">
+          <span className="text-[8px] text-black/25 font-black">
+            imp {record.importance.toFixed(2)} · {record.accessCount}× accessed
+          </span>
+          {record.triggerKeywords && record.triggerKeywords.length > 0 && (
+            <span className="text-[8px] text-black/30 font-black">
+              triggers {record.triggerKeywords.slice(0, 4).join(' · ')}
+            </span>
+          )}
+        </div>
         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={() => onBoost(record.id)}
@@ -151,6 +184,8 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
   const [addContent, setAddContent] = useState('');
   const [addTags, setAddTags] = useState('');
   const [addImportance, setAddImportance] = useState(1.0);
+  const [addEmotion, setAddEmotion] = useState<MemoryRecord['emotion']>('focused');
+  const [addTriggerKeywords, setAddTriggerKeywords] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [addStatus, setAddStatus] = useState('');
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -250,6 +285,8 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
           content: addContent.trim(),
           importance: addImportance,
           tags: addTags.split(',').map(t => t.trim()).filter(Boolean),
+          emotion: addEmotion,
+          triggerKeywords: addTriggerKeywords.split(',').map(t => t.trim().toLowerCase()).filter(Boolean),
           source: 'user',
         }),
       });
@@ -258,6 +295,8 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
       setAddContent('');
       setAddTags('');
       setAddImportance(1.0);
+      setAddEmotion('focused');
+      setAddTriggerKeywords('');
       setTimeout(() => { setShowAddForm(false); setAddStatus(''); }, 1200);
       loadRecords(sortMode, query || undefined);
       loadStats();
@@ -306,6 +345,7 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
             { label: 'Avg Hits', value: stats.avgAccessCount.toFixed(1) },
             { label: 'Ack', value: `${Math.round(stats.avgAcknowledgementRatio * 100)}%` },
             { label: 'Lattice', value: stats.avgLatticeDegree.toFixed(1) },
+            { label: 'Suppressed', value: String(stats.suppressedCount ?? 0) },
             { label: 'Entities', value: graphStats?.entities?.toLocaleString() ?? '–' },
             { label: 'Relations', value: graphStats?.relations?.toLocaleString() ?? '–' },
           ].map(({ label, value }) => (
@@ -382,6 +422,26 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
               placeholder="tags, comma, separated"
               className="flex-1 bg-white border border-black/30 rounded-lg px-3 py-1.5 text-xs font-black outline-none focus:border-black placeholder:text-black/20"
             />
+            <input
+              value={addTriggerKeywords}
+              onChange={e => setAddTriggerKeywords(e.target.value)}
+              placeholder="trigger keywords"
+              className="flex-1 bg-white border border-black/30 rounded-lg px-3 py-1.5 text-xs font-black outline-none focus:border-black placeholder:text-black/20"
+            />
+            <select
+              value={addEmotion}
+              onChange={e => setAddEmotion(e.target.value as MemoryRecord['emotion'])}
+              className="bg-white border border-black/30 rounded-lg px-3 py-1.5 text-xs font-black outline-none focus:border-black"
+            >
+              <option value="focused">focused</option>
+              <option value="curious">curious</option>
+              <option value="urgent">urgent</option>
+              <option value="cautious">cautious</option>
+              <option value="confident">confident</option>
+              <option value="satisfied">satisfied</option>
+              <option value="frustrated">frustrated</option>
+              <option value="neutral">neutral</option>
+            </select>
             <div className="flex flex-col items-center gap-0.5 min-w-[70px]">
               <span className="text-[8px] font-black text-black/30 uppercase tracking-widest">imp {addImportance.toFixed(1)}</span>
               <input

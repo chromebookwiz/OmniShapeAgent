@@ -139,6 +139,27 @@ export default function PhysicsSimulator({
   const commandsRef = useRef<PhysicsCmd[]>(commands);
   useEffect(() => { commandsRef.current = commands; }, [commands]);
 
+  const removeObject = useCallback((objectId: string) => {
+    const s = stateRef.current;
+    const existing = s.objects.get(objectId);
+    if (!existing || !s.scene) return;
+    s.scene.remove(existing.mesh);
+    existing.mesh.geometry.dispose();
+    const material = existing.mesh.material;
+    if (Array.isArray(material)) {
+      for (const entry of material) entry.dispose();
+    } else {
+      material.dispose();
+    }
+    s.objects.delete(objectId);
+    for (const [springId, spring] of Array.from(s.springs.entries())) {
+      if (spring.a === objectId || spring.b === objectId) s.springs.delete(springId);
+    }
+    for (const [hingeId, hinge] of Array.from(s.hinges.entries())) {
+      if (hinge.a === objectId || hinge.b === objectId) s.hinges.delete(hingeId);
+    }
+  }, []);
+
   const updateCamera = useCallback(() => {
     const s = stateRef.current;
     if (!s.camera) return;
@@ -293,12 +314,7 @@ export default function PhysicsSimulator({
           mesh.receiveShadow = true;
 
           // Remove old object with same id
-          const existing = s.objects.get(cmd.objId!);
-          if (existing) {
-            s.scene.remove(existing.mesh);
-            existing.mesh.geometry.dispose();
-            (existing.mesh.material as import("three").Material).dispose();
-          }
+          if (cmd.objId) removeObject(cmd.objId);
 
           s.scene.add(mesh);
           if (cmd.objId) {
@@ -486,13 +502,8 @@ export default function PhysicsSimulator({
 
         // ── reset ─────────────────────────────────────────────────────────
         case "reset": {
-          for (const obj of s.objects.values()) {
-            s.scene.remove(obj.mesh);
-            obj.mesh.geometry.dispose();
-            (obj.mesh.material as import("three").Material).dispose();
-          }
-          s.objects.clear();
-          s.springs.clear();
+          if (!cmd.objId) break;
+          removeObject(cmd.objId);
           s.hinges.clear();
           s.trainingLog = [];
           s.gravity.set(0, -9.81, 0);
@@ -569,6 +580,15 @@ export default function PhysicsSimulator({
         // ── spawn_creature ────────────────────────────────────────────────
         case "spawn_creature": {
           if (!cmd.bodyPlan || !cmd.creatureId) break;
+          const creaturePrefix = `${cmd.creatureId}_`;
+          for (const existingId of Array.from(s.objects.keys())) {
+            if (existingId.startsWith(creaturePrefix)) removeObject(existingId);
+          }
+          for (const hingeId of Array.from(s.hinges.keys())) {
+            if (hingeId.startsWith(`${cmd.creatureId}_hinge_`)) s.hinges.delete(hingeId);
+          }
+
+          const partIds = new Set(cmd.bodyPlan.map((part) => part.id));
           for (const part of cmd.bodyPlan) {
             const partId = `${cmd.creatureId}_${part.id}`;
             const color = part.color ?? "#c0d0ff";
@@ -602,20 +622,25 @@ export default function PhysicsSimulator({
               mass, radius, restitution: 0.2, friction: 0.7,
               sleeping: false, sleepTimer: 0,
             });
-            // Add hinges to parents
-            if (part.hinges) {
-              for (const h of part.hinges) {
-                const hingeId = `${cmd.creatureId}_hinge_${part.id}_${h.parentId}`;
-                const parentPartId = `${cmd.creatureId}_${h.parentId}`;
-                s.hinges.set(hingeId, {
-                  id: hingeId, a: parentPartId, b: partId,
-                  axis: new THREE.Vector3(...h.axis).normalize(),
-                  anchorA: new THREE.Vector3(...h.anchorA),
-                  anchorB: new THREE.Vector3(...h.anchorB),
-                  angle: 0, minAngle: -Math.PI * 0.6, maxAngle: Math.PI * 0.6,
-                  motorSpeed: 0, motorForce: 0,
-                });
+          }
+          for (const part of cmd.bodyPlan) {
+            if (!part.hinges) continue;
+            const partId = `${cmd.creatureId}_${part.id}`;
+            for (const h of part.hinges) {
+              if (!partIds.has(h.parentId)) {
+                console.warn("[PhysicsSimulator] spawn_creature hinge skipped: missing parent", h.parentId, "for", part.id);
+                continue;
               }
+              const hingeId = `${cmd.creatureId}_hinge_${part.id}_${h.parentId}`;
+              const parentPartId = `${cmd.creatureId}_${h.parentId}`;
+              s.hinges.set(hingeId, {
+                id: hingeId, a: parentPartId, b: partId,
+                axis: new THREE.Vector3(...h.axis).normalize(),
+                anchorA: new THREE.Vector3(...h.anchorA),
+                anchorB: new THREE.Vector3(...h.anchorB),
+                angle: 0, minAngle: -Math.PI * 0.6, maxAngle: Math.PI * 0.6,
+                motorSpeed: 0, motorForce: 0,
+              });
             }
           }
           shouldPublishState = true;
@@ -1138,6 +1163,31 @@ export default function PhysicsSimulator({
         }}
       >
         0 obj  — fps
+      </div>
+      <div style={{
+        position: "absolute", top: 8, right: 10,
+        width: 270,
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid rgba(180,200,255,0.14)",
+        background: "rgba(7,10,18,0.74)",
+        color: "rgba(220,232,255,0.88)",
+        fontSize: 10,
+        lineHeight: 1.45,
+        fontFamily: "monospace",
+        pointerEvents: "none",
+        userSelect: "none",
+      }}>
+        <div style={{ fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6, color: "rgba(186,210,255,0.95)" }}>
+          Machine Recipe
+        </div>
+        <div>1. Create a fixed anchor or chassis.</div>
+        <div>2. Spawn moving parts beside it.</div>
+        <div>3. Connect them with a hinge.</div>
+        <div>4. Drive the hinge with a motor, then inspect state.</div>
+        <div style={{ marginTop: 8, color: "rgba(194,214,255,0.72)" }}>
+          Example: axle fixed box → wheel torus → add_hinge(h1) → set_motor(h1, 3, 50) → get_state.
+        </div>
       </div>
       <div style={{
         position: "absolute", bottom: 8, right: 10,

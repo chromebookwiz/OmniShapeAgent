@@ -6,6 +6,7 @@ import os from 'os';
 import { takeScreenshot } from './computer';
 import { vectorStore } from '../vector-store';
 import { generateEmbedding } from '../embeddings';
+import { ROOT } from '../paths-core';
 
 const _OLLAMA_BASE = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434')
   .replace(/\/$/, '')
@@ -13,7 +14,7 @@ const _OLLAMA_BASE = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434')
 const OLLAMA_CHAT_URL = `${_OLLAMA_BASE}/api/chat`;
 
 function readImageAsBase64(imagePath: string): string {
-  const absPath = path.resolve(process.cwd(), imagePath);
+  const absPath = path.isAbsolute(imagePath) ? imagePath : path.join(ROOT, imagePath);
   if (!fs.existsSync(absPath)) {
     // Try as absolute path directly
     if (fs.existsSync(imagePath)) return fs.readFileSync(imagePath).toString('base64');

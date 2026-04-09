@@ -97,6 +97,41 @@ class MemoryConsolidator {
     return { shapeKeys, scripts, audits };
   }
 
+  private clusterLayer(cluster: MemoryRecord[]): 'semantic' | 'procedural' {
+    const tagCounts = new Map<string, number>();
+    let proceduralVotes = 0;
+    for (const record of cluster) {
+      for (const tag of record.metadata.tags ?? []) {
+        const normalized = tag.toLowerCase();
+        tagCounts.set(normalized, (tagCounts.get(normalized) ?? 0) + 1);
+      }
+      if ((record.metadata.cognitiveLayer ?? 'semantic') === 'procedural') proceduralVotes++;
+    }
+    const proceduralSignals = ['strategy', 'procedure', 'workflow', 'playbook', 'howto']
+      .reduce((sum, tag) => sum + (tagCounts.get(tag) ?? 0), 0);
+    return proceduralVotes >= Math.ceil(cluster.length / 2) || proceduralSignals >= 2 ? 'procedural' : 'semantic';
+  }
+
+  private clusterSupport(cluster: MemoryRecord[]): number {
+    const aggregate = cluster.reduce((sum, record) => {
+      const ackRatio = record.lifecycle.injectionCount > 0
+        ? record.lifecycle.acknowledgedCount / record.lifecycle.injectionCount
+        : 0.5;
+      return sum + ackRatio + (record.consolidation?.support ?? 0.28);
+    }, 0);
+    return Math.min(1, aggregate / (cluster.length * 2));
+  }
+
+  private clusterVolatility(cluster: MemoryRecord[]): number {
+    const aggregate = cluster.reduce((sum, record) => {
+      const rejectionRatio = record.lifecycle.injectionCount > 0
+        ? record.lifecycle.rejectedCount / record.lifecycle.injectionCount
+        : 0;
+      return sum + Math.max(record.consolidation?.volatility ?? 0.22, rejectionRatio);
+    }, 0);
+    return Math.min(1, aggregate / cluster.length);
+  }
+
   /**
    * Start automatic periodic consolidation.
    */
@@ -189,6 +224,17 @@ class MemoryConsolidator {
             source: 'system',
             topic: 'consolidated-olr',
             tags: Array.from(new Set(['synthesis', 'consolidated', 'olr', ...commonTags])).slice(0, 10),
+            cognitiveLayer: this.clusterLayer(cluster),
+            taskSalience: Math.min(1, 0.48 + this.clusterSupport(cluster) * 0.42),
+          },
+          consolidation: {
+            level: Math.min(1, 0.58 + this.clusterSupport(cluster) * 0.3),
+            support: this.clusterSupport(cluster),
+            volatility: Math.max(0.05, this.clusterVolatility(cluster) * 0.6),
+            abstraction: this.clusterLayer(cluster),
+            timesConsolidated: 1,
+            lastConsolidatedAt: Date.now(),
+            sourceMemoryIds: cluster.map((record) => record.id).slice(0, 24),
           },
         });
         summaryCount++;

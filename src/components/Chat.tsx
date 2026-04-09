@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import VoiceButton, { VoiceButtonHandle } from './VoiceButton';
 import HallOfFame from './HallOfFame';
 import MemoryPanel from './MemoryPanel';
@@ -14,7 +14,7 @@ type Message = {
   content: string;
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision autonomous reasoning system. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. All geometry GÇö and all higher reasoning GÇö emerges from the simplest structure: the line.`;
+const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision autonomous reasoning system. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. All geometry - and all higher reasoning - emerges from the simplest structure: the line.`;
 
 
 const Icons = {
@@ -130,7 +130,7 @@ const Icons = {
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   ),
-  // G¡ò Autonomous mode GÇö solid circle when active, ring when off
+  // Autonomous mode: solid circle when active, ring when off
   Autonomous: ({ active, running }: { active: boolean; running: boolean }) => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
       stroke={active ? (running ? '#22c55e' : '#3b82f6') : 'currentColor'}>
@@ -144,9 +144,120 @@ const Icons = {
       <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
     </svg>
   ),
+  More: () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <circle cx="5" cy="12" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <circle cx="19" cy="12" r="2" />
+    </svg>
+  ),
+  Heartbeat: () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12h4l2.5-5 3 10 2.5-5H21" />
+    </svg>
+  ),
+  Mic: () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" />
+      <path d="M19 11a7 7 0 0 1-14 0" />
+      <path d="M12 18v3" />
+      <path d="M8 21h8" />
+    </svg>
+  ),
+  Speaker: () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 5 6 9H3v6h3l5 4z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+      <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </svg>
+  ),
 };
 
-// GöÇGöÇ ProviderModelPicker GÇö reusable model config panel for a single provider GöÇGöÇ
+type CommandDefinition = {
+  command: string;
+  usage: string;
+  description: string;
+  icon: keyof typeof Icons;
+  section: 'modes' | 'more' | 'system';
+  persistent?: boolean;
+  aliases?: string[];
+  autocomplete?: string;
+};
+
+const HEARTBEAT_PROMPT = '[HEARTBEAT] Review the active task, recent progress, and current memory state. Continue unfinished work if there is a clear next step, otherwise report only meaningful deltas or that the system is steady.';
+
+const COMMAND_DEFINITIONS: CommandDefinition[] = [
+  { command: 'commands', usage: '/commands', description: 'Show the available local commands.', icon: 'More', section: 'system', aliases: ['help'] },
+  { command: 'settings', usage: '/settings', description: 'Open model and tool settings.', icon: 'Gear', section: 'system' },
+  { command: 'control', usage: '/control', description: 'Open or close the control panel.', icon: 'More', section: 'system', aliases: ['menu', 'panel'] },
+  { command: 'parallel', usage: '/parallel on', description: 'Keep parallel discourse mode active.', icon: 'Synergy', section: 'modes', persistent: true, autocomplete: '/parallel on' },
+  { command: 'autonomous', usage: '/autonomous on', description: 'Let the agent keep working until it stops itself.', icon: 'Autonomous', section: 'modes', persistent: true, autocomplete: '/autonomous on' },
+  { command: 'heartbeat', usage: '/heartbeat 15', description: 'Enable scheduled heartbeat turns at a minute interval.', icon: 'Heartbeat', section: 'modes', persistent: true, autocomplete: '/heartbeat 15' },
+  { command: 'doctor', usage: '/doctor', description: 'Run a full runtime and tool diagnosis.', icon: 'Gear', section: 'more' },
+  { command: 'observe', usage: '/observe', description: 'Snapshot current system state and memory health.', icon: 'Memory', section: 'more' },
+  { command: 'reflect', usage: '/reflect', description: 'Trigger a focused reflection loop on the current task.', icon: 'Autonomous', section: 'more' },
+  { command: 'summarize', usage: '/summarize', description: 'Summarize progress, blockers, and next steps.', icon: 'Bubble', section: 'more' },
+  { command: 'skill', usage: '/skill debugging', description: 'Read and apply a named skill file.', icon: 'Moltbook', section: 'more', autocomplete: '/skill debugging' },
+  { command: 'discord', usage: '/discord', description: 'Run a Discord workflow through tools and memory.', icon: 'Bubble', section: 'more' },
+  { command: 'instagram', usage: '/instagram', description: 'Run an Instagram workflow through tools and memory.', icon: 'Instagram', section: 'more' },
+  { command: 'memory-prune', usage: '/memory-prune', description: 'Review stale memories and prune or suppress what is unhelpful.', icon: 'Memory', section: 'more', aliases: ['prune'] },
+  { command: 'history', usage: '/history', description: 'Open saved chats.', icon: 'Bubble', section: 'more', aliases: ['saved'] },
+  { command: 'memory', usage: '/memory', description: 'Open the memory browser.', icon: 'Memory', section: 'more' },
+  { command: 'hall', usage: '/hall', description: 'Open the hall of fame.', icon: 'Trophy', section: 'more', aliases: ['halloffame'] },
+  { command: 'wallet', usage: '/wallet', description: 'Open the crypto wallet.', icon: 'Bitcoin', section: 'more' },
+  { command: 'moltbook', usage: '/moltbook', description: 'Open Moltbook tools and prompts.', icon: 'Moltbook', section: 'more' },
+  { command: 'physics', usage: '/physics', description: 'Open the physics simulator.', icon: 'Physics', section: 'more' },
+  { command: 'voice', usage: '/voice input', description: 'Toggle microphone transcription.', icon: 'Mic', section: 'more', autocomplete: '/voice input' },
+  { command: 'voice-output', usage: '/voice output on', description: 'Enable automatic spoken responses.', icon: 'Speaker', section: 'more', autocomplete: '/voice output on' },
+  { command: 'toolaudit', usage: '/toolaudit', description: 'Ask the agent runtime to audit core tools.', icon: 'Gear', section: 'more' },
+  { command: 'new', usage: '/new', description: 'Start a new chat session.', icon: 'Refresh', section: 'system' },
+];
+
+function ActionMenuButton({
+  icon,
+  label,
+  description,
+  command,
+  active = false,
+  children,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  description: string;
+  command?: string;
+  active?: boolean;
+  children?: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={description}
+      className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors ${
+        active
+          ? 'border-black bg-black text-[#FDFCF0]'
+          : 'border-black/10 bg-white text-black hover:border-black/30 hover:bg-black/5'
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <span className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border ${active ? 'border-white/20 bg-white/10 text-[#FDFCF0]' : 'border-black/10 bg-black/[0.03] text-black/65'}`}>
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center justify-between gap-3">
+            <span className="text-[11px] font-black uppercase tracking-[0.18em]">{label}</span>
+            {command && <span className={`text-[9px] font-black uppercase tracking-[0.14em] ${active ? 'text-[#FDFCF0]/65' : 'text-black/30'}`}>{command}</span>}
+          </span>
+          <span className={`mt-1 block text-[11px] leading-relaxed ${active ? 'text-[#FDFCF0]/70' : 'text-black/45'}`}>{description}</span>
+          {children}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+// ProviderModelPicker - reusable model config panel for a single provider
 
 interface ProviderModelPickerProps {
   provider: 'ollama' | 'vllm' | 'openrouter';
@@ -185,10 +296,10 @@ function ProviderModelPicker({
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Model {ollamaStatus === 'ok' ? `-+ ${ollamaModels.length}` : ollamaStatus === 'no-models' ? '-+ none' : ''}
+              Model {ollamaStatus === 'ok' ? ` - ${ollamaModels.length}` : ollamaStatus === 'no-models' ? ' - none' : ''}
             </label>
             {ollamaModels.length === 0 ? (
-              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models GÇö is Ollama running?</div>
+              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models - is Ollama running?</div>
             ) : (
               <select value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)}
                 className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none appearance-none cursor-pointer hover:border-black">
@@ -204,7 +315,7 @@ function ProviderModelPicker({
         <>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Cluster Endpoint {vllmStatus === 'ok' ? `-+ ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? '-+ none' : ''}
+              Cluster Endpoint {vllmStatus === 'ok' ? ` - ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? ' - none' : ''}
             </label>
             <div className="flex gap-1">
               <input value={vllmUrl} onChange={(e) => setVllmUrl(e.target.value)}
@@ -218,7 +329,7 @@ function ProviderModelPicker({
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">Model</label>
             {vllmModels.length === 0 ? (
-              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models GÇö check URL and Refresh</div>
+              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">No models - check URL and Refresh</div>
             ) : (
               <select value={vllmModel} onChange={(e) => setVllmModel(e.target.value)}
                 className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none appearance-none cursor-pointer hover:border-black">
@@ -244,17 +355,17 @@ function ProviderModelPicker({
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Model {openrouterStatus === 'ok' ? `-+ ${openrouterModels.length}` : ''}
+              Model {openrouterStatus === 'ok' ? ` - ${openrouterModels.length}` : ''}
             </label>
             {openrouterModels.length === 0 ? (
               <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
-                {openrouterApiKey ? 'No models GÇö press Refresh' : 'Enter API key first'}
+                {openrouterApiKey ? 'No models - press Refresh' : 'Enter API key first'}
               </div>
             ) : (
               <select value={openrouterModel} onChange={(e) => setOpenrouterModel(e.target.value)}
                 className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none appearance-none cursor-pointer hover:border-black">
                 <option value="">DETACHED</option>
-                <option value="openrouter:openrouter/auto">Auto GÇö Best Available</option>
+                <option value="openrouter:openrouter/auto">Auto - Best Available</option>
                 {openrouterModels.map(m => <option key={m.id} value={`openrouter:${m.id}`}>{m.name}</option>)}
               </select>
             )}
@@ -283,7 +394,7 @@ export default function Chat() {
   const [secondaryProvider, setSecondaryProvider] = useState<'ollama' | 'vllm' | 'openrouter'>('ollama');
   const [savedChats, setSavedChats] = useState<Array<{ id: string; name: string; createdAt: string; updatedAt: string; summary: string | null; messageCount: number }>>([]);
   const [chatSummaries, setChatSummaries] = useState<Record<string, string>>({});
-  // Tracks the persisted file ID for the current conversation GÇö set after first save
+  // Tracks the persisted file ID for the current conversation - set after first save
   const currentChatIdRef = useRef<string | null>(null);
   const [chatName, setChatName] = useState('My Chat');
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
@@ -295,13 +406,14 @@ export default function Chat() {
   const [isParallelRunning, setIsParallelRunning] = useState(false);
   const [showSavedPanel, setShowSavedPanel] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [connStatus, setConnStatus] = useState<'testing' | 'ok' | 'fail'>('testing');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'ok' | 'fail' | 'no-models'>('unknown');
   const [vllmStatus, setVllmStatus] = useState<'unknown' | 'ok' | 'fail' | 'no-models'>('unknown');
   const [openrouterStatus, setOpenrouterStatus] = useState<'unknown' | 'ok' | 'fail' | 'no-models'>('unknown');
   const [vllmProbeResult, setVllmProbeResult] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
   const [showHallOfFame, setShowHallOfFame] = useState(false);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
   const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set());
@@ -318,6 +430,9 @@ export default function Chat() {
   const [toolCallCount, setToolCallCount] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
   const voiceRef = useRef<VoiceButtonHandle>(null);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+  const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const [voiceControlState, setVoiceControlState] = useState({ listening: false, speaking: false, voiceOutputEnabled: false });
   // File attachments
   type Attachment = { name: string; type: string; isImage?: boolean; dataUrl?: string; text?: string; truncated?: boolean };
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -343,12 +458,23 @@ export default function Chat() {
   const [showTerminalLog, setShowTerminalLog] = useState(false);
   // Crypto wallet
   const [showCryptoWallet, setShowCryptoWallet] = useState(false);
-  // Instagram mode
-  const [instagramMode, setInstagramMode] = useState(false);
   // Moltbook panel
   const [showMoltbook, setShowMoltbook] = useState(false);
-  // GöÇGöÇ Autonomous Mode GöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇGöÇ
+  const [heartbeatMode, setHeartbeatMode] = useState(false);
+  const [heartbeatIntervalMinutes, setHeartbeatIntervalMinutes] = useState<number>(() => {
+    try {
+      const stored = parseInt(localStorage.getItem('sa_heartbeat_interval') ?? '15', 10);
+      return Number.isFinite(stored) ? Math.max(1, Math.min(240, stored)) : 15;
+    } catch {
+      return 15;
+    }
+  });
+  // Autonomous mode
   const [autonomousMode, setAutonomousMode] = useState(false);
+  const physicsModeActive = useMemo(
+    () => windowManager.windows.some((windowState) => windowState.contentType === 'physics' && !windowState.minimized),
+    [windowManager.windows],
+  );
   const isAutoRunningRef = useRef(false);
   const autoStopRequestedRef = useRef(false);        // set by stop_agent event
   const pendingVisionSnapshotRef = useRef<string | null>(null); // base64 from vision_self_check
@@ -359,19 +485,18 @@ export default function Chat() {
   const [mediaUrls, setMediaUrls] = useState<MediaUrlAttachment[]>([]);
   const [showMediaUrlInput, setShowMediaUrlInput] = useState(false);
   const [mediaUrlDraft, setMediaUrlDraft] = useState('');
-  // Stable ref to handleSend GÇö lets the parallel-mode useEffect call it without stale closures
-  const handleSendRef = useRef<(() => void) | null>(null);
+  // Stable ref to handleSend - lets the parallel-mode useEffect call it without stale closures
+  const handleSendRef = useRef<((overrides?: { msg?: string; images?: { name: string; dataUrl: string }[] }) => Promise<void>) | null>(null);
   // Track last assistant message for voice auto-speak
   const lastAssistantMsg = messages.filter(m => m.role === 'assistant').at(-1)?.content ?? '';
 
   useEffect(() => {
-    setMounted(true);
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
   // Generate a one-sentence summary by sending the first few exchanges to the LLM.
   // Called only ONCE per conversation (on first save). Never regenerated.
-  const generateSummary = async (msgs: Message[]): Promise<string> => {
+  const generateSummary = useCallback(async (msgs: Message[]): Promise<string> => {
     try {
       const userFirst = msgs.find(m => m.role === 'user')?.content ?? '';
       const assistFirst = (msgs.find(m => m.role === 'assistant')?.content ?? '')
@@ -381,7 +506,7 @@ export default function Chat() {
         .replace(/\[TOOL\][^\n]*/g, '')
         .trim();
       if (!userFirst) return '';
-      // Use just the first exchange for speed GÇö no need for the full history
+      // Use just the first exchange for speed - no need for the full history
       const prompt = `Write one short sentence (max 12 words) summarising this conversation.\nUser: ${userFirst.slice(0, 300)}\nAssistant: ${assistFirst.slice(0, 300)}`;
       const activeModel = primaryProvider === 'ollama' ? ollamaModel : primaryProvider === 'openrouter' ? openrouterModel : vllmModel;
       const res = await fetch('/api/agent', {
@@ -395,9 +520,9 @@ export default function Chat() {
     } catch {
       return msgs.find(m => m.role === 'user')?.content?.slice(0, 60) ?? '';
     }
-  };
+  }, [ollamaModel, openrouterModel, primaryProvider, vllmModel]);
 
-  const testConnection = async () => {
+  const testConnection = useCallback(async () => {
     setConnStatus('testing');
     setConnectionError(null);
     setOllamaStatus('unknown');
@@ -443,10 +568,10 @@ export default function Chat() {
         if (!primaryOk) {
           setConnectionError(
             primaryProvider === 'vllm'
-              ? `vLLM: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models GÇö switch provider.' : ''}`
+                ? `vLLM: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models - switch provider.' : ''}`
               : primaryProvider === 'openrouter'
               ? `OpenRouter: no models found. Check your API key in settings.`
-              : `Ollama: no models found at ${ollamaUrl}. ${vllm.length > 0 ? 'vLLM has models GÇö switch provider.' : ''}`
+                : `Ollama: no models found at ${ollamaUrl}. ${vllm.length > 0 ? 'vLLM has models - switch provider.' : ''}`
           );
         } else {
           setConnectionError(null);
@@ -455,15 +580,15 @@ export default function Chat() {
         setConnStatus('fail');
         setConnectionError(`No models found. Ollama: ${ollamaUrl} | vLLM: ${vllmUrl || '(not set)'} | OpenRouter: ${openrouterApiKey ? 'key set but no models' : 'no key'}`);
       }
-    } catch (err) {
+    } catch {
       setConnStatus('fail');
       setConnectionError('Connection failed. Check network.');
     }
-  };
+  }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmModel, vllmUrl]);
 
   const runVllmProbe = async () => {
     if (!vllmUrl) return;
-    setVllmProbeResult('Probing GÇö testing all endpoint paths...');
+    setVllmProbeResult('Probing - testing all endpoint paths...');
     try {
       const res = await fetch(`/api/vllm-probe?url=${encodeURIComponent(vllmUrl)}`);
       const data = await res.json();
@@ -472,7 +597,7 @@ export default function Chat() {
         '',
         ...(data.steps || []),
         '',
-        data.workingChatUrl ? `GåÆ Working URL: ${data.workingChatUrl}` : 'GåÆ No working endpoint found',
+        data.workingChatUrl ? `Working URL: ${data.workingChatUrl}` : 'No working endpoint found',
       ];
       setVllmProbeResult(lines.join('\n'));
       // If probe found a working URL and we have models, update the vllmModel with correct URL
@@ -492,11 +617,6 @@ export default function Chat() {
     }
   };
 
-  useEffect(() => {
-    testConnection();
-    fetchSavedChats();
-  }, []);
-
   // Persist OpenRouter API key to localStorage
   useEffect(() => {
     try { localStorage.setItem('sa_openrouter_key', openrouterApiKey); } catch {}
@@ -507,6 +627,14 @@ export default function Chat() {
   }, [autoApproveTerminal]);
 
   useEffect(() => {
+    try { localStorage.removeItem('sa_heartbeat_mode'); } catch {}
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_heartbeat_interval', String(heartbeatIntervalMinutes)); } catch {}
+  }, [heartbeatIntervalMinutes]);
+
+  useEffect(() => {
     try { localStorage.setItem('sa_ctx_ollama', String(ollamaContextWindow)); } catch {}
   }, [ollamaContextWindow]);
   useEffect(() => {
@@ -515,6 +643,15 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem('sa_ctx_openrouter', String(openrouterContextWindow)); } catch {}
   }, [openrouterContextWindow]);
+
+  useEffect(() => {
+    if (!heartbeatMode || heartbeatIntervalMinutes <= 0) return;
+    if (isLoading || connStatus !== 'ok' || messages.length === 0 || input.trim() || pendingApprovals.length > 0) return;
+    const timer = setTimeout(() => {
+      handleSendRef.current?.({ msg: HEARTBEAT_PROMPT });
+    }, heartbeatIntervalMinutes * 60_000);
+    return () => clearTimeout(timer);
+  }, [connStatus, heartbeatIntervalMinutes, heartbeatMode, input, isLoading, messages.length, pendingApprovals.length]);
 
   // Persist active model string to localStorage so BotBrowser can pick it up for deployments
   useEffect(() => {
@@ -527,14 +664,14 @@ export default function Chat() {
     }
   }, [primaryProvider, ollamaModel, vllmModel, openrouterModel]);
 
-  const fetchSavedChats = () => {
+  const fetchSavedChats = useCallback(() => {
     fetch('/api/chats')
       .then(r => r.json())
       .then(data => {
         if (!Array.isArray(data.chats)) return;
         // API already sorts newest-first; just set state
         setSavedChats(data.chats);
-        // Populate summaries from stored data GÇö no LLM calls needed
+        // Populate summaries from stored data - no LLM calls needed
         const summaryMap: Record<string, string> = {};
         for (const c of data.chats) {
           if (c.summary) summaryMap[c.id] = c.summary;
@@ -542,24 +679,21 @@ export default function Chat() {
         setChatSummaries(prev => ({ ...prev, ...summaryMap }));
       })
       .catch(() => {});
-  };
+  }, []);
 
   useEffect(() => {
-    if (!autoSaveEnabled) return;
-    const timer = setTimeout(() => {
-      saveCurrentChat(true);
-    }, 20000);
-    return () => clearTimeout(timer);
-  }, [messages, autoSaveEnabled, chatName]);
+    testConnection();
+    fetchSavedChats();
+  }, [fetchSavedChats, testConnection]);
 
-  const saveCurrentChat = async (silent = false) => {
+  const saveCurrentChat = useCallback(async () => {
     if (messages.length === 0) return;
     const existingId = currentChatIdRef.current;
     const name = chatName || `chat-${Date.now()}`;
 
     try {
       if (existingId) {
-        // Update existing chat in-place GÇö no new summary generation
+        // Update existing chat in-place - no new summary generation
         const res = await fetch('/api/chats', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -590,9 +724,17 @@ export default function Chat() {
         }
       }
     } catch {
-      // Silently fail GÇö auto-save is best-effort
+      // Silently fail - auto-save is best-effort
     }
-  };
+  }, [chatName, generateSummary, messages]);
+
+  useEffect(() => {
+    if (!autoSaveEnabled) return;
+    const timer = setTimeout(() => {
+      saveCurrentChat();
+    }, 20000);
+    return () => clearTimeout(timer);
+  }, [autoSaveEnabled, chatName, messages, saveCurrentChat]);
 
   const loadSavedChat = async (chatId: string) => {
     try {
@@ -606,8 +748,8 @@ export default function Chat() {
         currentChatIdRef.current = chatId;
         setShowSavedPanel(false);
       }
-    } catch (e) {
-      setMessages(prev => [...prev, { role: 'system', content: `Load failed: ${String(e)}` }]);
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'system', content: `Load failed: ${String(error)}` }]);
     }
   };
 
@@ -619,7 +761,7 @@ export default function Chat() {
       if (!res.ok) throw new Error('Delete failed');
       setSavedChats(prev => prev.filter(p => p.id !== chatId));
       setSelectedChats(prev => { const n = new Set(prev); n.delete(chatId); return n; });
-    } catch (err) {
+    } catch {
       alert('Delete failed');
     }
   };
@@ -633,9 +775,272 @@ export default function Chat() {
     setSelectedChats(new Set());
   };
 
+  const appendSystemMessage = useCallback((content: string) => {
+    setMessages(prev => [...prev, { role: 'system', content }]);
+  }, []);
+
+  const resetUtilityPanels = useCallback(() => {
+    setShowSavedPanel(false);
+    setShowMemoryPanel(false);
+    setShowHallOfFame(false);
+    setShowMoltbook(false);
+    setShowCryptoWallet(false);
+  }, []);
+
+  const startNewSession = useCallback(() => {
+    setMessages([]);
+    setChatName('New Session');
+    currentChatIdRef.current = null;
+    setShowSavedPanel(false);
+    setSelectedChats(new Set());
+  }, []);
+
+  const applyHeartbeatSetting = useCallback((nextMode: boolean, nextInterval?: number) => {
+    setHeartbeatMode(nextMode);
+    if (typeof nextInterval === 'number' && Number.isFinite(nextInterval)) {
+      setHeartbeatIntervalMinutes(Math.max(1, Math.min(240, Math.round(nextInterval))));
+    }
+  }, []);
+
+  const queueAgentPrompt = useCallback((message: string) => {
+    setTimeout(() => {
+      handleSendRef.current?.({ msg: message });
+    }, 0);
+  }, []);
+
+  const runLocalCommand = useCallback((rawInput: string) => {
+    const trimmed = rawInput.trim();
+    if (!trimmed.startsWith('/')) return false;
+
+    const [commandNameRaw, ...argParts] = trimmed.slice(1).split(/\s+/);
+    const commandName = commandNameRaw.toLowerCase();
+    const rawArg = argParts.join(' ').trim();
+    const arg = rawArg.toLowerCase();
+    const boolArg = arg === 'on' ? true : arg === 'off' ? false : null;
+    const heartbeatMinutes = Number.parseInt(arg, 10);
+
+    switch (commandName) {
+      case 'commands':
+      case 'help':
+        appendSystemMessage(
+          'Available commands:\n' +
+          '/commands - show command help\n' +
+          '/settings - open model and tool settings\n' +
+          '/control - open the control panel\n' +
+          '/parallel [on|off] - toggle parallel mode\n' +
+          '/autonomous [on|off] - toggle autonomous mode\n' +
+          '/heartbeat [minutes|on|off] - schedule periodic heartbeat turns\n' +
+          '/doctor - run runtime and tool diagnostics\n' +
+          '/observe - snapshot system state\n' +
+          '/reflect - run a focused reasoning loop\n' +
+          '/summarize - summarize current progress\n' +
+          '/skill <name> - read and apply a skill\n' +
+          '/discord - run a Discord workflow\n' +
+          '/instagram - run an Instagram workflow\n' +
+          '/memory-prune - review and prune stale memory\n' +
+          '/history - open saved chats\n' +
+          '/memory - open memory browser\n' +
+          '/hall - open hall of fame\n' +
+          '/wallet - open crypto wallet\n' +
+          '/moltbook - open Moltbook panel\n' +
+          '/physics - open physics simulator\n' +
+          '/voice input - start or stop voice input\n' +
+          '/voice output [on|off] - control auto-speak\n' +
+          '/toolaudit - ask the agent runtime to audit core tools\n' +
+          '/new - start a new chat session'
+        );
+        break;
+      case 'settings':
+        setShowActionMenu(false);
+        setShowSettingsPanel(true);
+        appendSystemMessage('Opened settings.');
+        break;
+      case 'control':
+      case 'menu':
+      case 'panel':
+        setShowSettingsPanel(false);
+        setShowActionMenu(prev => !prev);
+        appendSystemMessage('Toggled the control panel.');
+        break;
+      case 'parallel': {
+        const next = boolArg ?? !parallelMode;
+        setParallelMode(next);
+        setIsParallelRunning(false);
+        if (next) setShowSettingsPanel(true);
+        appendSystemMessage(`Parallel mode ${next ? 'enabled' : 'disabled'}.`);
+        break;
+      }
+      case 'autonomous': {
+        const next = boolArg ?? !autonomousMode;
+        setAutonomousMode(next);
+        appendSystemMessage(`Autonomous mode ${next ? 'enabled' : 'disabled'}.`);
+        break;
+      }
+      case 'heartbeat': {
+        if (boolArg === false) {
+          applyHeartbeatSetting(false);
+          appendSystemMessage('Heartbeat mode disabled.');
+          break;
+        }
+        const nextInterval = Number.isFinite(heartbeatMinutes) ? heartbeatMinutes : heartbeatIntervalMinutes;
+        applyHeartbeatSetting(true, nextInterval);
+        appendSystemMessage(`Heartbeat mode enabled every ${Math.max(1, nextInterval)} minute${Math.max(1, nextInterval) === 1 ? '' : 's'}.`);
+        break;
+      }
+      case 'history':
+      case 'saved':
+        resetUtilityPanels();
+        setShowSavedPanel(true);
+        appendSystemMessage('Opened saved chats.');
+        break;
+      case 'memory':
+        resetUtilityPanels();
+        setShowMemoryPanel(true);
+        appendSystemMessage('Opened memory browser.');
+        break;
+      case 'hall':
+      case 'halloffame':
+        resetUtilityPanels();
+        setShowHallOfFame(true);
+        appendSystemMessage('Opened hall of fame.');
+        break;
+      case 'wallet':
+        resetUtilityPanels();
+        setShowCryptoWallet(true);
+        appendSystemMessage('Opened crypto wallet.');
+        break;
+      case 'moltbook':
+        resetUtilityPanels();
+        setShowMoltbook(true);
+        appendSystemMessage('Opened Moltbook.');
+        break;
+      case 'physics':
+        windowManager.dispatch({ op: 'create', id: 'physics', title: 'Physics Simulator', contentType: 'physics', content: '' });
+        appendSystemMessage('Opened physics simulator.');
+        break;
+      case 'doctor':
+        queueAgentPrompt('Run observe_self({ auditTools: true }) and diagnose_system(). Report only the concrete issues, what is healthy, and the next fixes worth making.');
+        break;
+      case 'observe':
+        queueAgentPrompt('Run observe_self({ store: true, auditTools: true }). Summarize the current system state, memory health, and any risks that should affect the next step.');
+        break;
+      case 'reflect':
+        queueAgentPrompt(`Enter a focused reflection loop on the current task. Re-state the active goal, list hidden assumptions, identify the most likely failure modes, and choose the highest-leverage next action. Use memory only if it materially helps. ${rawArg ? `Extra focus: ${rawArg}.` : ''}`);
+        break;
+      case 'summarize':
+        queueAgentPrompt('Summarize the current session in three parts: completed work, open issues, and the exact next actions you would take without more input.');
+        break;
+      case 'skill':
+        if (!rawArg) {
+          appendSystemMessage('Usage: /skill <name>. Example: /skill debugging');
+          break;
+        }
+        queueAgentPrompt(`Read the skill \"${rawArg}\" and apply it to the current task. If there is no active task, summarize the key operating rules from that skill and suggest the most relevant next use.`);
+        break;
+      case 'discord':
+        queueAgentPrompt(`Manage Discord using the normal Discord tool family and memory, not a special UI mode. Check credentials or current server state first, inspect what is already configured, and either take the next useful Discord action or state the exact missing prerequisite. ${rawArg ? `Goal: ${rawArg}.` : ''}`);
+        break;
+      case 'instagram':
+        queueAgentPrompt(`Manage Instagram using the normal Instagram tool family and memory, just like Discord is handled through tools. Check the account profile, recent posts, and performance first if credentials are available. Then decide the next useful action, execute it if safe, or report the exact missing prerequisite. ${rawArg ? `Goal: ${rawArg}.` : ''}`);
+        break;
+      case 'memory-prune':
+      case 'prune':
+        queueAgentPrompt('Review persistent memory health. Use memory stats and memory tools to identify stale, fixation-causing, or low-value memories. Prefer rejection or suppression when appropriate, delete only when a memory is clearly wrong or harmful, and summarize what changed.');
+        break;
+      case 'toolaudit':
+        queueAgentPrompt('Run observe_self({ auditTools: true }) and diagnose_system(), summarize any tool problems, and tell me only what is actionable.');
+        break;
+      case 'voice': {
+        if (arg.startsWith('output')) {
+          const next = arg.endsWith('on') ? true : arg.endsWith('off') ? false : !voiceRef.current?.getState().voiceOutputEnabled;
+          voiceRef.current?.setVoiceOutputEnabled(Boolean(next));
+          appendSystemMessage(`Voice output ${next ? 'enabled' : 'disabled'}.`);
+        } else {
+          voiceRef.current?.toggleListening();
+          const state = voiceRef.current?.getState();
+          appendSystemMessage(`Voice input ${state?.listening ? 'enabled' : 'toggled'}.`);
+        }
+        break;
+      }
+      case 'new':
+        startNewSession();
+        appendSystemMessage('Started a new session.');
+        break;
+      default:
+        appendSystemMessage(`Unknown command: ${trimmed}. Run /commands for the supported list.`);
+        break;
+    }
+
+    setShowActionMenu(false);
+    return true;
+  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, heartbeatIntervalMinutes, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, windowManager]);
+
+  const normalizedComposerInput = input.trimStart();
+  const composerCommandToken = normalizedComposerInput.startsWith('/')
+    ? normalizedComposerInput.slice(1).split(/\s+/)[0].toLowerCase()
+    : '';
+  const commandSuggestions = useMemo(() => {
+    if (!normalizedComposerInput.startsWith('/')) return [];
+    return COMMAND_DEFINITIONS.filter((definition) => {
+      const haystacks = [definition.command, definition.usage, ...(definition.aliases ?? [])];
+      return composerCommandToken.length === 0 || haystacks.some((value) => value.toLowerCase().includes(composerCommandToken));
+    }).slice(0, 8);
+  }, [composerCommandToken, normalizedComposerInput]);
+  const showCommandSuggestions = commandSuggestions.length > 0 && normalizedComposerInput.startsWith('/');
+
+  const applyCommandSuggestion = useCallback((definition: CommandDefinition) => {
+    setInput(definition.autocomplete ?? definition.usage);
+    setSelectedCommandIndex(0);
+  }, []);
+
+  useEffect(() => {
+    setSelectedCommandIndex(0);
+  }, [composerCommandToken]);
+
+  const handleComposerKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (showCommandSuggestions) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) => (prev + 1) % commandSuggestions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) => (prev - 1 + commandSuggestions.length) % commandSuggestions.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        applyCommandSuggestion(commandSuggestions[selectedCommandIndex] ?? commandSuggestions[0]);
+        return;
+      }
+      if (e.key === 'Enter') {
+        const hasSpaces = normalizedComposerInput.includes(' ');
+        const exactCommand = COMMAND_DEFINITIONS.some((definition) => {
+          const base = definition.command.split(' ')[0].toLowerCase();
+          return base === composerCommandToken || (definition.aliases ?? []).includes(composerCommandToken);
+        });
+        if (!hasSpaces && !exactCommand) {
+          e.preventDefault();
+          applyCommandSuggestion(commandSuggestions[selectedCommandIndex] ?? commandSuggestions[0]);
+          return;
+        }
+      }
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSendRef.current?.();
+    }
+  }, [applyCommandSuggestion, commandSuggestions, composerCommandToken, normalizedComposerInput, selectedCommandIndex, showCommandSuggestions]);
+
   const handleSend = async (overrides?: { msg?: string; images?: { name: string; dataUrl: string }[] }): Promise<void> => {
     const effectiveInput = overrides?.msg ?? input;
     if ((!effectiveInput.trim() && attachments.length === 0 && !overrides) || isLoading) return;
+    if (!overrides && runLocalCommand(effectiveInput)) {
+      setInput('');
+      return;
+    }
     if (connStatus !== 'ok') {
       setConnectionError('Cannot send: connection unavailable.');
       return;
@@ -666,7 +1071,7 @@ export default function Chat() {
       return;
     }
 
-    // First message in parallel mode GÇö start the loop
+    // First message in parallel mode - start the loop
     const isFirstParallelMsg = parallelMode && !isParallelRunning;
     if (isFirstParallelMsg) setIsParallelRunning(true);
 
@@ -716,8 +1121,8 @@ export default function Chat() {
           companionModel: parallelMode ? companionModel : undefined,
           systemPrompt: (() => {
             let sp = systemPrompt;
-            if (instagramMode) sp += '\n\n[INSTAGRAM MODE ACTIVE] You are managing an Instagram account autonomously. Use instagram_post, instagram_get_profile, instagram_get_posts, instagram_get_insights tools. Generate creative captions and coordinate with generate_image for visuals. Proactively manage the account: check metrics, post content, analyze performance.';
-            if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE G¡ò] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
+            if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
+            if (physicsModeActive) sp += '\n\n[PHYSICS MODE ACTIVE] When building a machine, use a concrete workflow: physics_reset(), physics_spawn() a fixed chassis or axle, physics_spawn() the moving part, physics_add_hinge() to connect them, physics_set_motor() to automate it, then physics_get_state() or vision_self_check() to verify the result. Give at least one explicit machine example when you explain or act.';
             return sp;
           })(),
           temperature,
@@ -814,7 +1219,7 @@ export default function Chat() {
                         } else if (sc.type === 'status' && sc.content) {
                           windowManager.dispatch({ op: 'append_terminal', id: windowId, content: `[${sc.content}]\n` } as any);
                         } else if (sc.type === 'done') {
-                          windowManager.dispatch({ op: 'append_terminal', id: windowId, content: `\nGöÇGöÇGöÇ Subroutine ${subroutineId} complete GöÇGöÇGöÇ\n` } as any);
+                          windowManager.dispatch({ op: 'append_terminal', id: windowId, content: `\nSubroutine ${subroutineId} complete\n` } as any);
                         }
                       } catch {}
                     }
@@ -885,7 +1290,7 @@ export default function Chat() {
           setInput(`Discourse continuation: ${assistantMsg.substring(0, 500)}... Analyze and respond.`);
         }, 1500);
       } else if (pendingAutoContinue) {
-        // Auto-continue: agent signaled there is more work to do GÇö trigger after state settles
+        // Auto-continue: agent signaled there is more work to do - trigger after state settles
         setTimeout(() => setAutoContinuePending(pendingAutoContinue!), 600);
       } else if (autonomousMode && !agentStoppedAuto && !autoStopRequestedRef.current) {
         // Autonomous loop: fire next turn automatically
@@ -900,7 +1305,7 @@ export default function Chat() {
           handleSend({ msg: autoMsg, images: autoImages });
         }, 900);
       } else if (agentStoppedAuto || autoStopRequestedRef.current) {
-        // Agent called stop_agent GÇö reset autonomous state
+        // Agent called stop_agent - reset autonomous state
         isAutoRunningRef.current = false;
         autoLoopCountRef.current = 0;
       }
@@ -928,6 +1333,20 @@ export default function Chat() {
       autoStopRequestedRef.current = false;
     }
   }, [autonomousMode]);
+
+  useEffect(() => {
+    if (!showActionMenu) return;
+    const handler = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const insidePanel = actionMenuRef.current?.contains(target) ?? false;
+      const insideTrigger = actionMenuTriggerRef.current?.contains(target) ?? false;
+      if (!insidePanel && !insideTrigger) {
+        setShowActionMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showActionMenu]);
 
   const handleAttach = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -965,7 +1384,7 @@ export default function Chat() {
         const data = await res.json();
         setMessages(prev => [...prev, {
           role: 'system' as const,
-          content: `G£ô Approved: \`${data.command ?? id}\` GÇö exit ${data.exitCode ?? 0}${data.output ? `\n\`\`\`\n${data.output.slice(0, 800)}\n\`\`\`` : ''}`,
+          content: `Approved: \`${data.command ?? id}\` - exit ${data.exitCode ?? 0}${data.output ? `\n\`\`\`\n${data.output.slice(0, 800)}\n\`\`\`` : ''}`,
         }]);
       }
     } catch {}
@@ -981,7 +1400,7 @@ export default function Chat() {
       setPendingApprovals(prev => prev.filter(p => p.id !== id));
       setMessages(prev => [...prev, {
         role: 'system' as const,
-        content: `G£ù Denied: \`${command}\``,
+        content: `Denied: \`${command}\``,
       }]);
     } catch {}
   };
@@ -1013,7 +1432,7 @@ export default function Chat() {
 
   const handleFactoryReset = async () => {
     const confirmed = confirm(
-      'FACTORY RESET\n\nThis will permanently erase:\nGÇó All saved conversations\nGÇó All memories and knowledge\nGÇó All generated images\nGÇó All weights and learned strategies\nGÇó All workspace files\n\nThis cannot be undone.\n\nAre you sure you want to do this?'
+      'FACTORY RESET\n\nThis will permanently erase:\n- All saved conversations\n- All memories and knowledge\n- All generated images\n- All weights and learned strategies\n- All workspace files\n\nThis cannot be undone.\n\nAre you sure you want to do this?'
     );
     if (!confirmed) return;
     const confirmed2 = confirm('Are you absolutely sure? All agent memory and history will be lost forever.');
@@ -1038,9 +1457,9 @@ export default function Chat() {
   };
 
   // Keep the handleSend ref current so the auto-loop effect always calls the latest version
-  useEffect(() => { handleSendRef.current = handleSend; });
+  handleSendRef.current = handleSend;
 
-  // Autonomous Parallel Loop GÇö fires when input is set by the continuation timer above
+  // Autonomous parallel loop - fires when input is set by the continuation timer above
   useEffect(() => {
     if (!parallelMode || !isParallelRunning || isLoading) return;
     if (!input.startsWith('Discourse continuation:')) return;
@@ -1048,7 +1467,7 @@ export default function Chat() {
     return () => clearTimeout(timer);
   }, [input, isParallelRunning, parallelMode, isLoading]);
 
-  // Auto-continue trigger GÇö fires when agent signals [AUTO_CONTINUE: ...]
+  // Auto-continue trigger - fires when agent signals [AUTO_CONTINUE: ...]
   const [autoContinuePending, setAutoContinuePending] = useState<string | null>(null);
   useEffect(() => {
     if (!autoContinuePending || isLoading) return;
@@ -1144,7 +1563,7 @@ export default function Chat() {
                     primaryProvider === 'vllm' ? `vLLM${vllmStatus === 'no-models' ? ' (no models)' : ''}` :
                     primaryProvider === 'openrouter' ? `OpenRouter${openrouterStatus === 'no-models' ? ' (no models)' : ''}` :
                     `Ollama${ollamaStatus === 'no-models' ? ' (no models)' : ''}`
-                  )}{parallelMode ? ' GêÑ Parallel' : ''}
+                  )}{parallelMode ? ' | Parallel' : ''}
                 </span>
               </div>
             </div>
@@ -1157,85 +1576,28 @@ export default function Chat() {
               className="hidden md:block bg-transparent text-right text-xs font-black text-black/40 focus:text-black outline-none border-none px-4 py-1 max-w-[200px]"
               placeholder="Untitled Chat"
             />
-            <div className="flex items-center transition-all">
+            <div className="relative flex items-center gap-2 transition-all">
+              <div className="hidden">
+                <VoiceButton
+                  ref={voiceRef}
+                  onTranscript={(text) => setInput(prev => prev ? `${prev} ${text}` : text)}
+                  lastAssistantMessage={lastAssistantMsg}
+                  disabled={isLoading}
+                  onStateChange={setVoiceControlState}
+                />
+              </div>
               <button
-                onClick={openPhysicsWindow}
-                title="Open Physics Simulator"
-                className="p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 text-black/60 transition-all"
+                ref={actionMenuTriggerRef}
+                onClick={() => { setShowActionMenu(prev => !prev); setShowSettingsPanel(false); }}
+                title="Open control panel"
+                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 transition-all ${showActionMenu ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
               >
-                <Icons.Physics />
+                <Icons.More />
               </button>
               <button
-                onClick={() => setShowCryptoWallet(v => !v)}
-                title="Crypto Wallet"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 transition-all ${showCryptoWallet ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
-              >
-                <Icons.Bitcoin />
-              </button>
-              <button
-                onClick={() => setInstagramMode(v => !v)}
-                title="Instagram Mode"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 transition-all ${instagramMode ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
-              >
-                <Icons.Instagram />
-              </button>
-              <button
-                onClick={() => setShowMoltbook(v => !v)}
-                title="Moltbook"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 transition-all ${showMoltbook ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
-              >
-                <Icons.Moltbook />
-              </button>
-              <button
-                onClick={() => setAutonomousMode(v => !v)}
-                title={autonomousMode ? `Autonomous mode ON (loop #${autoLoopCountRef.current}) GÇö click to stop` : 'Enable Autonomous Mode (runs until stop_agent)'}
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 transition-all relative ${
-                  autonomousMode ? 'text-green-600' : 'text-black/60'
-                }`}
-              >
-                <Icons.Autonomous active={autonomousMode} running={autonomousMode && isAutoRunningRef.current} />
-                {autonomousMode && isAutoRunningRef.current && (
-                  <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                )}
-              </button>
-              <button
-                onClick={toggleParallel}
-                title="Parallel Discourse Mode (||)"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-6 transition-all ${
-                  parallelMode ? 'bg-[#000000] text-[#FDFCF0]' : 'text-black/60'
-                }`}
-              >
-                <Icons.Synergy />
-              </button>
-              <button 
-                onClick={() => { setShowSavedPanel(!showSavedPanel); setShowSettingsPanel(false); }}
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-6 ${showSavedPanel ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
-              >
-                <Icons.Bubble />
-              </button>
-              <button
-                onClick={() => { setShowMemoryPanel(!showMemoryPanel); setShowSavedPanel(false); setShowSettingsPanel(false); setShowHallOfFame(false); }}
-                title="Memory Browser"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-1 transition-all ${showMemoryPanel ? 'bg-[#000000] text-[#FDFCF0]' : 'text-black/60'}`}
-              >
-                <Icons.Memory />
-              </button>
-              <button
-                onClick={() => { setShowHallOfFame(!showHallOfFame); setShowSavedPanel(false); setShowSettingsPanel(false); setShowMemoryPanel(false); }}
-                title="Hall of Fame"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 mr-2 transition-all ${showHallOfFame ? 'bg-[#000000] text-[#FDFCF0]' : 'text-black/60'}`}
-              >
-                <Icons.Trophy />
-              </button>
-              <VoiceButton
-                ref={voiceRef}
-                onTranscript={(text) => setInput(prev => prev ? `${prev} ${text}` : text)}
-                lastAssistantMessage={lastAssistantMsg}
-                disabled={isLoading}
-              />
-              <button
-                onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowSavedPanel(false); setShowHallOfFame(false); }}
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 ml-2 mr-6 ${showSettingsPanel ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
+                onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowActionMenu(false); }}
+                title="Open settings"
+                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 transition-all ${showSettingsPanel ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
               >
                 <Icons.Gear />
               </button>
@@ -1245,6 +1607,74 @@ export default function Chat() {
 
         {/* Messaging Zone */}
         <div className="flex-1 relative overflow-hidden flex flex-col">
+          {showActionMenu && (
+            <div className="pointer-events-none absolute left-4 top-4 z-20 flex justify-start md:left-6 md:top-5" ref={actionMenuRef}>
+              <div className="pointer-events-auto w-[min(380px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[10px] border border-white/10 bg-[#111] shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
+                <div className="flex h-8 items-center gap-2 border-b border-white/10 bg-[#1a1a1a] px-3">
+                  <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
+                  <span className="h-3 w-3 rounded-full bg-[#ffbd2e]" />
+                  <span className="h-3 w-3 rounded-full bg-[#28c840]" />
+                  <span className="flex-1 text-center text-[11px] font-semibold tracking-[0.04em] text-white/60">Control Panel</span>
+                </div>
+                <div className="max-h-[70vh] overflow-y-auto bg-[#FDFCF0] p-4 text-black">
+                  <div className="mb-4 px-1">
+                    <div className="text-[10px] font-black uppercase tracking-[0.22em] text-black/40">Control Panel</div>
+                    <div className="mt-1 text-[11px] leading-relaxed text-black/45">Modes stay active until you turn them off. Utilities open panels, windows, or immediate actions. Commands mirror every option here.</div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <div className="mb-2 px-1 text-[10px] font-black uppercase tracking-[0.22em] text-black/35">Modes</div>
+                      <div className="grid grid-cols-1 gap-2">
+                        <ActionMenuButton icon={<Icons.Synergy />} label="Parallel Mode" command="/parallel" description="Run a second model alongside the primary model." active={parallelMode} onClick={toggleParallel} />
+                        <ActionMenuButton icon={<Icons.Autonomous active={autonomousMode} running={autonomousMode && isAutoRunningRef.current} />} label="Autonomous Mode" command="/autonomous" description="Keep working until stop_agent is called or you turn it off." active={autonomousMode} onClick={() => { setAutonomousMode(v => !v); }} />
+                        <ActionMenuButton icon={<Icons.Heartbeat />} label="Heartbeat Mode" command={`/heartbeat ${heartbeatIntervalMinutes}`} description={`Schedule an automatic check-in every ${heartbeatIntervalMinutes} minute${heartbeatIntervalMinutes === 1 ? '' : 's'}.`} active={heartbeatMode} onClick={() => { applyHeartbeatSetting(!heartbeatMode, heartbeatIntervalMinutes); }} />
+                        <ActionMenuButton icon={<Icons.Mic />} label="Voice Input" command="/voice input" description="Start or stop microphone transcription." active={voiceControlState.listening} onClick={() => { voiceRef.current?.toggleListening(); }} />
+                        <ActionMenuButton icon={<Icons.Speaker />} label="Voice Output" command="/voice output" description="Enable or disable automatic spoken responses." active={voiceControlState.voiceOutputEnabled} onClick={() => { voiceRef.current?.setVoiceOutputEnabled(!voiceControlState.voiceOutputEnabled); }} />
+                      </div>
+                      <div className="mt-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-black/40">Heartbeat Interval</div>
+                            <div className="mt-1 text-[11px] text-black/45">Choose how often the agent should auto-check in while the session is idle.</div>
+                          </div>
+                          <div className="text-sm font-black text-black">{heartbeatIntervalMinutes}m</div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {[5, 15, 30, 60].map((minutes) => (
+                            <button
+                              key={minutes}
+                              onClick={() => applyHeartbeatSetting(true, minutes)}
+                              className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] transition-colors ${heartbeatIntervalMinutes === minutes ? 'border-black bg-black text-[#FDFCF0]' : 'border-black/10 bg-[#FDFCF0] text-black/50 hover:border-black/35 hover:text-black'}`}
+                            >
+                              {minutes}m
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 px-1 text-[10px] font-black uppercase tracking-[0.22em] text-black/35">More</div>
+                      <div className="grid grid-cols-1 gap-2">
+                        <ActionMenuButton icon={<Icons.Bubble />} label="Saved Chats" command="/history" description="Browse, restore, and delete saved chat sessions." active={showSavedPanel} onClick={() => { resetUtilityPanels(); setShowSavedPanel(true); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Memory />} label="Memory Browser" command="/memory" description="Inspect, boost, and delete persistent memories." active={showMemoryPanel} onClick={() => { resetUtilityPanels(); setShowMemoryPanel(true); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Trophy />} label="Hall of Fame" command="/hall" description="Inspect top learned bot runs and strategies." active={showHallOfFame} onClick={() => { resetUtilityPanels(); setShowHallOfFame(true); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Physics />} label="Physics Simulator" command="/physics" description="Open the physics workspace for live experiments." active={physicsModeActive} onClick={openPhysicsWindow} />
+                        <ActionMenuButton icon={<Icons.Bitcoin />} label="Crypto Wallet" command="/wallet" description="Manage local wallets and balance lookups." active={showCryptoWallet} onClick={() => { resetUtilityPanels(); setShowCryptoWallet(true); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Moltbook />} label="Moltbook" command="/moltbook" description="Open Moltbook shortcuts and posting prompts." active={showMoltbook} onClick={() => { resetUtilityPanels(); setShowMoltbook(true); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Bubble />} label="Discord Workflow" command="/discord" description="Have the agent inspect or run the next Discord action through tools and memory." onClick={() => { runLocalCommand('/discord'); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Instagram />} label="Instagram Workflow" command="/instagram" description="Have the agent inspect or run the next Instagram action through tools and memory." onClick={() => { runLocalCommand('/instagram'); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Gear />} label="System Doctor" command="/doctor" description="Run a full system diagnosis through the agent runtime." onClick={() => { runLocalCommand('/doctor'); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Gear />} label="Tool Audit" command="/toolaudit" description="Have the agent audit core tool health and show only actionable issues." onClick={() => { runLocalCommand('/toolaudit'); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Refresh />} label="New Session" command="/new" description="Clear the current chat and start fresh." onClick={() => { startNewSession(); setShowActionMenu(false); }} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           <main className="flex-1 overflow-y-auto px-4 md:px-12 py-8 space-y-6 scrollbar-hide text-[#000000]">
             {messages.map((msg, idx) => {
               const isLastAssistant = isLoading && idx === messages.length - 1 && msg.role === 'assistant';
@@ -1276,12 +1706,12 @@ export default function Chat() {
                         approval.risk === 'medium' ? 'bg-amber-100 text-amber-700 border-amber-300' :
                         'bg-green-100 text-green-700 border-green-300'
                       }`}>{approval.risk}</span>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Terminal GÇö Awaiting Approval</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Terminal - Awaiting Approval</span>
                     </div>
                     <button
                       onClick={() => handleDenyCmd(approval.id, approval.command)}
                       className="text-black/30 hover:text-black/60 text-xs leading-none"
-                    >G£ò</button>
+                    >x</button>
                   </div>
                   <code className="block text-xs font-mono text-black bg-black/5 rounded-lg px-3 py-2 break-all">{approval.command}</code>
                   {approval.reason && approval.reason !== 'Agent command' && (
@@ -1292,13 +1722,13 @@ export default function Chat() {
                       onClick={() => handleApproveCmd(approval.id)}
                       className="flex items-center gap-1.5 px-4 py-2 bg-black text-[#FDFCF0] text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black/80 active:scale-95 transition-all"
                     >
-                      G£ô Approve
+                      Approve
                     </button>
                     <button
                       onClick={() => handleDenyCmd(approval.id, approval.command)}
                       className="flex items-center gap-1.5 px-4 py-2 border-2 border-black text-black text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-black/5 active:scale-95 transition-all"
                     >
-                      G£ò Deny
+                      Deny
                     </button>
                     <label className="flex items-center gap-1.5 ml-2 cursor-pointer select-none">
                       <input
@@ -1447,7 +1877,7 @@ export default function Chat() {
           {/* Settings Panel */}
           {showSettingsPanel && (
             <FloatingPanel
-              title={parallelMode ? 'GêÑ Parallel Discourse' : 'Inference Logic'}
+              title={parallelMode ? 'Parallel Discourse' : 'Inference Logic'}
               onClose={() => setShowSettingsPanel(false)}
               defaultW={380}
               defaultH={680}
@@ -1468,20 +1898,20 @@ export default function Chat() {
                   className="w-full bg-white border-2 border-black rounded-lg px-3 py-2.5 text-xs font-black outline-none appearance-none cursor-pointer hover:bg-black/5 transition-colors"
                 >
                   <option value="ollama">
-                    Ollama GÇö Local {ollamaStatus === 'ok' ? `(${ollamaModels.length} models)` : ollamaStatus === 'no-models' ? '(no models)' : '(checking...)'}
+                    Ollama - Local {ollamaStatus === 'ok' ? `(${ollamaModels.length} models)` : ollamaStatus === 'no-models' ? '(no models)' : '(checking...)'}
                   </option>
                   <option value="vllm">
-                    vLLM GÇö Cluster {vllmStatus === 'ok' ? `(${vllmModels.length} models)` : vllmStatus === 'no-models' ? '(no models)' : '(checking...)'}
+                    vLLM - Cluster {vllmStatus === 'ok' ? `(${vllmModels.length} models)` : vllmStatus === 'no-models' ? '(no models)' : '(checking...)'}
                   </option>
                   <option value="openrouter">
-                    OpenRouter GÇö Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length} models)` : openrouterApiKey ? '(checking...)' : '(set API key)'}
+                    OpenRouter - Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length} models)` : openrouterApiKey ? '(checking...)' : '(set API key)'}
                   </option>
                 </select>
               </div>
               
               <div className="space-y-4 text-black">
                 {parallelMode ? (
-                  /* GöÇGöÇ Parallel Mode: pick 2 providers GöÇGöÇ */
+                  /* Parallel mode: pick 2 providers */
                   <div className="space-y-6">
                     {/* Provider pair selectors */}
                     <div className="grid grid-cols-2 gap-4">
@@ -1567,7 +1997,7 @@ export default function Chat() {
                     </div>
                   </div>
                 ) : (
-                  /* GöÇGöÇ Single Mode: provider dropdown + model picker GöÇGöÇ */
+                  /* Single mode: provider dropdown + model picker */
                   <div className="space-y-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Inference Provider</label>
@@ -1576,9 +2006,9 @@ export default function Chat() {
                         onChange={(e) => setPrimaryProvider(e.target.value as 'ollama' | 'vllm' | 'openrouter')}
                         className="w-full bg-white border-2 border-black rounded-lg px-4 py-3 text-xs font-black outline-none appearance-none cursor-pointer hover:bg-black/5 transition-colors"
                       >
-                        <option value="vllm">vLLM GÇö Cluster {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
-                        <option value="ollama">Ollama GÇö Local {ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ollamaStatus === 'no-models' ? '(no models)' : ''}</option>
-                        <option value="openrouter">OpenRouter GÇö Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length})` : openrouterStatus === 'no-models' ? '(no models)' : '(set API key)'}</option>
+                        <option value="vllm">vLLM - Cluster {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
+                        <option value="ollama">Ollama - Local {ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ollamaStatus === 'no-models' ? '(no models)' : ''}</option>
+                        <option value="openrouter">OpenRouter - Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length})` : openrouterStatus === 'no-models' ? '(no models)' : '(set API key)'}</option>
                       </select>
                     </div>
 
@@ -1600,21 +2030,7 @@ export default function Chat() {
                   </div>
                 )}
 
-                {/* GöÇGöÇ OpenRouter API key (shown when openrouter is not primary, so key can always be configured) GöÇGöÇ */}
-                {primaryProvider !== 'openrouter' && !parallelMode && (
-                  <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-black/40">OpenRouter API Key</label>
-                    <input
-                      type="password"
-                      value={openrouterApiKey}
-                      onChange={(e) => setOpenrouterApiKey(e.target.value)}
-                      placeholder="sk-or-v1-... (optional)"
-                      className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-black"
-                    />
-                  </div>
-                )}
-
-                {/* GöÇGöÇ Tool Group Toggles GöÇGöÇ */}
+                {/* Tool group toggles */}
                 <div className="pt-3 border-t border-dashed border-black/10">
                   <button
                     onClick={() => setShowToolsPanel(p => !p)}
@@ -1626,7 +2042,7 @@ export default function Chat() {
                         {enabledToolGroups.size}/12 enabled
                       </span>
                     </div>
-                    <span className={`text-[10px] text-black/30 transition-transform ${showToolsPanel ? 'rotate-90' : ''}`}>Gû¦</span>
+                    <span className={`text-[10px] text-black/30 transition-transform ${showToolsPanel ? 'rotate-90' : ''}`}>{'>'}</span>
                   </button>
 
                   {showToolsPanel && (
@@ -1690,7 +2106,7 @@ export default function Chat() {
                   )}
                 </div>
 
-                {/* GöÇGöÇ Image Pipeline GöÇGöÇ */}
+                {/* Image pipeline */}
                 <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
                   <label className="text-[9px] font-black uppercase tracking-widest text-black/40">Image Pipeline</label>
                   <select
@@ -1714,8 +2130,8 @@ export default function Chat() {
                         <option value="black-forest-labs/flux-1.1-pro">FLUX 1.1 Pro</option>
                         <option value="black-forest-labs/flux-pro">FLUX Pro</option>
                         <option value="stability/stable-diffusion-3-5-large">SD 3.5 Large</option>
-                        <option value="openai/dall-e-3">DALL-+E 3</option>
-                        <option value="openai/dall-e-2">DALL-+E 2</option>
+                        <option value="openai/dall-e-3">DALL-E 3</option>
+                        <option value="openai/dall-e-2">DALL-E 2</option>
                       </select>
                     </div>
                   )}
@@ -1763,7 +2179,7 @@ export default function Chat() {
                       onChange={(e) => setSystemPrompt(e.target.value)}
                       rows={4}
                       className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-medium focus:bg-[#FDFCF0] outline-none resize-none leading-relaxed focus:border-black"
-                      placeholder="Optional GÇö leave blank for default."
+                      placeholder="Optional - leave blank for default."
                     />
                   </div>
 
@@ -1838,7 +2254,7 @@ export default function Chat() {
                   <code className="text-[9px] font-mono bg-black/5 px-2 py-1 rounded text-black/50">npx next dev -H 0.0.0.0</code>
                 </div>
 
-                {/* GöÇGöÇ Danger Zone GöÇGöÇ */}
+                {/* Danger zone */}
                 <div className="pt-3 border-t border-dashed border-red-200 space-y-2">
                   <p className="text-[9px] font-black uppercase tracking-widest text-red-400">Danger Zone</p>
                   <button
@@ -1867,7 +2283,7 @@ export default function Chat() {
                 <div className="space-y-1">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Agent Identity</p>
                   <p className="text-sm font-black">OmniShapeAgent</p>
-                  <p className="text-xs text-black/50">AI agent social network GÇö post, follow, discuss.</p>
+                  <p className="text-xs text-black/50">AI agent social network - post, follow, discuss.</p>
                 </div>
                 <div className="space-y-2">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Quick Actions</p>
@@ -1891,7 +2307,7 @@ export default function Chat() {
                 <div className="space-y-1.5 border-t border-black/10 pt-3">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">API Key</p>
                   <p className="text-[10px] text-black/50">Set <code className="bg-black/5 px-1 rounded">MOLTBOOK_API_KEY</code> env var after registration.</p>
-                  <a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-black/60 hover:text-black underline">moltbook.com Gåù</a>
+                  <a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-black/60 hover:text-black underline">moltbook.com</a>
                 </div>
               </div>
             </FloatingPanel>
@@ -1904,29 +2320,18 @@ export default function Chat() {
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
               <span className="text-[10px] font-black uppercase tracking-widest text-white">
-                G¡ò Autonomous Mode GÇö Turn {autoLoopCountRef.current} GÇö Agent runs until stop_agent() or you click Stop
+                Autonomous Mode - Turn {autoLoopCountRef.current} - Agent runs until stop_agent() or you click Stop
               </span>
             </div>
             <button onClick={() => setAutonomousMode(false)} className="text-white/70 hover:text-white text-xs font-black uppercase tracking-widest">Stop</button>
           </div>
         )}
-        {/* Instagram Mode Banner */}
-        {instagramMode && (
-          <div className="px-6 py-2 bg-gradient-to-r from-purple-600 via-pink-500 to-orange-400 flex items-center justify-between flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-              <span className="text-[10px] font-black uppercase tracking-widest text-white">Instagram Mode Active GÇö Agent managing account</span>
-            </div>
-            <button onClick={() => setInstagramMode(false)} className="text-white/70 hover:text-white text-xs font-black uppercase tracking-widest">Disable</button>
-          </div>
-        )}
-
-        {/* Live status bar GÇö visible while streaming */}
+        {/* Live status bar - visible while streaming */}
         {isLoading && (
           <div className="px-6 md:px-12 py-2 border-t border-black/5 bg-[#FDFCF0] flex items-center gap-3 animate-in fade-in duration-200">
             <span className="w-1.5 h-1.5 rounded-full bg-black animate-ping flex-shrink-0" />
             <span className="text-[10px] font-black uppercase tracking-widest text-black/30 truncate flex-1">
-              {liveStatus || (streamPhase === 'thinking' ? 'ThinkingGÇª' : 'Streaming responseGÇª')}
+              {liveStatus || (streamPhase === 'thinking' ? 'Thinking...' : 'Streaming response...')}
             </span>
             {toolCallCount > 0 && (
               <span className="text-[10px] font-black text-black/20 flex-shrink-0">
@@ -1946,7 +2351,7 @@ export default function Chat() {
               </div>
               <div className="flex items-center gap-3">
                 <button onClick={(e) => { e.stopPropagation(); setTerminalLog([]); setShowTerminalLog(false); }} className="text-[9px] text-white/20 hover:text-white/60 uppercase tracking-widest">Clear</button>
-                <span className="text-[9px] text-white/20">{showTerminalLog ? 'Gû+' : 'Gû+'}</span>
+                <span className="text-[9px] text-white/20">{showTerminalLog ? '-' : '+'}</span>
               </div>
             </div>
             {showTerminalLog && (
@@ -1966,41 +2371,46 @@ export default function Chat() {
         )}
 
         {/* Command Bar (Square) */}
-        <div className="p-6 md:px-12 py-10 bg-[#FDFCF0] border-t border-black/10">
-          <div className="max-w-4xl mx-auto space-y-2">
-            {/* Attachment chips */}
+        <div className="border-t border-black/10 bg-[#FDFCF0] p-6 py-10 md:px-12">
+          <div className="mx-auto max-w-4xl space-y-2">
             {(attachments.length > 0 || mediaUrls.length > 0) && (
               <div className="flex flex-wrap gap-2">
-                {mediaUrls.map((m, i) => (
-                  <div key={`mu-${i}`} className="flex items-center gap-1.5 bg-black/80 text-[#FDFCF0] px-3 py-1.5 text-[10px] font-black rounded-lg max-w-[220px] overflow-hidden">
-                    <span className="flex-shrink-0">{m.type === 'video' ? '=ƒÄ¼' : '=ƒû+'}</span>
-                    <span className="truncate min-w-0 flex-1">{m.url.slice(m.url.lastIndexOf('/') + 1).slice(0, 24) || m.url.slice(0, 24)}</span>
-                    <button onClick={() => setMediaUrls(prev => prev.filter((_, j) => j !== i))} className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none">G£ò</button>
+                {mediaUrls.map((media, index) => (
+                  <div key={`mu-${index}`} className="flex max-w-[220px] items-center gap-1.5 overflow-hidden rounded-lg bg-black/80 px-3 py-1.5 text-[10px] font-black text-[#FDFCF0]">
+                    <span className="flex-shrink-0">{media.type === 'video' ? 'VID' : 'IMG'}</span>
+                    <span className="min-w-0 flex-1 truncate">{media.url.slice(media.url.lastIndexOf('/') + 1).slice(0, 24) || media.url.slice(0, 24)}</span>
+                    <button onClick={() => setMediaUrls(prev => prev.filter((_, itemIndex) => itemIndex !== index))} className="flex-shrink-0 leading-none opacity-60 hover:opacity-100">x</button>
                   </div>
                 ))}
               </div>
             )}
+
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2">
-                {attachments.map((att, i) => (
-                  <div key={i} className="flex items-center gap-1.5 bg-black text-[#FDFCF0] px-3 py-1.5 text-[10px] font-black rounded-lg max-w-[220px] overflow-hidden">
+                {attachments.map((attachment, index) => (
+                  <div key={index} className="flex max-w-[220px] items-center gap-1.5 overflow-hidden rounded-lg bg-black px-3 py-1.5 text-[10px] font-black text-[#FDFCF0]">
                     <span className="flex-shrink-0">
-                      {att.isImage ? (
-                        <img src={att.dataUrl} alt={att.name} className="w-5 h-5 rounded object-cover block" />
+                      {attachment.isImage ? (
+                        <img src={attachment.dataUrl} alt={attachment.name} className="block h-5 w-5 rounded object-cover" />
                       ) : (
                         <Icons.Paperclip />
                       )}
                     </span>
-                    <span className="truncate min-w-0 flex-1">{att.name}</span>
-                    <button onClick={() => setAttachments(prev => prev.filter((_, j) => j !== i))} className="flex-shrink-0 opacity-60 hover:opacity-100 leading-none">G£ò</button>
+                    <span className="min-w-0 flex-1 truncate">{attachment.name}</span>
+                    <button onClick={() => setAttachments(prev => prev.filter((_, itemIndex) => itemIndex !== index))} className="flex-shrink-0 leading-none opacity-60 hover:opacity-100">x</button>
                   </div>
                 ))}
-                {attachUploading && <div className="text-[10px] font-black text-black/40 flex items-center gap-1.5 px-3 py-1.5 bg-black/5 rounded-lg"><span className="w-2 h-2 rounded-full bg-black/40 animate-ping inline-block" />UploadingGÇª</div>}
+                {attachUploading && (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-black/5 px-3 py-1.5 text-[10px] font-black text-black/40">
+                    <span className="inline-block h-2 w-2 animate-ping rounded-full bg-black/40" />
+                    Uploading...
+                  </div>
+                )}
               </div>
             )}
-            {/* Media URL input row */}
+
             {showMediaUrlInput && (
-              <div className="flex gap-2 mb-2">
+              <div className="mb-2 flex gap-2">
                 <input
                   value={mediaUrlDraft}
                   onChange={(e) => setMediaUrlDraft(e.target.value)}
@@ -2012,10 +2422,13 @@ export default function Chat() {
                       setMediaUrlDraft('');
                       setShowMediaUrlInput(false);
                     }
-                    if (e.key === 'Escape') { setShowMediaUrlInput(false); setMediaUrlDraft(''); }
+                    if (e.key === 'Escape') {
+                      setShowMediaUrlInput(false);
+                      setMediaUrlDraft('');
+                    }
                   }}
                   placeholder="Paste image or video URL, press Enter..."
-                  className="flex-1 bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none focus:border-black"
+                  className="flex-1 rounded-lg border border-black/30 bg-white px-3 py-2 text-xs font-black outline-none focus:border-black"
                   autoFocus
                 />
                 <button
@@ -2027,82 +2440,104 @@ export default function Chat() {
                     setMediaUrlDraft('');
                     setShowMediaUrlInput(false);
                   }}
-                  className="px-3 py-2 bg-black text-white text-[10px] font-black rounded-lg uppercase tracking-widest"
-                >Add</button>
+                  className="rounded-lg bg-black px-3 py-2 text-[10px] font-black uppercase tracking-widest text-white"
+                >
+                  Add
+                </button>
               </div>
             )}
-            <div className="flex items-stretch bg-white border-2 border-black shadow-[8px_8px_0px_#000000] overflow-hidden">
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept=".txt,.md,.csv,.json,.xml,.html,.pdf,.docx,.xlsx,.doc,.py,.js,.ts,.tsx,.jsx,.yaml,.yml,.toml,.ini,.cfg,.log,.sql,.graphql,image/*,video/*"
-                className="hidden"
-                onChange={(e) => handleAttach(e.target.files)}
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                title="Attach files or images"
-                disabled={attachUploading}
-                className="px-3 text-black/30 hover:text-black hover:bg-black/5 transition-colors border-r border-black/10 flex items-center"
-              >
-                <Icons.Paperclip />
-              </button>
-              <button
-                onClick={() => setShowMediaUrlInput(v => !v)}
-                title="Attach image/video URL"
-                className={`px-3 transition-colors border-r border-black/10 flex items-center ${showMediaUrlInput ? 'text-black bg-black/5' : 'text-black/30 hover:text-black hover:bg-black/5'}`}
-              >
-                <Icons.Link />
-              </button>
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-                placeholder={
-                  parallelMode && messages.filter(m => m.role === 'user').length === 0
-                    ? 'Enter a topic to debate...'
-                    : parallelMode
-                    ? 'Butt in...'
-                    : 'Execute command or message...'
-                }
-                className="flex-1 bg-transparent border-none outline-none text-[16px] md:text-sm font-black text-black placeholder:text-black/10 px-5 md:px-8 py-5 md:py-6"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-              {isLoading && (
-                <>
-                  <button
-                    onClick={handleStop}
-                    title="Stop generation (keep partial output)"
-                    className="px-4 bg-amber-50 border-l-2 border-black text-amber-700 hover:bg-amber-100 transition-colors flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest"
-                  >
-                    <span className="w-3 h-3 border-2 border-amber-700 rounded-sm inline-block" />
-                    Stop
-                  </button>
-                  <button
-                    onClick={handleKill}
-                    title="Kill GÇö abort and discard current response"
-                    className="px-4 bg-red-50 border-l-2 border-black text-red-600 hover:bg-red-100 transition-colors flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest"
-                  >
-                    <span className="text-base leading-none">G£ò</span>
-                    Kill
-                  </button>
-                </>
+
+            <div className="relative">
+              {showCommandSuggestions && (
+                <div className="mb-2 px-1">
+                  <ul className="space-y-0.5">
+                    {commandSuggestions.map((definition, index) => (
+                      <li key={definition.usage}>
+                        <button
+                          onClick={() => applyCommandSuggestion(definition)}
+                          className={`flex w-full items-center justify-between gap-3 px-2 py-1 text-left text-[11px] text-black transition-colors ${index === selectedCommandIndex ? 'bg-[#F3E7A4]' : 'hover:bg-[#F7F1CF]'}`}
+                        >
+                          <span className="truncate font-black text-black">{definition.usage}</span>
+                          <span className="truncate text-[10px] text-black">{definition.description}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
-              <button
-                onClick={() => handleSend()}
-                disabled={(!input.trim() && attachments.length === 0) || isLoading || connStatus !== 'ok'}
-                className={`px-12 transition-all active:scale-95 flex items-center justify-center border-l-2 border-black ${
-                  (input.trim() || attachments.length > 0) && !isLoading && connStatus === 'ok'
-                    ? 'bg-black text-[#FDFCF0]'
-                    : 'bg-black/5 text-black/20'
-                }`}
-              >
-                <Icons.Send />
-              </button>
+
+              <div className="flex items-stretch overflow-hidden border-2 border-black bg-white shadow-[8px_8px_0px_#000000]">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".txt,.md,.csv,.json,.xml,.html,.pdf,.docx,.xlsx,.doc,.py,.js,.ts,.tsx,.jsx,.yaml,.yml,.toml,.ini,.cfg,.log,.sql,.graphql,image/*,video/*"
+                  className="hidden"
+                  onChange={(e) => handleAttach(e.target.files)}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach files or images"
+                  disabled={attachUploading}
+                  className="flex items-center border-r border-black/10 px-3 text-black/30 transition-colors hover:bg-black/5 hover:text-black"
+                >
+                  <Icons.Paperclip />
+                </button>
+                <button
+                  onClick={() => setShowMediaUrlInput(v => !v)}
+                  title="Attach image/video URL"
+                  className={`flex items-center border-r border-black/10 px-3 transition-colors ${showMediaUrlInput ? 'bg-black/5 text-black' : 'text-black/30 hover:bg-black/5 hover:text-black'}`}
+                >
+                  <Icons.Link />
+                </button>
+                <input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                  placeholder={
+                    parallelMode && messages.filter(m => m.role === 'user').length === 0
+                      ? 'Enter a topic to debate...'
+                      : parallelMode
+                      ? 'Butt in...'
+                      : 'Type / for commands or enter a message...'
+                  }
+                  className="flex-1 border-none bg-transparent px-5 py-5 text-[16px] font-black text-black outline-none placeholder:text-black/10 md:px-8 md:py-6 md:text-sm"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                {isLoading && (
+                  <>
+                    <button
+                      onClick={handleStop}
+                      title="Stop generation (keep partial output)"
+                      className="flex items-center gap-1.5 border-l-2 border-black bg-amber-50 px-4 text-[9px] font-black uppercase tracking-widest text-amber-700 transition-colors hover:bg-amber-100"
+                    >
+                      <span className="inline-block h-3 w-3 rounded-sm border-2 border-amber-700" />
+                      Stop
+                    </button>
+                    <button
+                      onClick={handleKill}
+                      title="Kill - abort and discard current response"
+                      className="flex items-center gap-1.5 border-l-2 border-black bg-red-50 px-4 text-[9px] font-black uppercase tracking-widest text-red-600 transition-colors hover:bg-red-100"
+                    >
+                      <span className="text-base leading-none">x</span>
+                      Kill
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() => handleSend()}
+                  disabled={(!input.trim() && attachments.length === 0) || isLoading || connStatus !== 'ok'}
+                  className={`flex items-center justify-center border-l-2 border-black px-12 transition-all active:scale-95 ${
+                    (input.trim() || attachments.length > 0) && !isLoading && connStatus === 'ok'
+                      ? 'bg-black text-[#FDFCF0]'
+                      : 'bg-black/5 text-black/20'
+                  }`}
+                >
+                  <Icons.Send />
+                </button>
+              </div>
             </div>
           </div>
         </div>

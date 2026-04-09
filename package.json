@@ -6,21 +6,37 @@
   "license": "MIT",
   "engines": { "node": ">=20.0.0" },
   "bin": {
-    "shapagent": "./bin/shapagent.js",
-    "ShapeAgent": "./bin/shapagent.js",
-    "OmniShapeAgent": "./bin/shapagent.js",
-    "omnishapeagent": "./bin/shapagent.js",
-    "oshape": "./bin/shapagent.js"
+    "omnishapeagent": "./bin/omnishapeagent.js",
+    "oshape": "./bin/omnishapeagent.js",
+    "shapagent": "./bin/omnishapeagent.js"
   },
+  "files": [
+    "README.md",
+    "TAILSCALE.md",
+    "bin",
+    "bots",
+    "data/.gitkeep",
+    "orchestrator",
+    "palette-configs",
+    "public",
+    "scripts",
+    "skills",
+    "src",
+    "eslint.config.mjs",
+    "next-env.d.ts",
+    "next.config.ts",
+    "postcss.config.mjs",
+    "tsconfig.json"
+  ],
   "scripts": {
-    "cli": "node bin/shapagent.js",
-    "install-cli": "npm link",
+    "cli": "node bin/omnishapeagent.js",
     "dev": "next dev --webpack -H 0.0.0.0",
     "dev:turbo": "next dev -H 0.0.0.0",
     "dev:lan": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start -H 0.0.0.0",
-    "lint": "eslint"
+    "lint": "eslint",
+    "prepublishOnly": "npm run lint && npm run build"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
@@ -31,7 +47,7 @@
     "ffmpeg-static": "^5.3.0",
     "next": "16.2.1",
     "node-notifier": "^10.0.1",
-    "nodemailer": "^8.0.4",
+    "nodemailer": "^8.0.5",
     "opusscript": "^0.0.8",
     "react": "19.2.4",
     "react-dom": "19.2.4",

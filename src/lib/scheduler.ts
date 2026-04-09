@@ -2,6 +2,7 @@ import fs from 'fs';
 import { runAgentLoopText } from './agent';
 import { generateEmbedding, cosineSimilarity } from './embeddings';
 import { sendTelegramMessage } from './tools/telegram';
+import { setEnvKey } from './tools/config';
 
 import { ensureWorkspacePaths } from './paths-bootstrap';
 import { PATHS } from './paths-core';
@@ -42,6 +43,18 @@ class AdvancedScheduler {
 
   constructor() {
     this.loadState();
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_TRANSPORT !== 'webhook') {
+      this.startTelegramPolling();
+    }
+  }
+
+  private async notifyAuthorizedTelegram(prefix: string, message: string) {
+    if (!process.env.TELEGRAM_CHAT_ID || !process.env.TELEGRAM_BOT_TOKEN) return;
+    const payload = `${prefix}\n\n${message}`.trim();
+    const result = await sendTelegramMessage(payload, process.env.TELEGRAM_CHAT_ID);
+    if (result.startsWith('Error:') || result.startsWith('Failed') || result.startsWith('Telegram error:')) {
+      console.warn('[Scheduler] Telegram notify failed:', result);
+    }
   }
 
   private loadState() {
@@ -172,8 +185,13 @@ class AdvancedScheduler {
           runAgentLoopText(
             `[BACKGROUND RESONANCE TRIGGER] Concept matched: "${task.targetConcept}". Execute: ${task.taskPrompt}`,
             [{ role: 'system', content: 'Asynchronous resonance trigger.' }]
-          ).then(res => console.log("[Resonance Task]", res.substring(0, 50)))
-           .catch((e: any) => console.error("Resonance task failed", e));
+          ).then(async (res) => {
+            console.log("[Resonance Task]", res.substring(0, 50));
+            await this.notifyAuthorizedTelegram(`[Resonance] ${task.targetConcept}`, res);
+          }).catch(async (error: unknown) => {
+            console.error("Resonance task failed", error);
+            await this.notifyAuthorizedTelegram(`[Resonance] ${task.targetConcept}`, `Background resonance task failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
         }
       }
     }).catch(() => {}); // swallow embedding errors in background
@@ -193,8 +211,13 @@ class AdvancedScheduler {
           runAgentLoopText(
             `[BACKGROUND CRON TRIGGER] Execute scheduled task: ${t.taskPrompt}`,
             [{ role: 'system', content: 'Cron trigger.' }]
-          ).then(res => console.log("[Cron Task]", res.substring(0, 80)))
-           .catch((e: any) => console.error("Cron failed", e));
+          ).then(async (res) => {
+            console.log("[Cron Task]", res.substring(0, 80));
+            await this.notifyAuthorizedTelegram(`[Scheduled Task${t.label ? `: ${t.label}` : ''}]`, res);
+          }).catch(async (error: unknown) => {
+            console.error("Cron failed", error);
+            await this.notifyAuthorizedTelegram(`[Scheduled Task${t.label ? `: ${t.label}` : ''}]`, `Scheduled task failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
         }
       }
       if (anyFired) this.saveState();
@@ -207,9 +230,9 @@ class AdvancedScheduler {
       const token = process.env.TELEGRAM_BOT_TOKEN;
       if (!token) return;
 
-      // Require explicit TELEGRAM_CHAT_ID — never auto-capture from untrusted senders
+      const setupPending = process.env.TELEGRAM_SETUP_PENDING === 'true';
       const authId = process.env.TELEGRAM_CHAT_ID;
-      if (!authId) {
+      if (!authId && !setupPending) {
         console.warn('[POLL] TELEGRAM_CHAT_ID not set. Polling disabled until configured. Use set_env_key("TELEGRAM_CHAT_ID", "<your-chat-id>").');
         return;
       }
@@ -226,6 +249,13 @@ class AdvancedScheduler {
             if (!msg || !msg.text) continue;
 
             const chatId = String(msg.chat.id);
+            if (!authId && setupPending && msg.chat.type === 'private') {
+              setEnvKey('TELEGRAM_CHAT_ID', chatId);
+              setEnvKey('TELEGRAM_SETUP_PENDING', 'false');
+              await sendTelegramMessage('OmniShapeAgent captured this chat as the authorized Telegram control channel. Future messages from this chat will drive the shared agent runtime.', chatId);
+              continue;
+            }
+
             if (chatId !== authId) {
               console.warn(`[POLL] Unauthorized Telegram msg from ${chatId} — ignored.`);
               continue;
@@ -233,8 +263,12 @@ class AdvancedScheduler {
 
             console.log(`[POLL] Processing message from ${chatId}: "${msg.text}"`);
             const model = process.env.VLLM_MODEL || process.env.OLLAMA_MODEL || 'llama3';
-            const response = await runAgentLoopText(msg.text, [], { model });
-            await sendTelegramMessage(response, chatId);
+            try {
+              const response = await runAgentLoopText(msg.text, [], { model });
+              await sendTelegramMessage(response, chatId);
+            } catch (error: unknown) {
+              await sendTelegramMessage(`OmniShapeAgent hit an error while processing that message: ${error instanceof Error ? error.message : String(error)}`, chatId);
+            }
           }
         }
       } catch {
@@ -247,6 +281,14 @@ class AdvancedScheduler {
     if (this.telegramIntervalId) {
       clearInterval(this.telegramIntervalId);
       this.telegramIntervalId = null;
+    }
+  }
+
+  public refreshTelegramTransport() {
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_TRANSPORT !== 'webhook') {
+      this.startTelegramPolling();
+    } else {
+      this.stopTelegramPolling();
     }
   }
 }

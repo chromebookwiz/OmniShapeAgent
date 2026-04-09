@@ -48,6 +48,11 @@ export async function GET(req: Request) {
           importance: r.record.importance,
           accessCount: r.record.accessCount,
           tags: r.record.metadata.tags ?? [],
+          cognitiveLayer: r.record.metadata.cognitiveLayer,
+          taskSalience: r.record.metadata.taskSalience,
+          emotion: r.record.metadata.emotion,
+          triggerKeywords: r.record.metadata.triggerKeywords ?? [],
+          suppressedUntil: r.record.metadata.suppressedUntil ?? null,
           source: r.record.metadata.source,
           topic: r.record.metadata.topic,
           createdAt: r.record.createdAt,
@@ -64,6 +69,11 @@ export async function GET(req: Request) {
             importance: r.importance,
             accessCount: r.accessCount,
             tags: r.metadata.tags ?? [],
+            cognitiveLayer: r.metadata.cognitiveLayer,
+            taskSalience: r.metadata.taskSalience,
+            emotion: r.metadata.emotion,
+            triggerKeywords: r.metadata.triggerKeywords ?? [],
+            suppressedUntil: r.metadata.suppressedUntil ?? null,
             source: r.metadata.source,
             topic: r.metadata.topic,
             createdAt: r.createdAt,
@@ -151,7 +161,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const { content, importance, tags, source } = await req.json();
+    const { content, importance, tags, source, cognitiveLayer, taskScope, taskSalience, emotion, triggerKeywords } = await req.json();
     if (!content?.trim()) return NextResponse.json({ error: 'content required' }, { status: 400 });
     const embedding = await generateEmbedding(content);
     const record = vectorStore.upsert({
@@ -159,7 +169,15 @@ export async function POST(req: Request) {
       embedding,
       dim: embedding.length,
       importance: Math.max(0.1, Math.min(2.0, importance ?? 1.0)),
-      metadata: { source: source ?? 'user', tags: Array.isArray(tags) ? tags : [] },
+      metadata: {
+        source: source ?? 'user',
+        tags: Array.isArray(tags) ? tags : [],
+        cognitiveLayer,
+        taskScope,
+        taskSalience,
+        emotion,
+        triggerKeywords: Array.isArray(triggerKeywords) ? triggerKeywords : [],
+      },
     });
     return NextResponse.json({ ok: true, id: record.id, content: record.content });
   } catch (e: any) {
@@ -237,6 +255,11 @@ function serializeRecords(records: import('@/lib/vector-store').MemoryRecord[]) 
     importance: r.importance,
     accessCount: r.accessCount,
     tags: r.metadata.tags ?? [],
+    cognitiveLayer: r.metadata.cognitiveLayer,
+    taskSalience: r.metadata.taskSalience,
+    emotion: r.metadata.emotion,
+    triggerKeywords: r.metadata.triggerKeywords ?? [],
+    suppressedUntil: r.metadata.suppressedUntil ?? null,
     source: r.metadata.source,
     topic: r.metadata.topic,
     geometry: r.geometry

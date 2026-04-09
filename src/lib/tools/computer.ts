@@ -49,10 +49,10 @@ export async function takeScreenshot(outputPath?: string): Promise<string> {
   try {
     await ensurePyautogui();
     // Default: save to screenshots/ workspace folder (not OS temp)
-    const screenshotsDir = path.join(process.cwd(), 'screenshots');
+    const screenshotsDir = path.join(/*turbopackIgnore: true*/ process.cwd(), 'screenshots');
     try { if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true }); } catch {}
     const outFile = outputPath
-      ? path.resolve(process.cwd(), outputPath)
+      ? path.resolve(/*turbopackIgnore: true*/ process.cwd(), outputPath)
       : path.join(screenshotsDir, `screenshot_${Date.now()}.png`);
     const code = `
 import pyautogui
