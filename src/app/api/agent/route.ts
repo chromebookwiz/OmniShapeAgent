@@ -8,6 +8,7 @@ export async function POST(req: Request) {
     const {
       message, history, model, systemPrompt, temperature, synergyMode, companionModel,
       openrouterApiKey, disabledToolGroups, imagePipeline, imageModel, autoApproveTerminal,
+      metacognition, compressionCheckpoint,
       contextWindow, attachedImages, attachedMediaUrls,
       // Per-request URL overrides — forwarded from CLI config or web app settings
       ollamaUrl, vllmUrl,
@@ -28,6 +29,8 @@ export async function POST(req: Request) {
       imagePipeline: imagePipeline || undefined,
       imageModel: imageModel || undefined,
       autoApproveTerminal: autoApproveTerminal ?? false,
+      metacognition: metacognition === true,
+      compressionCheckpoint: typeof compressionCheckpoint === 'string' && compressionCheckpoint.trim() ? compressionCheckpoint : undefined,
       contextWindow: contextWindow ? Number(contextWindow) : undefined,
       attachedImages: Array.isArray(attachedImages) ? attachedImages : undefined,
       attachedMediaUrls: Array.isArray(attachedMediaUrls) ? attachedMediaUrls : undefined,

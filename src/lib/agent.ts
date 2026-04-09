@@ -58,7 +58,7 @@ import {
   discordVoiceQueueAdd, discordVoiceQueueList, discordVoiceSkip, discordVoiceSetVolume,
 } from './tools/discord-voice';
 import { userProfile } from './user-profile';
-import { memoryConsolidator } from './memory-consolidator';
+import { ensureHeartbeatConsolidatorStarted, memoryConsolidator } from './memory-consolidator';
 import { memoryPolicy } from './memory-policy';
 import { GENERATED_SCREENSHOTS_DIR, ROOT, SCREENSHOTS_DIR } from './paths-core';
 
@@ -113,8 +113,10 @@ export interface AgentOptions {
   ollamaUrl?: string;
   /** Override vLLM base URL for models without @url in model string */
   vllmUrl?: string;
-  /** Run end-of-turn metacognitive check ("complete or continue?"). Default: true when tools were used. */
+  /** Run end-of-turn metacognitive check ("complete or continue?"). Default: false; enable only for explicit autonomous execution. */
   metacognition?: boolean;
+  /** Persisted compressed conversation checkpoint from prior turns. */
+  compressionCheckpoint?: string;
   /** Self-improve mode: agent has full access to self-analysis/patch tools. */
   selfImproveMode?: boolean;
 }
@@ -146,6 +148,8 @@ Working style:
 - Fix the concrete problem before changing architecture.
 - Summarize only the information that matters when using tools.
 - Stay aligned to the current user request rather than inventing new goals.
+- Unless the prompt explicitly says autonomous mode is active, treat the interaction as a single user-directed turn.
+- Do not ask yourself what to do next, narrate hidden planning, or schedule your own follow-up turns in normal chat.
 
 Available capabilities include local model routing, persistent memory, file editing, terminal execution, browser and screen interaction, and repository-aware coding assistance.
 
@@ -631,11 +635,11 @@ This shows the actual screenshot alongside your grid analysis — best of both w
 
 ### Auto-Continue Protocol
 
-If you finish a response and realize there is **more work that needs to be done** (e.g., you outlined steps but haven't executed them, a task is partially complete, tools returned results you haven't acted on), include this **on its own line at the end of your response**:
+If you are in **autonomous mode** or the user explicitly asked for unattended continuation and there is **more work that needs to be done** (e.g., you outlined steps but haven't executed them, a task is partially complete, tools returned results you haven't acted on), include this **on its own line at the end of your response**:
 
 \`[AUTO_CONTINUE: brief description of remaining work]\`
 
-The system will immediately continue with the specified task. **Only use this when work is genuinely incomplete** — not for every response.
+The system will immediately continue with the specified task. **Only use this when work is genuinely incomplete and autonomous continuation is actually desired** — not for ordinary chat replies.
 
 Example situations:
 - You said "I'll now install dependencies and test" → include [AUTO_CONTINUE: install dependencies and run tests]
@@ -682,7 +686,7 @@ const TECHNICAL_INSTRUCTIONS = `
 
 **Exit cleanly** — When your task is complete, give your conclusion directly (no tool block). The loop ends automatically when you respond without a tool. Use \`end_turn\` only to force-stop a runaway loop or deliver a closing message mid-loop.
 
-**Self-prompt** — Use \`prompt_self\` to schedule follow-up work in the next turn without blocking the current response. Useful for "do X, then come back and do Y."
+**Self-prompt** — Use \`prompt_self\` only in autonomous mode or when the user explicitly asked you to continue unattended. Do not use it in ordinary chat.
 
 ---
 
@@ -1444,7 +1448,7 @@ Generated images are stored in screenshots/generated/. Use display_image_in_wind
 
 **Flow Control:**
 - \`end_turn(message?)\` — Immediately end the current turn. Optional \`message\` is delivered as a final reply. Use to stop runaway loops or close a task cleanly.
-- \`prompt_self(task)\` — End current turn and schedule a follow-up task in the next turn (via AUTO_CONTINUE). Use for multi-step work where you need to pause and resume.
+- \`prompt_self(task)\` — End current turn and schedule a follow-up task in the next turn (via AUTO_CONTINUE). Use only in autonomous mode or when the user explicitly asked for unattended continuation.
 
 **Autonomous Mode ⭕** (when enabled via the circle button):
 - \`stop_agent(reason)\` — **REQUIRED** to end the autonomous loop. Call when: task complete, need human input, stuck, or unrecoverable error. This is how you stop.
@@ -1570,13 +1574,9 @@ After every tool result you receive a [✓ OK / ✗ FAILED] reflection cue. Use 
 - Is the goal now closer, same distance, or further away?
 
 ### 5 · Consolidate (Turn closure)
-At the end of your response — after all tool calls — you will receive a metacognitive prompt
-asking you to evaluate task completion. Respond honestly:
-- If the task is **complete**: state [DONE: brief summary]
-- If more work is needed: state [CONTINUE: specific next step]
-
-The system will auto-continue only if you signal [CONTINUE: ...]. Otherwise the turn ends.
-This means YOU control your own continuation — not the system. Choose deliberately.
+In normal chat, finish the current turn directly once the user request is satisfied.
+Do not emit self-directed continuation markers or ask yourself what to do next.
+Reserve continuation only for autonomous mode or for explicit unattended execution requested by the user.
 
 ### 6 · Self-improve (Evolutionary loop)
 When you notice a gap in your own reasoning or capabilities:
@@ -1804,6 +1804,58 @@ interface CompressionOptions {
   openrouterApiKey?: string;
   keepRecent?: number;
   maxPassDepth?: number;   // recursion guard
+}
+
+function getLatestCompressionSummary(history: Message[]): string | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (msg.role === 'system' && msg.content.startsWith('### Context Compression')) {
+      return msg.content;
+    }
+  }
+  return undefined;
+}
+
+function stripThinkingBlocks(text: string): string {
+  return text
+    .replace(/\[THINKING\][\s\S]*?\[THOUGHT_END\]/g, '')
+    .replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '')
+    .trim();
+}
+
+function looksTruncatedForContinuation(text: string): boolean {
+  const cleaned = stripThinkingBlocks(text).trim();
+  if (!cleaned) return false;
+  const tail = cleaned.slice(-500);
+  const fenceCount = (tail.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) return true;
+  if (/[,:;\-]$/.test(tail)) return true;
+  if (/\b(and|or|with|then|because|that|which|where)\s*$/i.test(tail)) return true;
+  if (/\b(I'll|I will|Let me|Next I|Now I)\s*$/i.test(tail)) return true;
+  if (tail.length > 180 && !/[.!?`"'\]\)]$/.test(tail)) return true;
+  return false;
+}
+
+function buildResumeDirective(args: {
+  userMessage: string;
+  nextStep: string;
+  responseTail: string;
+  usedCompression: boolean;
+  compressionCheckpoint?: string;
+}): string {
+  const responseTail = stripThinkingBlocks(args.responseTail).slice(-700).trim();
+  const checkpointHint = args.usedCompression && args.compressionCheckpoint
+    ? 'A compression checkpoint from the prior context will be injected automatically. Use it as the authoritative summary of earlier work.'
+    : 'Use the recent conversation state to continue without restarting solved work.';
+  return [
+    '[AUTO_RESUME]',
+    `Original task: ${args.userMessage.slice(0, 260)}`,
+    `Immediate next step: ${args.nextStep.slice(0, 260)}`,
+    checkpointHint,
+    responseTail
+      ? `Resume exactly from the unfinished edge of this prior output, without redoing completed parts:\n${responseTail}`
+      : 'Continue directly from the latest completed state.',
+  ].join('\n\n').slice(0, 1800);
 }
 
 /**
@@ -2596,8 +2648,13 @@ export async function* runAgentLoop(
   | { type: 'approval_request', id: string, command: string, reason: string, risk: string }
   | { type: 'stop_agent', content: string }
   | { type: 'vision_snapshot', content: string }
+  | { type: 'context_summary', content: string }
   | { type: 'error', content: string }
 > {
+  const isHeartbeatTurn = userMessage.trimStart().startsWith('[HEARTBEAT]');
+  if (isHeartbeatTurn) {
+    ensureHeartbeatConsolidatorStarted();
+  }
   let messages = [...history];
   const {
     model = 'vllm:default',
@@ -2613,11 +2670,18 @@ export async function* runAgentLoop(
     sessionId = `session-${Date.now()}`,
     ollamaUrl: optOllamaUrl,
     vllmUrl: optVllmUrl,
+    compressionCheckpoint,
   } = options;
   // Per-request URL overrides — forwarded from CLI config or web app settings panel
   const urlOverrides = (optOllamaUrl || optVllmUrl) ? { ollamaUrl: optOllamaUrl, vllmUrl: optVllmUrl } : undefined;
+  const normalizedCheckpoint = typeof compressionCheckpoint === 'string' ? compressionCheckpoint.trim() : '';
+  if (normalizedCheckpoint) {
+    messages = [{ role: 'system', content: normalizedCheckpoint }, ...messages];
+  }
   let imagesConsumed = false;
   const midTurnImages: string[] = []; // base64 dataUrls from vision_self_check within current turn
+  let latestCompressionCheckpoint = normalizedCheckpoint || undefined;
+  let usedCompressionThisTurn = false;
 
   // ── Working memory — persists across loops within this turn ──────────────
   const turnCtx = {
@@ -2639,7 +2703,12 @@ export async function* runAgentLoop(
         maxPassDepth: 2,
       });
       const newCount = getHistoryTokenCount(messages);
+      latestCompressionCheckpoint = getLatestCompressionSummary(messages) ?? latestCompressionCheckpoint;
+      usedCompressionThisTurn = true;
       yield { type: 'status', content: `Context compressed: ${tokenCount.toLocaleString()} → ${newCount.toLocaleString()} tokens.` };
+      if (latestCompressionCheckpoint) {
+        yield { type: 'context_summary', content: latestCompressionCheckpoint };
+      }
     } catch (compErr: any) {
       yield { type: 'status', content: `Compression failed (${compErr.message}) — continuing with full context.` };
     }
@@ -4962,7 +5031,7 @@ except Exception as e:
             ? `\n\n[${statusTag}] Use this result directly. Do not repeat the same install or generation call unless there is a concrete error.`
             : succeeded
               ? `\n\n[${statusTag}] Use the result only if it clearly advances the current user request. Avoid inventing extra follow-up tasks or repeating solved steps.`
-              : `\n\n[${statusTag}] Use only the concrete error to choose the next step. Do not retry without a specific correction.`;
+              : `\n\n[${statusTag}] Use only the concrete error to choose the next step. Either make a specific correction or report the blocker. Do not ask yourself follow-up questions or retry without a specific fix.`;
           messages.push({ role: 'system', content: `Tool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
           finalAppendedOutput += `\n[TOOL] ${name}: ${statusTag}\n`;
 
@@ -4997,7 +5066,7 @@ except Exception as e:
           const errMsg = e instanceof Error ? e.message : String(e);
           const statusTag = '✗ FAILED';
           const resultStr = `Error: ${errMsg}`;
-          const reflectionCue = `\n\n[${statusTag}] Reflect: was this the expected result? What does it mean for the current plan? What is the optimal next action?`;
+          const reflectionCue = `\n\n[${statusTag}] Use the concrete error to decide the next step. Either apply a specific fix or report the blocker. Do not ask yourself follow-up questions.`;
           messages.push({ role: 'system', content: `Tool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
           finalAppendedOutput += `\n[TOOL] ${name}: ${statusTag}\n`;
           metaLearner.recordToolCall({
@@ -5121,10 +5190,12 @@ except Exception as e:
   // turn involved real tool work.  A lightweight single-call asks the model to
   // evaluate completion so it can signal CONTINUE itself — rather than
   // relying on the client to fire blind auto-continues.
-  const doMetacognition = options.metacognition !== false && !shouldEndTurn && turnCtx.hadToolCalls;
+  const doMetacognition = options.metacognition === true && !shouldEndTurn && (turnCtx.hadToolCalls || usedCompressionThisTurn || !!responseText.trim());
   if (doMetacognition && finalAppendedOutput.trim()) {
     try {
       yield { type: 'status', content: 'Metacognitive check: evaluating turn completion…' };
+      const responseTail = stripThinkingBlocks(finalAppendedOutput).slice(-900);
+      const likelyTruncated = looksTruncatedForContinuation(responseTail);
       const provInfo = resolveProviderInfo(model, orApiKey, urlOverrides);
       const checkPayload = {
         model: provInfo.targetModel,
@@ -5137,11 +5208,14 @@ except Exception as e:
             role: 'user',
             content:
               `Original task: "${userMessage.slice(0, 300)}"\n\n` +
+              `Context was compressed this turn: ${usedCompressionThisTurn ? 'yes' : 'no'}.\n` +
+              `A persisted compression checkpoint is available for the next turn: ${latestCompressionCheckpoint ? 'yes' : 'no'}.\n` +
+              `Latest visible response tail may be truncated: ${likelyTruncated ? 'yes' : 'no'}.\n\n` +
               `What you did this turn (tools: ${[...new Set(turnCtx.toolsUsed)].join(', ') || 'none'}, ` +
               `succeeded: ${turnCtx.toolsSucceeded}, failed: ${turnCtx.toolsFailed}).\n\n` +
-              `Your last response (tail): "${finalAppendedOutput.slice(-400)}"\n\n` +
-              `Is the original task fully complete?\n` +
-              `JSON: {"complete": true|false, "confidence": 0.0-1.0, "reason": "one sentence", "next_step": "what to do next if not complete"}`,
+              `Your last response (tail): "${responseTail}"\n\n` +
+              `Decide whether the agent should immediately continue from the exact point it left off. Continue when the task is unfinished, the response appears cut off, or compression means a continuation handoff is appropriate.\n` +
+              `JSON: {"complete": true|false, "confidence": 0.0-1.0, "reason": "one sentence", "next_step": "what to do next if not complete", "resume_from_tail": true|false}`,
           },
         ],
         temperature: 0.1,
@@ -5163,12 +5237,24 @@ except Exception as e:
       const jsonMatch = checkRaw.match(/\{[\s\S]*?\}/);
       if (jsonMatch) {
         const check = JSON.parse(jsonMatch[0]) as {
-          complete: boolean; confidence: number; reason: string; next_step: string
+          complete: boolean; confidence: number; reason: string; next_step: string; resume_from_tail?: boolean
         };
-        if (!check.complete && check.confidence < 0.85 && check.next_step) {
+        const shouldContinue = !check.complete && !!check.next_step && (
+          check.confidence >= 0.45 ||
+          usedCompressionThisTurn ||
+          likelyTruncated ||
+          check.resume_from_tail === true
+        );
+        if (shouldContinue) {
           // Agent signals it needs to continue — emit as autoContinue directive
           // (not written into the visible response, just the metadata field)
-          const continuationDirective = check.next_step.slice(0, 200);
+          const continuationDirective = buildResumeDirective({
+            userMessage,
+            nextStep: check.next_step,
+            responseTail,
+            usedCompression: usedCompressionThisTurn,
+            compressionCheckpoint: latestCompressionCheckpoint,
+          });
           yield { type: 'done', content: finalAppendedOutput.trim(), autoContinue: continuationDirective };
           return; // early return — skip the normal done yield below
         }

@@ -200,24 +200,82 @@ The optional Python service under `orchestrator/` provides:
 
 It is not required to run the web app, but it is part of the shipped architecture.
 
+## npm package usage
+
+The package is designed to support both local development and npm-installed runtime usage.
+
+Warning:
+
+- OmniShapeAgent gives the running agent broad access to your local system.
+- It can execute terminal commands, read and write files, inspect network resources, and operate enabled integrations.
+- Only install and run it if you trust the package and explicitly want to grant that access.
+- The CLI will ask for confirmation before first runtime startup unless you pass `--yes`.
+
 ## Quick start
 
-Install and boot the app:
+Install from npm and start the packaged runtime:
 
 ```bash
-npm install
-npm run dev
+npm install -g omnishapeagent
+omnishapeagent serve --yes
 ```
 
-Open `http://localhost:3000`.
+Or run it without a global install:
+
+```bash
+npx omnishapeagent serve --yes
+```
+
+Open `http://localhost:3000` unless you selected a different port.
+
+Global install:
+
+```bash
+npm install -g omnishapeagent
+omnishapeagent serve --yes
+```
+
+One-shot launch without a global install:
+
+```bash
+npx omnishapeagent serve --yes
+```
+
+The CLI server command will:
+
+- Create the local runtime directories it needs.
+- Reuse an existing production build when available.
+- Run `next build` automatically on first launch, or when you pass `--rebuild`.
+- Start the shared runtime on a configurable host and port.
+
+Useful variants:
+
+```bash
+omnishapeagent serve --port 4123 --yes
+omnishapeagent serve --host 127.0.0.1 --port 3000 --yes
+omnishapeagent serve --dev --yes
+omnishapeagent serve --rebuild --yes
+```
+
+CLI commands such as `omnishapeagent chat` and `omnishapeagent status` target `http://127.0.0.1:3000` by default. Override that with either:
+
+- `--server http://127.0.0.1:4123`
+- `OMNISHAPEAGENT_URL=http://127.0.0.1:4123`
+- `OMNISHAPEAGENT_PORT=4123`
 
 ## Production launch
 
-Build and start the app:
+If you are working from a source checkout instead of the published npm package, build and start the app with:
 
 ```bash
 npm run build
 npm run start
+```
+
+Equivalent packaged runtime command:
+
+```bash
+npm run serve
 ```
 
 The default dev script uses webpack for stability:
@@ -258,6 +316,9 @@ Common optional environment variables include:
 - `OPENROUTER_API_KEY` for OpenRouter-compatible models.
 - `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID` for Discord integration.
 - `TELEGRAM_BOT_TOKEN` for Telegram bot control.
+- `PORT` or `OMNISHAPEAGENT_PORT` to choose the runtime port.
+- `OMNISHAPEAGENT_HOST` to choose the bind host for `omnishapeagent serve`.
+- `OMNISHAPEAGENT_URL` to tell the CLI where the shared runtime is listening.
 - `TELEGRAM_CHAT_ID` for the single authorized Telegram control chat.
 - `TELEGRAM_TRANSPORT` as `polling` or `webhook`.
 - `TELEGRAM_WEBHOOK_URL` when webhook mode is active.

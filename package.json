@@ -1,18 +1,36 @@
 {
   "name": "omnishapeagent",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "Local AI agent with chat, tool use, persistent memory, and vision",
-  "keywords": ["ai", "agent", "autonomous", "llm", "ollama", "openrouter", "vllm", "computer-use"],
+  "keywords": [
+    "ai",
+    "agent",
+    "autonomous",
+    "llm",
+    "ollama",
+    "openrouter",
+    "vllm",
+    "computer-use"
+  ],
   "license": "MIT",
-  "engines": { "node": ">=20.0.0" },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "bin": {
-    "omnishapeagent": "./bin/omnishapeagent.js",
-    "oshape": "./bin/omnishapeagent.js",
-    "shapagent": "./bin/omnishapeagent.js"
+    "omnishapeagent": "bin/omnishapeagent.js",
+    "oshape": "bin/omnishapeagent.js",
+    "shapagent": "bin/omnishapeagent.js"
   },
   "files": [
     "README.md",
     "TAILSCALE.md",
+    ".next/BUILD_ID",
+    ".next/*.json",
+    ".next/server",
+    ".next/static",
     "bin",
     "bots",
     "data/.gitkeep",
@@ -30,12 +48,14 @@
   ],
   "scripts": {
     "cli": "node bin/omnishapeagent.js",
+    "serve": "node bin/omnishapeagent.js serve",
     "dev": "next dev --webpack -H 0.0.0.0",
     "dev:turbo": "next dev -H 0.0.0.0",
     "dev:lan": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start -H 0.0.0.0",
     "lint": "eslint",
+    "postinstall": "node scripts/install-warning.js",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "dependencies": {

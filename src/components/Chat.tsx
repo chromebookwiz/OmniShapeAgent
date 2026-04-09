@@ -14,7 +14,7 @@ type Message = {
   content: string;
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision autonomous reasoning system. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. All geometry - and all higher reasoning - emerges from the simplest structure: the line.`;
+const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision engineering assistant. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. Normal chat is single-turn and user-directed: unless autonomy is explicitly enabled, do not act as if you are in autonomous mode, do not ask yourself what to do next, and do not schedule follow-up turns on your own. All geometry - and all higher reasoning - emerges from the simplest structure: the line.`;
 
 
 const Icons = {
@@ -480,6 +480,7 @@ export default function Chat() {
     }
   });
   const [surveyorMode, setSurveyorMode] = useState(false);
+  const [compressionCheckpoint, setCompressionCheckpoint] = useState<string | null>(null);
   // Autonomous mode
   const [autonomousMode, setAutonomousMode] = useState(false);
   const physicsModeActive = useMemo(
@@ -755,6 +756,7 @@ export default function Chat() {
       if (data.chat?.messages) {
         setMessages(data.chat.messages);
         setChatName(data.chat.name);
+        setCompressionCheckpoint(null);
         // Resume saving to the same file
         currentChatIdRef.current = chatId;
         setShowSavedPanel(false);
@@ -801,6 +803,7 @@ export default function Chat() {
   const startNewSession = useCallback(() => {
     setMessages([]);
     setChatName('New Session');
+    setCompressionCheckpoint(null);
     currentChatIdRef.current = null;
     setShowSavedPanel(false);
     setSelectedChats(new Set());
@@ -1157,6 +1160,7 @@ export default function Chat() {
           systemPrompt: (() => {
             let sp = systemPrompt;
             if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
+            else sp += '\n\n[NORMAL CHAT MODE] This is a single-turn response. Do not behave as if autonomous mode is active. Do not narrate hidden planning, ask yourself follow-up questions, or trigger your own continuation unless the user explicitly asks for unattended execution.';
             if (physicsModeActive) sp += '\n\n[PHYSICS MODE ACTIVE] When building a machine, use a concrete workflow: physics_reset(), physics_spawn() a fixed chassis or axle, physics_spawn() the moving part, physics_add_hinge() to connect them, physics_set_motor() to automate it, then physics_get_state() or vision_self_check() to verify the result. Give at least one explicit machine example when you explain or act.';
             if (surveyorMode) sp += '\n\n[CODING SURVEYOR MODE ACTIVE] You are the architect and reviewer supervising application creation through the LocalClawd CLI. Before using it, verify the CLI is available with a terminal command. If LocalClawd is missing, install it with npm install -g localclawd. Then use LocalClawd to generate or iterate on the application while you oversee architecture, validate outputs, inspect files, correct mistakes, and decide the next step. Do not hand-wave the process: explicitly supervise creation, check generated artifacts, and keep control of requirements and quality.';
             return sp;
@@ -1171,6 +1175,8 @@ export default function Chat() {
           imagePipeline: imagePipeline !== 'none' ? imagePipeline : undefined,
           imageModel: imagePipeline === 'openrouter-image' ? imageModel : undefined,
           autoApproveTerminal: autoApproveTerminal || undefined,
+          metacognition: autonomousMode,
+          compressionCheckpoint: compressionCheckpoint || undefined,
           contextWindow: primaryProvider === 'ollama' ? ollamaContextWindow : primaryProvider === 'openrouter' ? openrouterContextWindow : vllmContextWindow,
           attachedImages: imageAttachments.length > 0 ? imageAttachments : undefined,
           attachedMediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
@@ -1308,9 +1314,13 @@ export default function Chat() {
             } else if (chunk.type === 'vision_snapshot') {
               // Store screenshot for next autonomous turn
               pendingVisionSnapshotRef.current = chunk.content as string;
+            } else if (chunk.type === 'context_summary') {
+              if (typeof chunk.content === 'string' && chunk.content.trim()) {
+                setCompressionCheckpoint(chunk.content);
+              }
             } else if (chunk.type === 'done') {
               assistantMsg = chunk.content;
-              if (chunk.autoContinue) pendingAutoContinue = chunk.autoContinue;
+              if (autonomousMode && chunk.autoContinue) pendingAutoContinue = chunk.autoContinue;
               setMessages(prev => {
                 const next = [...prev];
                 next[next.length - 1] = { role: 'assistant', content: assistantMsg };
@@ -1325,7 +1335,7 @@ export default function Chat() {
         setTimeout(() => {
           setInput(`Discourse continuation: ${assistantMsg.substring(0, 500)}... Analyze and respond.`);
         }, 1500);
-      } else if (pendingAutoContinue) {
+      } else if (autonomousMode && pendingAutoContinue) {
         // Auto-continue: agent signaled there is more work to do - trigger after state settles
         setTimeout(() => setAutoContinuePending(pendingAutoContinue!), 600);
       } else if (autonomousMode && !agentStoppedAuto && !autoStopRequestedRef.current) {
@@ -1480,6 +1490,7 @@ export default function Chat() {
       setMessages([]);
       setSavedChats([]);
       setChatSummaries({});
+      setCompressionCheckpoint(null);
       currentChatIdRef.current = null;
       setChatName('New Session');
       setShowSettingsPanel(false);
@@ -1506,13 +1517,17 @@ export default function Chat() {
   // Auto-continue trigger - fires when agent signals [AUTO_CONTINUE: ...]
   const [autoContinuePending, setAutoContinuePending] = useState<string | null>(null);
   useEffect(() => {
+    if (!autonomousMode) {
+      setAutoContinuePending(null);
+      return;
+    }
     if (!autoContinuePending || isLoading) return;
     const task = autoContinuePending;
     setAutoContinuePending(null);
     setInput(task);
     const timer = setTimeout(() => { handleSendRef.current?.(); }, 300);
     return () => clearTimeout(timer);
-  }, [autoContinuePending, isLoading]);
+  }, [autoContinuePending, autonomousMode, isLoading]);
 
   const toggleParallel = () => {
     if (!parallelMode) {

@@ -143,6 +143,10 @@ class MemoryConsolidator {
     console.log('[Consolidator] Started. Will consolidate every 30 minutes.');
   }
 
+  isStarted() {
+    return this.intervalId !== null;
+  }
+
   stop() {
     if (this.intervalId) {
       clearInterval(this.intervalId);
@@ -331,16 +335,13 @@ class MemoryConsolidator {
 
 export const memoryConsolidator = new MemoryConsolidator();
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __shapeMemoryConsolidatorStarted: boolean | undefined;
-}
-
-// Auto-start on import (server-side only), but avoid repeated startup in the
-// same process and skip during the production build pipeline.
-if (typeof setInterval !== 'undefined' && process.env.npm_lifecycle_event !== 'build') {
-  if (!globalThis.__shapeMemoryConsolidatorStarted) {
-    memoryConsolidator.start();
-    globalThis.__shapeMemoryConsolidatorStarted = true;
+export function ensureHeartbeatConsolidatorStarted() {
+  if (typeof setInterval === 'undefined' || process.env.npm_lifecycle_event === 'build') {
+    return false;
   }
+  if (memoryConsolidator.isStarted()) {
+    return false;
+  }
+  memoryConsolidator.start();
+  return true;
 }

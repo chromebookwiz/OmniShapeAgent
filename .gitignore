@@ -1,3 +1,4 @@
+data/.system-access-consent
 # ─── Dependencies ────────────────────────────────────────────────────────────
 node_modules/
 .pnp
