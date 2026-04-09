@@ -202,6 +202,7 @@ const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { command: 'autonomous', usage: '/autonomous on', description: 'Let the agent keep working until it stops itself.', icon: 'Autonomous', section: 'modes', persistent: true, autocomplete: '/autonomous on' },
   { command: 'heartbeat', usage: '/heartbeat 15', description: 'Enable scheduled heartbeat turns at a minute interval.', icon: 'Heartbeat', section: 'modes', persistent: true, autocomplete: '/heartbeat 15' },
   { command: 'surveyor', usage: '/surveyor on', description: 'Architect and supervise app creation through the local LocalClawd CLI.', icon: 'Architect', section: 'modes', persistent: true, autocomplete: '/surveyor on' },
+  { command: 'localclawd', usage: '/localclawd my-app build a note app', description: 'Create a workspace directory and supervise LocalClawd as it builds and tests an app.', icon: 'Architect', section: 'more', autocomplete: '/localclawd my-app build a note app' },
   { command: 'doctor', usage: '/doctor', description: 'Run a full runtime and tool diagnosis.', icon: 'Gear', section: 'more' },
   { command: 'observe', usage: '/observe', description: 'Snapshot current system state and memory health.', icon: 'Memory', section: 'more' },
   { command: 'reflect', usage: '/reflect', description: 'Trigger a focused reflection loop on the current task.', icon: 'Autonomous', section: 'more' },
@@ -841,6 +842,7 @@ export default function Chat() {
           '/autonomous [on|off] - toggle autonomous mode\n' +
           '/heartbeat [minutes|on|off] - schedule periodic heartbeat turns\n' +
           '/surveyor [on|off] - supervise app creation through LocalClawd\n' +
+          '/localclawd <dir> <spec> - create a directory and supervise LocalClawd building the app\n' +
           '/doctor - run runtime and tool diagnostics\n' +
           '/observe - snapshot system state\n' +
           '/reflect - run a focused reasoning loop\n' +
@@ -904,6 +906,20 @@ export default function Chat() {
         appendSystemMessage(next
           ? 'Coding surveyor mode enabled. The architect will supervise application creation through LocalClawd and install it with npm if the CLI is missing.'
           : 'Coding surveyor mode disabled.');
+        break;
+      }
+      case 'localclawd': {
+        const [dirNameRaw, ...specParts] = rawArg.split(/\s+/).filter(Boolean);
+        const targetDir = dirNameRaw || `localclawd-app-${Date.now().toString(36)}`;
+        const specification = specParts.join(' ').trim();
+        if (!specification) {
+          appendSystemMessage('Usage: /localclawd <directory> <app specification>. Example: /localclawd inventory-app build a small inventory dashboard with tests.');
+          break;
+        }
+        queueAgentPrompt(
+          `Coding surveyor workflow: create a new directory named "${targetDir}" in the workspace root, verify the LocalClawd CLI is available with a terminal check, and if it is missing install it with npm install -g localclawd. Then invoke LocalClawd inside that directory to build this application: ${specification}. Act as the architect supervising another agent: inspect what LocalClawd generates, review and correct the implementation as needed, run tests or build checks as progress is made, and keep iterating until the app is in a working state or you hit a concrete blocker.`
+        );
+        appendSystemMessage(`Queued LocalClawd build supervision for ${targetDir}.`);
         break;
       }
       case 'history':
@@ -1628,7 +1644,7 @@ export default function Chat() {
         {/* Messaging Zone */}
         <div className="flex-1 relative overflow-hidden flex flex-col">
           {showActionMenu && (
-            <div className="pointer-events-none absolute right-4 top-4 z-20 flex justify-end md:right-6 md:top-5" ref={actionMenuRef}>
+            <div className="pointer-events-none absolute top-4 right-0 z-20 flex w-full justify-end pr-4 md:top-5 md:pr-6" ref={actionMenuRef}>
               <div className="pointer-events-auto w-[min(380px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[10px] border border-white/10 bg-[#111] shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
                 <div className="flex h-8 items-center gap-2 border-b border-white/10 bg-[#1a1a1a] px-3">
                   <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
@@ -1682,6 +1698,7 @@ export default function Chat() {
                         <ActionMenuButton icon={<Icons.Memory />} label="Memory Browser" command="/memory" description="Inspect, boost, and delete persistent memories." active={showMemoryPanel} onClick={() => { resetUtilityPanels(); setShowMemoryPanel(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Trophy />} label="Hall of Fame" command="/hall" description="Inspect top learned bot runs and strategies." active={showHallOfFame} onClick={() => { resetUtilityPanels(); setShowHallOfFame(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Physics />} label="Physics Simulator" command="/physics" description="Open the physics workspace for live experiments." active={physicsModeActive} onClick={openPhysicsWindow} />
+                        <ActionMenuButton icon={<Icons.Architect />} label="LocalClawd Builder" command="/localclawd" description="Create a new directory and supervise LocalClawd as it builds and tests the requested app." onClick={() => { appendSystemMessage('Run /localclawd <directory> <app specification> to launch a supervised LocalClawd build.'); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Bitcoin />} label="Crypto Wallet" command="/wallet" description="Manage local wallets and balance lookups." active={showCryptoWallet} onClick={() => { resetUtilityPanels(); setShowCryptoWallet(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Moltbook />} label="Moltbook" command="/moltbook" description="Open Moltbook shortcuts and posting prompts." active={showMoltbook} onClick={() => { resetUtilityPanels(); setShowMoltbook(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Bubble />} label="Discord Workflow" command="/discord" description="Have the agent inspect or run the next Discord action through tools and memory." onClick={() => { runLocalCommand('/discord'); setShowActionMenu(false); }} />
