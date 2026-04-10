@@ -2018,14 +2018,47 @@ function messagesToPrompt(messages: Array<{ role: string; content: string }>): s
   ].join('\n');
 }
 
+function formatDialogueMemory(userText: string, assistantText: string): string {
+  return [
+    '<dialogue>',
+    '<user_message>',
+    userText.trim(),
+    '</user_message>',
+    '<assistant_message>',
+    assistantText.trim(),
+    '</assistant_message>',
+    '</dialogue>',
+  ].join('\n');
+}
+
+function normalizeMemorySnippet(text: string): string {
+  const trimmed = text.trim();
+  const legacyDialogue = trimmed.match(/^User:\s*([\s\S]*?)\n(?:Assistant|Agent|OmniShapeAgent):\s*([\s\S]*)$/i);
+  if (legacyDialogue) {
+    return `user said: ${legacyDialogue[1].trim()} assistant replied: ${legacyDialogue[2].trim()}`;
+  }
+
+  return trimmed
+    .replace(/<dialogue>/gi, '')
+    .replace(/<\/dialogue>/gi, '')
+    .replace(/<user_message>/gi, 'user said: ')
+    .replace(/<\/user_message>/gi, ' ')
+    .replace(/<assistant_message>/gi, 'assistant replied: ')
+    .replace(/<\/assistant_message>/gi, ' ')
+    .replace(/(?:^|\n)(?:>\s*)?(?:Human|User|Nathan):\s*/gim, ' user said: ')
+    .replace(/(?:^|\n)(?:>\s*)?(?:Assistant|Agent|OmniShapeAgent):\s*/gim, ' assistant replied: ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function sanitizeAssistantOutput(text: string): string {
   let cleaned = text.trim();
   cleaned = cleaned.replace(/^(?:\[(?:ARCHITECT|AUDITOR)\]\s*)+/g, '').trim();
   cleaned = cleaned.replace(/^(?:ARCHITECT|AUDITOR|Neural Reflection)\s*\n+/i, '').trim();
-  cleaned = cleaned.replace(/^(?:>\s*)?(?:Human|User|Nathan):\s*/gim, '').trim();
+  cleaned = cleaned.replace(/^(?:>\s*)?(?:Human|User|Nathan|Assistant|Agent|OmniShapeAgent):\s*/gim, '').trim();
 
-  if (/(?:^|\n)(?:Human|User):\s*/.test(cleaned) && /(?:^|\n)Assistant:\s*/.test(cleaned)) {
-    const parts = cleaned.split(/(?:^|\n)Assistant:\s*/);
+  if (/(?:^|\n)(?:Human|User|Nathan):\s*/.test(cleaned) && /(?:^|\n)(?:Assistant|Agent|OmniShapeAgent):\s*/.test(cleaned)) {
+    const parts = cleaned.split(/(?:^|\n)(?:Assistant|Agent|OmniShapeAgent):\s*/);
     cleaned = parts[parts.length - 1]?.trim() || cleaned;
   }
 
@@ -2037,7 +2070,7 @@ function sanitizeAssistantOutput(text: string): string {
 
 function sanitizeInjectedDirective(text: string): string {
   return text
-    .replace(/^(?:>\s*)?(?:Human|User|Assistant|Nathan):\s*/gim, '')
+    .replace(/^(?:>\s*)?(?:Human|User|Assistant|Agent|Nathan|OmniShapeAgent):\s*/gim, '')
     .replace(/^The user said .*$/gim, '')
     .replace(/^According to the response policy,.*$/gim, '')
     .replace(/^I should .*$/gim, '')
@@ -2837,7 +2870,7 @@ export async function* runAgentLoop(
     contextBlock += "\n<MEMORY_HINTS>\n";
     subtleMemoryHints.forEach((decision) => {
       const overlap = decision.keywordOverlap.length > 0 ? ` match=${decision.keywordOverlap.join('|')}` : '';
-      contextBlock += `- ${decision.cognitiveLayer}: ${decision.record.content.replace(/\s+/g, ' ').trim().slice(0, 140)}${overlap}\n`;
+      contextBlock += `- ${decision.cognitiveLayer}: ${normalizeMemorySnippet(decision.record.content).slice(0, 140)}${overlap}\n`;
     });
     contextBlock += "</MEMORY_HINTS>\n";
   }
@@ -5158,14 +5191,14 @@ except Exception as e:
   if (userMessage && responseText) {
     try {
       // Store the conversation turn
-      const turnContent = `User: ${userMessage}\nAssistant: ${responseText.substring(0, 600)}`;
+      const turnContent = formatDialogueMemory(userMessage, responseText.substring(0, 600));
       const turnEmb = await generateEmbedding(turnContent);
       vectorStore.upsert({
         content: turnContent,
         embedding: turnEmb,
         dim: turnEmb.length,
         importance: 0.8,
-        metadata: { source: 'system', topic: 'conversation' },
+        metadata: { source: 'agent', topic: 'conversation', cognitiveLayer: 'episodic', tags: ['dialogue', 'turn'] },
       });
 
       // Update user profile with this exchange

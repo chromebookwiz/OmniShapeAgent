@@ -519,7 +519,7 @@ export default function Chat() {
         .trim();
       if (!userFirst) return '';
       // Use just the first exchange for speed - no need for the full history
-      const prompt = `Write one short sentence (max 12 words) summarising this conversation.\nUser: ${userFirst.slice(0, 300)}\nAssistant: ${assistFirst.slice(0, 300)}`;
+      const prompt = `Write one short sentence (max 12 words) summarising this conversation.\n<user_message>${userFirst.slice(0, 300)}</user_message>\n<assistant_message>${assistFirst.slice(0, 300)}</assistant_message>`;
       const activeModel = primaryProvider === 'ollama' ? ollamaModel : primaryProvider === 'openrouter' ? openrouterModel : vllmModel;
       const res = await fetch('/api/agent', {
         method: 'POST',

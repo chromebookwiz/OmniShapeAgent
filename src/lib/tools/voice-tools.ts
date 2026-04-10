@@ -12,6 +12,19 @@ import { PATHS } from '../paths';
 const VOICE_HISTORY_PATH = PATHS.voiceHistory;
 const VOICE_PROFILE_PATH = PATHS.voiceProfile;
 
+function formatVoiceMemory(transcript: string, response: string): string {
+  return [
+    '<voice_interaction>',
+    '<user_transcript>',
+    transcript.trim(),
+    '</user_transcript>',
+    '<agent_response>',
+    response.trim(),
+    '</agent_response>',
+    '</voice_interaction>',
+  ].join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
@@ -116,7 +129,7 @@ export async function storeVoiceInteraction(
   };
 
   // Embed the transcript + response together for semantic search
-  const embeddingText = `User: ${transcript}\nAgent: ${response}`;
+  const embeddingText = formatVoiceMemory(transcript, response);
   const embedding = await generateEmbedding(embeddingText);
 
   vectorStore.upsert({
@@ -124,10 +137,11 @@ export async function storeVoiceInteraction(
     embedding,
     dim: embedding.length,
     metadata: {
-      source: 'user',
+      source: 'agent',
       topic: 'voice',
       tags: ['voice', ...tags],
       entities: extractKeywords(transcript),
+      cognitiveLayer: 'episodic',
     },
     importance: 0.5 + quality * 0.5, // Higher-quality interactions are more important
   });
@@ -164,7 +178,7 @@ export async function searchVoiceHistory(
 
   const matched: { interaction: VoiceInteraction; score: number }[] = [];
   for (const r of voiceResults.slice(0, topK)) {
-    void historyMap.get(r.record.content.replace(/^User: /, '').replace(/\nAgent: /, ''));
+    void historyMap.get(r.record.content);
     // Fallback: try to find by reconstructing the content
     const found = history.find(h => r.record.content.includes(h.transcript.substring(0, 30)));
     if (found) {
