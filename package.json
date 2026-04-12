@@ -1,6 +1,6 @@
 {
   "name": "omnishapeagent",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Local AI agent with chat, tool use, persistent memory, and vision",
   "keywords": [
     "ai",
@@ -35,7 +35,6 @@
     "bots",
     "data/.gitkeep",
     "orchestrator",
-    "palette-configs",
     "public",
     "scripts",
     "skills",
