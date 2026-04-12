@@ -13,6 +13,7 @@ export const dynamic = 'force-dynamic';
 // ?action=important&limit=N → N highest-importance memories
 // ?action=accessed&limit=N  → N most-accessed memories
 // ?action=tags&tags=a,b   → filter by tags
+// ?action=layers          → per-layer health and purpose breakdown
 // ?action=profile         → user profile
 // ?action=graph&entity=X  → knowledge graph
 // ?q=query&limit=N        → semantic search
@@ -131,6 +132,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ records: serializeRecords(records), total: records.length, tags });
     }
 
+    if (action === 'layers') {
+      return NextResponse.json({ layers: vectorStore.getLayerProfile() });
+    }
+
     if (action === 'lattice') {
       const id = url.searchParams.get('id') ?? undefined;
       return NextResponse.json({ lattice: vectorStore.getLattice(id, limit) });
@@ -220,6 +225,16 @@ export async function PATCH(req: Request) {
         maxImportance: body.maxImportance ?? 0.9,
         rebuildLattice: body.rebuildLattice !== false,
       }) });
+    }
+    if (action === 'maintain_layers') {
+      const result = vectorStore.maintenancePass({
+        pruneThreshold: body.threshold ?? 0.05,
+        maxUnacknowledgedStreak: body.maxStreak ?? 4,
+        minInjectionCount: body.minInjectionCount ?? 4,
+        maxImportance: body.maxImportance ?? 0.9,
+        rebuildLattice: body.rebuildLattice !== false,
+      });
+      return NextResponse.json({ ok: true, result, layers: vectorStore.getLayerProfile(), stats: vectorStore.getStats() });
     }
     if (action === 'rebuild_lattice') {
       return NextResponse.json({ ok: true, rebuilt: vectorStore.rebuildLattice(body.limitNeighbors ?? 6) });

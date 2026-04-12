@@ -6,7 +6,17 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+import { ROOT } from '../paths-core';
+
 const execAsync = promisify(exec);
+
+function resolveWorkspacePath(targetPath: string): string {
+  return path.isAbsolute(targetPath) ? targetPath : path.resolve(ROOT, targetPath);
+}
+
+function isWithinWorkspace(targetPath: string): boolean {
+  return targetPath === ROOT || targetPath.startsWith(ROOT + path.sep);
+}
 
 export async function searchInternet(query: string): Promise<string> {
   // Uses a public API like DuckDuckGo HTML or just mocks it for now if we don't configure an API key. 
@@ -136,15 +146,15 @@ export async function runPython(code: string, timeoutMs = 120_000): Promise<stri
 // ── Claude Code-style Codebase Tools ────────────────────────────────────────
 
 export async function listFiles(dirPath: string = '.'): Promise<string> {
-  const absPath = path.isAbsolute(dirPath) ? dirPath : path.resolve(process.cwd(), dirPath);
-  if (!absPath.startsWith(process.cwd())) return "Access denied: Cannot list outside workspace.";
+  const absPath = resolveWorkspacePath(dirPath);
+  if (!isWithinWorkspace(absPath)) return "Access denied: Cannot list outside workspace.";
 
   const results: string[] = [];
   async function walk(dir: string) {
     const files = fs.readdirSync(dir, { withFileTypes: true });
     for (const file of files) {
       const res = path.resolve(dir, file.name);
-      const rel = path.relative(process.cwd(), res);
+      const rel = path.relative(ROOT, res);
       
       // Filter out noisy directories
       if (rel.includes('node_modules') || rel.includes('.next') || rel.includes('.git')) continue;
@@ -166,7 +176,7 @@ export async function listFiles(dirPath: string = '.'): Promise<string> {
 }
 
 export async function grepSearch(query: string, dirPath: string = '.'): Promise<string> {
-  const absPath = path.isAbsolute(dirPath) ? dirPath : path.join(process.cwd(), dirPath);
+  const absPath = resolveWorkspacePath(dirPath);
   const escaped = query.replace(/'/g, "'\\''").replace(/"/g, '\\"');
 
   // Try ripgrep first (fastest), then git grep, then platform fallback

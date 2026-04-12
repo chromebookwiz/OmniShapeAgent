@@ -10,7 +10,7 @@ import * as fs from 'fs';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-import { PATHS, PALETTES_DIR as PALETTE_DIR, WEIGHTS_DIR } from '../paths';
+import { PATHS, PALETTES_DIR as PALETTE_DIR, WEIGHTS_DIR } from '../paths-core';
 const BASELINE_PATH = PATHS.visionBaseline;
 
 // ── Helpers (mirrors pixel-vision.ts — intentionally copied, not imported) ────

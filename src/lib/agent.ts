@@ -805,6 +805,7 @@ Never use write_file on large existing files — it overwrites everything.
 - memory_prune(threshold?): Remove low-importance memories.
 - memory_boost(id, boost?): Increase a memory's importance.
 - memory_stats: Get total memory count, avg importance, top tags.
+- memory_layers: Inspect working/episodic/semantic/procedural layer roles and health.
 
 **Knowledge Graph:**
 - graph_add(subject, relation, object, context?): Add entity relationship.
@@ -944,7 +945,7 @@ Quick start: discord_auto_setup() → discord_save_credentials(token, applicatio
 
 **Weight Store:**
 - list_weights(): Full manifest of all stored ML weights (bots, vision, voice, meta). Shows performance scores.
-- get_best_weights(component): Get highest-performing weights for a component type (policy/vision/voice/meta/memory/embedding).
+- get_best_weights(component): Get highest-performing weights for a component type (policy/physics/vision/voice/meta/memory/embedding).
 - cleanup_weights(keepTop?): Remove lowest-scoring weights, keep top N per component.
 
 **Hall of Fame:**
@@ -1207,7 +1208,7 @@ Examples:
 
 **IMPORTANT: Every physics tool auto-opens the window. Always start with physics_spawn or physics_reset to open it. Call physics_get_state() or vision_self_check() after spawning to confirm the design is visible.**
 
-3D physics + ML sandbox. Verlet integration, hinge joints with motors, spring constraints, evolutionary neural net training. ACES tone-mapped rendering.
+3D physics + ML sandbox. Multi-shape rigid bodies, inertia-aware angular response, hinge joints with motors and limits, spring constraints, radial impulses, evolutionary neural net training, controller persistence, and live sensor inspection. ACES tone-mapped rendering.
 
 **Shapes**: \`sphere\`, \`box\`, \`cylinder\`, \`cone\`, \`torus\`, \`icosahedron\`, \`tetrahedron\`, \`capsule\`
 
@@ -1224,6 +1225,7 @@ Examples:
 - \`physics_add_spring(objId, objId2, restLength, stiffness, damping, springId)\`
 - \`physics_add_hinge(hingeId, objId, objId2, axis:[x,y,z], anchorA:[x,y,z], anchorB:[x,y,z])\` — rigid pivot. anchorA/B are local body offsets
 - \`physics_set_motor(hingeId, motorSpeed, motorForce)\` — drive hinge (rad/s, max torque)
+- \`physics_add_sensor(sensorId?, sensorType, objId?, objId2?, target?)\` — sensorType: \`distance\` | \`speed\` | \`angle\` | \`contact\`; readings appear in \`physics_get_state()\`
 - \`physics_remove_hinge(hingeId)\` / \`physics_remove_spring(springId)\`
 - \`physics_explode(origin, strength, falloff)\`
 
@@ -1231,12 +1233,25 @@ Examples:
 - \`physics_run_training_loop(rewardFn, networkLayers?, generations?, populationSize?, simSteps?, mutationRate?)\`
   - rewardFn: JS string e.g. \`"(c) => c.pos[0] - 0.25 * Math.abs(c.vel[1])"\` (forward progress + stability). creature = \`{pos,vel,up,hingeAngles,hingeSpeeds,contacts,fallen,step}\`
   - After training: the best controller is installed onto the live articulated creature's hinges. Call physics_get_state() to read trainingLog.
+- \`physics_spawn_preset_creature(preset, creatureId?, origin?, scale?, segmentCount?)\` — quick-start templates: \`walker\`, \`biped\`, \`hopper\`, \`quadruped\`, \`tripod\`, \`hexapod\`, \`crab\`, \`snake\`, \`centipede\`, \`rover\`
+- \`physics_spawn_automaton(kind, automatonId?, origin?, scale?, segmentCount?)\` — preferred high-level articulated automaton builder
+- \`physics_spawn_mechanism(kind, mechanismId?, origin?, scale?, segmentCount?)\` — high-level mechanism builder for \`pendulum\`, \`double_pendulum\`, \`wheel\`, \`axle_wheel\`, \`bridge\`, \`chain\`
 - \`physics_spawn_creature(creatureId, bodyPlan)\` — multi-body articulated creature with auto-hinges
+- \`physics_save_controller(controllerId?)\` — persist the current trained controller into the physics weight store
+- \`physics_load_controller(controllerId, rootId?, hingeIds?)\` — load a saved neural controller onto the current scene
+- \`physics_evaluate_controller(rewardFn?, simSteps?)\` — score the active controller on a cloned simulation without disturbing the live scene
+- \`physics_clear_controller()\` — disable the active neural controller and zero its hinge motors
 
 **Scene / utility**:
 - \`physics_set_sky(color)\`, \`physics_camera_goto(target)\`, \`physics_reset()\`
-- \`physics_get_state()\` — returns all positions/velocities/hinges/trainingLog
+- \`physics_get_state()\` — returns all positions/velocities/hinges/sensors/trainingLog/activeController
 - \`physics_run_script(script)\` — raw JS with scope: \`(objects, springs, hinges, THREE, scene, gravity, NeuralNet)\`
+
+**Correct tool-check pipeline:**
+1. Mutate the scene with a physics tool.
+2. Immediately call \`physics_get_state()\` to verify objects, hinges, sensors, and controllers.
+3. If geometry matters visually, call \`vision_self_check()\` after the state check.
+4. Only then train, save, or iterate.
 
 ---
 
@@ -1274,6 +1289,25 @@ Motor-driven wheel:
 ML training (run in +X direction):
 \`\`\`tool
 {"name":"physics_run_training_loop","args":{"rewardFn":"(c) => c.pos[0]","generations":20,"populationSize":15,"simSteps":200}}
+\`\`\`
+
+High-level automaton:
+\`\`\`tool
+{"name":"physics_spawn_automaton","args":{"kind":"hexapod","automatonId":"hex1","origin":[0,0,0],"scale":1.0}}
+\`\`\`
+\`\`\`tool
+{"name":"physics_get_state","args":{}}
+\`\`\`
+
+Mechanism + sensor:
+\`\`\`tool
+{"name":"physics_spawn_mechanism","args":{"kind":"bridge","mechanismId":"bridge1","segmentCount":6}}
+\`\`\`
+\`\`\`tool
+{"name":"physics_add_sensor","args":{"sensorType":"distance","sensorId":"bridge_span","objId":"bridge1_segment_0","objId2":"bridge1_segment_5"}}
+\`\`\`
+\`\`\`tool
+{"name":"physics_get_state","args":{}}
 \`\`\`
 
 **After any spawn, call physics_get_state() to confirm objects exist, or vision_self_check() to see the 3D scene.**
@@ -1570,10 +1604,13 @@ Execute the minimal action. Prefer one well-aimed tool call over several specula
 Verify results before calling the next tool. If a tool fails, adjust — do not retry identically.
 
 ### 4 · Reflect (Post-action)
-After every tool result you receive a [✓ OK / ✗ FAILED] reflection cue. Use it:
+After every tool result you receive both a [✓ OK / ✗ FAILED] cue and a structured \`Tool <name> audit:\` JSON block. Use them together:
 - Did this match expectations?
 - Does the plan need to change?
 - Is the goal now closer, same distance, or further away?
+- If \`shouldVerify\` is true, call one of the tools in \`verifyWith\` before assuming the action really landed.
+- If \`awaitingApproval\` is true, pause speculative planning and route through the approval tool path.
+- If \`retryable\` is false, do not repeat the same call; make a concrete correction first.
 
 ### 5 · Consolidate (Turn closure)
 In normal chat, finish the current turn directly once the user request is satisfied.
@@ -2767,6 +2804,24 @@ export async function* runAgentLoop(
     startedAt:      Date.now(),
     hadToolCalls:   false,
   };
+  let trustedAutoContinue: string | undefined;
+
+  const firstDefined = <T,>(...values: T[]): T | undefined => values.find((value) => value !== undefined && value !== null);
+  const readStringArg = (...values: unknown[]): string | undefined => {
+    const value = firstDefined(...values);
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+  const readNumberArg = (...values: unknown[]): number | undefined => {
+    const value = firstDefined(...values);
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    return undefined;
+  };
 
   // ── PHASE 0: Context Compression ──────────────────────────────────
   const tokenCount = getHistoryTokenCount(messages);
@@ -2978,6 +3033,71 @@ export async function* runAgentLoop(
 
   let responseText = "";
   let isVllm = false;
+  const buildToolAudit = (
+    toolName: string,
+    args: Record<string, any>,
+    resultStr: string,
+    succeeded: boolean,
+    durationMs: number,
+  ) => {
+    const normalized = resultStr.trim().toLowerCase();
+    const awaitingApproval = normalized.includes('"status":"pending"') || normalized.includes('awaiting approval');
+    const noStateYet = normalized.includes('no state yet');
+    const retryable = !succeeded && (normalized.includes('timeout') || normalized.includes('temporar') || normalized.includes('network') || noStateYet);
+    const verifyWith: string[] = [];
+    const suggestedNextTools: string[] = [];
+    const observations: string[] = [];
+
+    if (toolName.startsWith('physics_')) {
+      if (/physics_spawn|physics_spawn_creature|physics_spawn_preset_creature|physics_spawn_automaton|physics_spawn_mechanism|physics_add_hinge|physics_add_sensor|physics_set_motor|physics_run_training_loop|physics_load_controller|physics_save_controller/.test(toolName)) {
+        verifyWith.push('physics_get_state');
+      }
+      if (/physics_spawn|physics_spawn_creature|physics_spawn_preset_creature|physics_spawn_automaton|physics_spawn_mechanism/.test(toolName)) {
+        suggestedNextTools.push('physics_get_state', 'vision_self_check');
+      }
+      if (toolName === 'physics_run_training_loop') {
+        suggestedNextTools.push('physics_get_state', 'physics_evaluate_controller', 'physics_save_controller');
+      }
+      if (toolName === 'physics_add_sensor') {
+        suggestedNextTools.push('physics_get_state');
+      }
+      if (toolName === 'physics_save_controller') {
+        suggestedNextTools.push('get_best_weights');
+      }
+      observations.push('Physics tools mutate a live scene; confirm state after changes rather than assuming success from the dispatch alone.');
+    }
+    if (toolName === 'run_terminal_command' || toolName === 'terminal_run') {
+      if (awaitingApproval) suggestedNextTools.push('terminal_approve', 'terminal_deny');
+      observations.push('Terminal output may be partial or queued; inspect the exact command outcome before planning follow-up steps.');
+    }
+    if (toolName === 'create_ui_window' || toolName === 'set_window_content_html' || toolName === 'set_window_content_iframe') {
+      verifyWith.push('check_window_result');
+      suggestedNextTools.push('check_window_result');
+    }
+    if (toolName === 'memory_store' || toolName === 'memory_update' || toolName === 'memory_delete') {
+      verifyWith.push('memory_stats');
+    }
+    if (toolName === 'write_file' || toolName === 'patch_file' || toolName === 'append_file') {
+      verifyWith.push('read_file');
+    }
+    if (toolName === 'create_dir') {
+      verifyWith.push('list_dir');
+    }
+
+    return {
+      tool: toolName,
+      success: succeeded,
+      durationMs,
+      retryable,
+      awaitingApproval,
+      shouldVerify: verifyWith.length > 0,
+      verifyWith: [...new Set(verifyWith)],
+      suggestedNextTools: [...new Set(suggestedNextTools)],
+      observations,
+      resultPreview: resultStr.slice(0, 240),
+      argsSummary: Object.fromEntries(Object.entries(args).slice(0, 12).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 80) : value])),
+    };
+  };
 
   while (maxLoops <= 0 || loopCount < maxLoops) {
     loopCount++;
@@ -3201,10 +3321,12 @@ export async function* runAgentLoop(
             const priorToolCall = toolCallHistory.get(toolSignature);
             if (priorToolCall?.lastSucceeded) {
               const resultStr = `Skipped repeated successful call to ${name}. Reuse the earlier result unless there is a concrete new reason to run it again.`;
-              messages.push({ role: 'system', content: `Tool ${name} result:\n${resultStr}\n\n[✓ OK] Use the earlier successful result. Do not repeat the same call or restate the plan unless the user asked for a retry.` });
+              const audit = buildToolAudit(name, args, resultStr, true, 0);
+              messages.push({ role: 'system', content: `Tool ${name} audit:\n${JSON.stringify(audit, null, 2)}\n\nTool ${name} result:\n${resultStr}\n\n[✓ OK] Use the earlier successful result. Do not repeat the same call or restate the plan unless the user asked for a retry.` });
               finalAppendedOutput += `\n[TOOL] ${name}: ✓ OK\n`;
               continue;
             }
+            const toolStartedAt = Date.now();
             let toolResult: any;
             const physicsWindowEvent = { type: 'window' as const, op: 'create' as const, id: 'physics', title: '⚛ Physics Simulator', contentType: 'physics' as const, content: '' };
             const makePhysicsCmd = (type: PhysicsCmd['type'], payload: Partial<Omit<PhysicsCmd, 'id' | 'type'>> = {}): PhysicsCmd => ({
@@ -3216,6 +3338,196 @@ export async function* runAgentLoop(
               physicsWindowEvent,
               { type: 'window' as const, op: 'physics_cmd' as const, id: 'physics', cmd },
             ];
+            const v3 = (x: number, y: number, z: number): [number, number, number] => [x, y, z];
+            const add3 = (left: [number, number, number], right: [number, number, number]): [number, number, number] => [left[0] + right[0], left[1] + right[1], left[2] + right[2]];
+            const scale3 = (value: [number, number, number], scale: number): [number, number, number] => [value[0] * scale, value[1] * scale, value[2] * scale];
+            const readVec3 = (value: unknown): [number, number, number] | undefined => {
+              if (!Array.isArray(value) || value.length !== 3) return undefined;
+              const parsed = value.map((entry) => Number(entry));
+              return parsed.every((entry) => Number.isFinite(entry)) ? [parsed[0], parsed[1], parsed[2]] : undefined;
+            };
+            const transformBodyPlan = (
+              plan: NonNullable<PhysicsCmd['bodyPlan']>,
+              origin: [number, number, number] = v3(0, 0, 0),
+              scale = 1,
+            ): NonNullable<PhysicsCmd['bodyPlan']> => plan.map((part) => ({
+              ...part,
+              position: add3(scale3(part.position, scale), origin),
+              size: part.size ? scale3(part.size, scale) : undefined,
+              radius: typeof part.radius === 'number' ? part.radius * scale : undefined,
+              hinges: part.hinges?.map((hinge) => ({
+                ...hinge,
+                axis: hinge.axis,
+                anchorA: scale3(hinge.anchorA, scale),
+                anchorB: scale3(hinge.anchorB, scale),
+              })),
+            }));
+            const buildPhysicsCreaturePreset = (
+              preset: string,
+              creatureId: string,
+              options?: { origin?: [number, number, number]; scale?: number; segmentCount?: number },
+            ): NonNullable<PhysicsCmd['bodyPlan']> => {
+              const normalized = String(preset || 'walker').trim().toLowerCase();
+              const origin = options?.origin ?? v3(0, 0, 0);
+              const scale = Math.max(0.2, Number(options?.scale ?? 1));
+              const segmentCount = Math.max(3, Math.min(12, Math.floor(Number(options?.segmentCount ?? 6))));
+              let bodyPlan: NonNullable<PhysicsCmd['bodyPlan']>;
+              switch (normalized) {
+                case 'hopper':
+                  bodyPlan = [
+                    { id: 'torso', shape: 'box', position: v3(0, 2.8, 0), size: v3(1.2, 0.45, 0.55), color: '#f4c95d', mass: 1.8 },
+                    { id: 'leg', shape: 'capsule', position: v3(0, 1.8, 0), size: v3(0.35, 1.1, 0.35), radius: 0.18, color: '#6fb1ff', mass: 1.1, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(0, -0.28, 0), anchorB: v3(0, 0.56, 0) }] },
+                    { id: 'foot', shape: 'box', position: v3(0.15, 0.92, 0), size: v3(0.75, 0.2, 0.5), color: '#ff7a59', mass: 0.7, hinges: [{ parentId: 'leg', axis: v3(0, 0, 1), anchorA: v3(0, -0.52, 0), anchorB: v3(-0.12, 0.1, 0) }] },
+                  ];
+                  break;
+                case 'biped':
+                  bodyPlan = [
+                    { id: 'torso', shape: 'box', position: v3(0, 2.9, 0), size: v3(1.1, 0.65, 0.55), color: '#7cc6fe', mass: 2.2 },
+                    { id: 'left_thigh', shape: 'capsule', position: v3(-0.26, 2.0, 0), size: v3(0.28, 0.9, 0.28), radius: 0.14, color: '#ffd166', mass: 0.75, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(-0.23, -0.3, 0.12), anchorB: v3(0, 0.42, 0) }] },
+                    { id: 'right_thigh', shape: 'capsule', position: v3(0.26, 2.0, 0), size: v3(0.28, 0.9, 0.28), radius: 0.14, color: '#ef476f', mass: 0.75, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(0.23, -0.3, -0.12), anchorB: v3(0, 0.42, 0) }] },
+                    { id: 'left_shin', shape: 'capsule', position: v3(-0.26, 1.1, 0), size: v3(0.24, 0.85, 0.24), radius: 0.12, color: '#f78c6b', mass: 0.6, hinges: [{ parentId: 'left_thigh', axis: v3(0, 0, 1), anchorA: v3(0, -0.42, 0), anchorB: v3(0, 0.38, 0) }] },
+                    { id: 'right_shin', shape: 'capsule', position: v3(0.26, 1.1, 0), size: v3(0.24, 0.85, 0.24), radius: 0.12, color: '#06d6a0', mass: 0.6, hinges: [{ parentId: 'right_thigh', axis: v3(0, 0, 1), anchorA: v3(0, -0.42, 0), anchorB: v3(0, 0.38, 0) }] },
+                    { id: 'left_foot', shape: 'box', position: v3(-0.32, 0.5, 0.08), size: v3(0.5, 0.16, 0.28), color: '#26547c', mass: 0.3, hinges: [{ parentId: 'left_shin', axis: v3(0, 0, 1), anchorA: v3(0, -0.36, 0), anchorB: v3(0.08, 0.08, 0) }] },
+                    { id: 'right_foot', shape: 'box', position: v3(0.32, 0.5, -0.08), size: v3(0.5, 0.16, 0.28), color: '#1b998b', mass: 0.3, hinges: [{ parentId: 'right_shin', axis: v3(0, 0, 1), anchorA: v3(0, -0.36, 0), anchorB: v3(-0.08, 0.08, 0) }] },
+                  ];
+                  break;
+                case 'quadruped':
+                  bodyPlan = [
+                    { id: 'torso', shape: 'box', position: v3(0, 2.6, 0), size: v3(1.8, 0.5, 0.75), color: '#9dd9d2', mass: 2.5 },
+                    { id: 'front_left_leg', shape: 'capsule', position: v3(-0.55, 1.65, 0.35), size: v3(0.32, 0.95, 0.32), radius: 0.16, color: '#f95738', mass: 0.75, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(-0.48, -0.24, 0.28), anchorB: v3(0, 0.46, 0) }] },
+                    { id: 'front_right_leg', shape: 'capsule', position: v3(-0.55, 1.65, -0.35), size: v3(0.32, 0.95, 0.32), radius: 0.16, color: '#f95738', mass: 0.75, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(-0.48, -0.24, -0.28), anchorB: v3(0, 0.46, 0) }] },
+                    { id: 'rear_left_leg', shape: 'capsule', position: v3(0.55, 1.65, 0.35), size: v3(0.32, 0.95, 0.32), radius: 0.16, color: '#ee964b', mass: 0.75, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(0.48, -0.24, 0.28), anchorB: v3(0, 0.46, 0) }] },
+                    { id: 'rear_right_leg', shape: 'capsule', position: v3(0.55, 1.65, -0.35), size: v3(0.32, 0.95, 0.32), radius: 0.16, color: '#ee964b', mass: 0.75, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(0.48, -0.24, -0.28), anchorB: v3(0, 0.46, 0) }] },
+                  ];
+                  break;
+                case 'tripod':
+                  bodyPlan = [
+                    { id: 'hub', shape: 'sphere', position: v3(0, 2.5, 0), radius: 0.42, color: '#8ecae6', mass: 1.8 },
+                    { id: 'leg_a', shape: 'capsule', position: v3(0.72, 1.55, 0), size: v3(0.25, 1.2, 0.25), radius: 0.13, color: '#fb8500', mass: 0.7, hinges: [{ parentId: 'hub', axis: v3(0, 0, 1), anchorA: v3(0.3, -0.18, 0), anchorB: v3(0, 0.56, 0) }] },
+                    { id: 'leg_b', shape: 'capsule', position: v3(-0.36, 1.55, 0.62), size: v3(0.25, 1.2, 0.25), radius: 0.13, color: '#ffb703', mass: 0.7, hinges: [{ parentId: 'hub', axis: v3(1, 0, 0), anchorA: v3(-0.18, -0.18, 0.24), anchorB: v3(0, 0.56, 0) }] },
+                    { id: 'leg_c', shape: 'capsule', position: v3(-0.36, 1.55, -0.62), size: v3(0.25, 1.2, 0.25), radius: 0.13, color: '#219ebc', mass: 0.7, hinges: [{ parentId: 'hub', axis: v3(1, 0, 0), anchorA: v3(-0.18, -0.18, -0.24), anchorB: v3(0, 0.56, 0) }] },
+                  ];
+                  break;
+                case 'hexapod':
+                case 'crab': {
+                  bodyPlan = [
+                    { id: 'body', shape: 'box', position: v3(0, 2.3, 0), size: v3(1.45, 0.35, 1.05), color: normalized === 'crab' ? '#ff7f51' : '#7bd389', mass: 2.6 },
+                  ];
+                  const zOffsets = [0.42, 0, -0.42];
+                  zOffsets.forEach((z, index) => {
+                    bodyPlan.push({ id: `left_leg_${index}`, shape: 'capsule', position: v3(-0.85, 1.6, z), size: v3(0.22, 0.95, 0.22), radius: 0.11, color: '#ffd166', mass: 0.45, hinges: [{ parentId: 'body', axis: normalized === 'crab' ? v3(1, 0, 0) : v3(0, 0, 1), anchorA: v3(-0.65, -0.08, z), anchorB: v3(0, 0.42, 0) }] });
+                    bodyPlan.push({ id: `right_leg_${index}`, shape: 'capsule', position: v3(0.85, 1.6, z), size: v3(0.22, 0.95, 0.22), radius: 0.11, color: '#06d6a0', mass: 0.45, hinges: [{ parentId: 'body', axis: normalized === 'crab' ? v3(1, 0, 0) : v3(0, 0, 1), anchorA: v3(0.65, -0.08, z), anchorB: v3(0, 0.42, 0) }] });
+                  });
+                  break;
+                }
+                case 'snake':
+                case 'centipede': {
+                  bodyPlan = Array.from({ length: segmentCount }, (_, index) => ({
+                    id: `segment_${index}`,
+                    shape: 'capsule',
+                    position: v3(-1.2 + index * 0.7, normalized === 'centipede' ? 1.45 : 1.3, 0),
+                    size: v3(0.35, 0.82, 0.35),
+                    radius: 0.18,
+                    color: normalized === 'centipede' ? (index % 2 === 0 ? '#90be6d' : '#43aa8b') : (index % 2 === 0 ? '#67b99a' : '#2f7d5b'),
+                    mass: 0.9,
+                    hinges: index === 0 ? undefined : [{ parentId: `segment_${index - 1}`, axis: normalized === 'centipede' ? v3(0, 0, 1) : v3(0, 1, 0), anchorA: v3(0.35, 0, 0), anchorB: v3(-0.35, 0, 0) }],
+                  }));
+                  if (normalized === 'centipede') {
+                    const segments = [...bodyPlan];
+                    segments.forEach((segment, index) => {
+                      bodyPlan.push({ id: `left_leg_${index}`, shape: 'capsule', position: v3(segment.position[0], 0.95, 0.42), size: v3(0.16, 0.65, 0.16), radius: 0.08, color: '#f8961e', mass: 0.22, hinges: [{ parentId: segment.id, axis: v3(0, 0, 1), anchorA: v3(0, -0.08, 0.16), anchorB: v3(0, 0.28, 0) }] });
+                      bodyPlan.push({ id: `right_leg_${index}`, shape: 'capsule', position: v3(segment.position[0], 0.95, -0.42), size: v3(0.16, 0.65, 0.16), radius: 0.08, color: '#f3722c', mass: 0.22, hinges: [{ parentId: segment.id, axis: v3(0, 0, 1), anchorA: v3(0, -0.08, -0.16), anchorB: v3(0, 0.28, 0) }] });
+                    });
+                  }
+                  break;
+                }
+                case 'rover':
+                  bodyPlan = [
+                    { id: 'chassis', shape: 'box', position: v3(0, 2.0, 0), size: v3(1.6, 0.35, 1.0), color: '#577590', mass: 2.8 },
+                    { id: 'front_left_wheel', shape: 'torus', position: v3(-0.72, 1.35, 0.55), radius: 0.28, color: '#f3722c', mass: 0.6, hinges: [{ parentId: 'chassis', axis: v3(0, 0, 1), anchorA: v3(-0.55, -0.18, 0.46), anchorB: v3(0, 0, 0) }] },
+                    { id: 'front_right_wheel', shape: 'torus', position: v3(-0.72, 1.35, -0.55), radius: 0.28, color: '#f3722c', mass: 0.6, hinges: [{ parentId: 'chassis', axis: v3(0, 0, 1), anchorA: v3(-0.55, -0.18, -0.46), anchorB: v3(0, 0, 0) }] },
+                    { id: 'rear_left_wheel', shape: 'torus', position: v3(0.72, 1.35, 0.55), radius: 0.28, color: '#f94144', mass: 0.6, hinges: [{ parentId: 'chassis', axis: v3(0, 0, 1), anchorA: v3(0.55, -0.18, 0.46), anchorB: v3(0, 0, 0) }] },
+                    { id: 'rear_right_wheel', shape: 'torus', position: v3(0.72, 1.35, -0.55), radius: 0.28, color: '#f94144', mass: 0.6, hinges: [{ parentId: 'chassis', axis: v3(0, 0, 1), anchorA: v3(0.55, -0.18, -0.46), anchorB: v3(0, 0, 0) }] },
+                  ];
+                  break;
+                case 'walker':
+                default:
+                  bodyPlan = [
+                    { id: 'torso', shape: 'box', position: v3(0, 2.4, 0), size: v3(1.4, 0.45, 0.7), color: '#9bb1ff', mass: 2.1 },
+                    { id: 'left_leg', shape: 'capsule', position: v3(-0.42, 1.45, 0), size: v3(0.35, 1.0, 0.35), radius: 0.17, color: '#ff8c69', mass: 0.9, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(-0.38, -0.22, 0.18), anchorB: v3(0, 0.48, 0) }] },
+                    { id: 'right_leg', shape: 'capsule', position: v3(0.42, 1.45, 0), size: v3(0.35, 1.0, 0.35), radius: 0.17, color: '#5dd39e', mass: 0.9, hinges: [{ parentId: 'torso', axis: v3(0, 0, 1), anchorA: v3(0.38, -0.22, -0.18), anchorB: v3(0, 0.48, 0) }] },
+                    { id: 'left_foot', shape: 'box', position: v3(-0.52, 0.72, 0.05), size: v3(0.58, 0.18, 0.4), color: '#ffd166', mass: 0.55, hinges: [{ parentId: 'left_leg', axis: v3(0, 0, 1), anchorA: v3(0, -0.5, 0), anchorB: v3(0.08, 0.09, 0) }] },
+                    { id: 'right_foot', shape: 'box', position: v3(0.52, 0.72, -0.05), size: v3(0.58, 0.18, 0.4), color: '#06d6a0', mass: 0.55, hinges: [{ parentId: 'right_leg', axis: v3(0, 0, 1), anchorA: v3(0, -0.5, 0), anchorB: v3(-0.08, 0.09, 0) }] },
+                  ];
+                  break;
+              }
+              return transformBodyPlan(bodyPlan, origin, scale);
+            };
+            const buildPhysicsMechanismPreset = (
+              kind: string,
+              mechanismId: string,
+              options?: { origin?: [number, number, number]; scale?: number; segmentCount?: number },
+            ): Array<{ type: PhysicsCmd['type']; payload: Partial<Omit<PhysicsCmd, 'id' | 'type'>> }> => {
+              const normalized = String(kind || 'pendulum').trim().toLowerCase();
+              const origin = options?.origin ?? v3(0, 0, 0);
+              const scale = Math.max(0.2, Number(options?.scale ?? 1));
+              const segmentCount = Math.max(3, Math.min(10, Math.floor(Number(options?.segmentCount ?? 5))));
+              const at = (x: number, y: number, z: number) => add3(v3(x * scale, y * scale, z * scale), origin);
+              const commands: Array<{ type: PhysicsCmd['type']; payload: Partial<Omit<PhysicsCmd, 'id' | 'type'>> }> = [];
+              switch (normalized) {
+                case 'axle_wheel':
+                case 'wheel':
+                  commands.push(
+                    { type: 'spawn', payload: { objId: `${mechanismId}_axle`, shape: 'box', position: at(0, 3.5, 0), size: scale3(v3(0.25, 0.25, 0.25), scale), mass: 1, color: '#6c757d', fixed: true } },
+                    { type: 'spawn', payload: { objId: `${mechanismId}_wheel`, shape: 'torus', position: at(0, 3.5, 0), radius: 0.9 * scale, mass: 2, color: '#3a86ff', restitution: 0.2, friction: 0.9 } },
+                    { type: 'add_hinge', payload: { hingeId: `${mechanismId}_hinge`, objId: `${mechanismId}_axle`, objId2: `${mechanismId}_wheel`, axis: v3(0, 1, 0), anchorA: v3(0, 0, 0), anchorB: v3(0, 0, 0) } },
+                    { type: 'set_motor', payload: { hingeId: `${mechanismId}_hinge`, motorSpeed: 3.2, motorForce: 55 } },
+                  );
+                  break;
+                case 'double_pendulum':
+                  commands.push(
+                    { type: 'spawn', payload: { objId: `${mechanismId}_anchor`, shape: 'box', position: at(0, 4.8, 0), size: scale3(v3(0.35, 0.2, 0.35), scale), mass: 1, fixed: true, color: '#495057' } },
+                    { type: 'spawn', payload: { objId: `${mechanismId}_arm1`, shape: 'capsule', position: at(0, 3.8, 0), size: scale3(v3(0.18, 1.6, 0.18), scale), radius: 0.09 * scale, mass: 1.2, color: '#ffd166' } },
+                    { type: 'spawn', payload: { objId: `${mechanismId}_arm2`, shape: 'capsule', position: at(0.45, 2.5, 0), size: scale3(v3(0.18, 1.5, 0.18), scale), radius: 0.09 * scale, mass: 1.1, color: '#ef476f' } },
+                    { type: 'add_hinge', payload: { hingeId: `${mechanismId}_hinge1`, objId: `${mechanismId}_anchor`, objId2: `${mechanismId}_arm1`, axis: v3(0, 0, 1), anchorA: v3(0, 0, 0), anchorB: scale3(v3(0, 0.78, 0), scale), minAngle: -Math.PI * 0.9, maxAngle: Math.PI * 0.9 } },
+                    { type: 'add_hinge', payload: { hingeId: `${mechanismId}_hinge2`, objId: `${mechanismId}_arm1`, objId2: `${mechanismId}_arm2`, axis: v3(0, 0, 1), anchorA: scale3(v3(0, -0.78, 0), scale), anchorB: scale3(v3(0, 0.72, 0), scale), minAngle: -Math.PI * 0.9, maxAngle: Math.PI * 0.9 } },
+                  );
+                  break;
+                case 'bridge': {
+                  commands.push(
+                    { type: 'spawn', payload: { objId: `${mechanismId}_left_anchor`, shape: 'box', position: at(-2.6, 2.2, 0), size: scale3(v3(0.45, 0.45, 0.45), scale), mass: 1, fixed: true, color: '#495057' } },
+                    { type: 'spawn', payload: { objId: `${mechanismId}_right_anchor`, shape: 'box', position: at(2.6, 2.2, 0), size: scale3(v3(0.45, 0.45, 0.45), scale), mass: 1, fixed: true, color: '#495057' } },
+                  );
+                  for (let index = 0; index < segmentCount; index++) {
+                    const segId = `${mechanismId}_segment_${index}`;
+                    const x = -2 + index * (4 / Math.max(1, segmentCount - 1));
+                    commands.push({ type: 'spawn', payload: { objId: segId, shape: 'box', position: at(x, 1.9, 0), size: scale3(v3(0.7, 0.16, 0.7), scale), mass: 0.75, color: index % 2 === 0 ? '#adb5bd' : '#ced4da', friction: 0.85 } });
+                    const prevId = index === 0 ? `${mechanismId}_left_anchor` : `${mechanismId}_segment_${index - 1}`;
+                    commands.push({ type: 'add_hinge', payload: { hingeId: `${mechanismId}_hinge_${index}`, objId: prevId, objId2: segId, axis: v3(0, 0, 1), anchorA: scale3(v3(0.35, 0, 0), scale), anchorB: scale3(v3(-0.35, 0, 0), scale), minAngle: -Math.PI * 0.35, maxAngle: Math.PI * 0.35 } });
+                  }
+                  commands.push({ type: 'add_hinge', payload: { hingeId: `${mechanismId}_hinge_end`, objId: `${mechanismId}_segment_${segmentCount - 1}`, objId2: `${mechanismId}_right_anchor`, axis: v3(0, 0, 1), anchorA: scale3(v3(0.35, 0, 0), scale), anchorB: scale3(v3(-0.35, 0, 0), scale), minAngle: -Math.PI * 0.35, maxAngle: Math.PI * 0.35 } });
+                  break;
+                }
+                case 'chain': {
+                  commands.push({ type: 'spawn', payload: { objId: `${mechanismId}_anchor`, shape: 'box', position: at(0, 4.8, 0), size: scale3(v3(0.28, 0.28, 0.28), scale), mass: 1, fixed: true, color: '#6c757d' } });
+                  for (let index = 0; index < segmentCount; index++) {
+                    const segId = `${mechanismId}_link_${index}`;
+                    commands.push({ type: 'spawn', payload: { objId: segId, shape: 'capsule', position: at(0, 4.0 - index * 0.7, 0), size: scale3(v3(0.16, 0.62, 0.16), scale), radius: 0.08 * scale, mass: 0.45, color: index % 2 === 0 ? '#e9ecef' : '#adb5bd' } });
+                    commands.push({ type: 'add_hinge', payload: { hingeId: `${mechanismId}_joint_${index}`, objId: index === 0 ? `${mechanismId}_anchor` : `${mechanismId}_link_${index - 1}`, objId2: segId, axis: v3(0, 0, 1), anchorA: index === 0 ? v3(0, 0, 0) : scale3(v3(0, -0.3, 0), scale), anchorB: scale3(v3(0, 0.3, 0), scale), minAngle: -Math.PI * 0.95, maxAngle: Math.PI * 0.95 } });
+                  }
+                  break;
+                }
+                case 'pendulum':
+                default:
+                  commands.push(
+                    { type: 'spawn', payload: { objId: `${mechanismId}_anchor`, shape: 'box', position: at(0, 4.5, 0), size: scale3(v3(0.3, 0.2, 0.3), scale), mass: 1, fixed: true, color: '#495057' } },
+                    { type: 'spawn', payload: { objId: `${mechanismId}_bob`, shape: 'capsule', position: at(0, 3.2, 0), size: scale3(v3(0.2, 1.7, 0.2), scale), radius: 0.1 * scale, mass: 1.4, color: '#ffd166' } },
+                    { type: 'add_hinge', payload: { hingeId: `${mechanismId}_hinge`, objId: `${mechanismId}_anchor`, objId2: `${mechanismId}_bob`, axis: v3(0, 0, 1), anchorA: v3(0, 0, 0), anchorB: scale3(v3(0, 0.82, 0), scale), minAngle: -Math.PI * 0.95, maxAngle: Math.PI * 0.95 } },
+                  );
+                  break;
+              }
+              return commands;
+            };
             
             switch (name) {
               // ── Web & HTTP ──────────────────────────────────────────────────
@@ -3327,20 +3639,94 @@ export async function* runAgentLoop(
             }
 
             // ── File System ─────────────────────────────────────────────────
-            case 'list_files':       toolResult = await listFiles(args.dirPath); break;
-            case 'read_file':        toolResult = readFile(args.filepath); break;
-            case 'read_file_range':  toolResult = readFileRange(args.filepath, args.startLine, args.endLine); break;
-            case 'write_file':       toolResult = writeFile(args.filepath, args.content); break;
-            case 'append_file':      toolResult = appendFile(args.filepath, args.content); break;
-            case 'patch_file':       toolResult = patchFile(args.filepath, args.search, args.replace); break;
-            case 'delete_file':      toolResult = deleteFile(args.filepath); break;
-            case 'move_file':        toolResult = moveFile(args.src, args.dest); break;
-            case 'copy_file':        toolResult = copyFile(args.src, args.dest); break;
-            case 'create_dir':       toolResult = createDir(args.dirPath); break;
-            case 'list_dir':         toolResult = listDir(args.dirPath); break;
-            case 'file_exists':      toolResult = fileExists(args.filepath); break;
-            case 'zip_files':        toolResult = await zipFiles(args.files, args.outPath); break;
-            case 'unzip_file':       toolResult = await unzipFile(args.zipPath, args.destDir); break;
+            case 'list_files': {
+              const dirPath = readStringArg(args.dirPath, args.path, args.dir, args.directory) ?? '.';
+              toolResult = await listFiles(dirPath);
+              break;
+            }
+            case 'read_file': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              toolResult = filepath ? readFile(filepath) : 'read_file: filepath is required.';
+              break;
+            }
+            case 'read_file_range': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              const startLine = readNumberArg(args.startLine, args.fromLine, args.start);
+              const endLine = readNumberArg(args.endLine, args.toLine, args.end);
+              toolResult = filepath && startLine !== undefined && endLine !== undefined
+                ? readFileRange(filepath, startLine, endLine)
+                : 'read_file_range: filepath, startLine, and endLine are required.';
+              break;
+            }
+            case 'write_file': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              const content = firstDefined(args.content, args.text, args.value);
+              toolResult = filepath && typeof content === 'string'
+                ? writeFile(filepath, content)
+                : 'write_file: filepath and content are required.';
+              break;
+            }
+            case 'append_file': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              const content = firstDefined(args.content, args.text, args.value);
+              toolResult = filepath && typeof content === 'string'
+                ? appendFile(filepath, content)
+                : 'append_file: filepath and content are required.';
+              break;
+            }
+            case 'patch_file': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              const search = readStringArg(args.search, args.find, args.oldText);
+              const replace = firstDefined(args.replace, args.replacement, args.newText);
+              toolResult = filepath && search && typeof replace === 'string'
+                ? patchFile(filepath, search, replace)
+                : 'patch_file: filepath, search, and replace are required.';
+              break;
+            }
+            case 'delete_file': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              toolResult = filepath ? deleteFile(filepath) : 'delete_file: filepath is required.';
+              break;
+            }
+            case 'move_file': {
+              const src = readStringArg(args.src, args.source, args.from);
+              const dest = readStringArg(args.dest, args.destination, args.to);
+              toolResult = src && dest ? moveFile(src, dest) : 'move_file: src and dest are required.';
+              break;
+            }
+            case 'copy_file': {
+              const src = readStringArg(args.src, args.source, args.from);
+              const dest = readStringArg(args.dest, args.destination, args.to);
+              toolResult = src && dest ? copyFile(src, dest) : 'copy_file: src and dest are required.';
+              break;
+            }
+            case 'create_dir': {
+              const dirPath = readStringArg(args.dirPath, args.path, args.dir, args.directory, args.filepath, args.folder);
+              toolResult = dirPath ? createDir(dirPath) : 'create_dir: dirPath is required.';
+              break;
+            }
+            case 'list_dir': {
+              const dirPath = readStringArg(args.dirPath, args.path, args.dir, args.directory) ?? '.';
+              toolResult = listDir(dirPath);
+              break;
+            }
+            case 'file_exists': {
+              const filepath = readStringArg(args.filepath, args.path, args.file, args.filename);
+              toolResult = filepath ? fileExists(filepath) : 'file_exists: filepath is required.';
+              break;
+            }
+            case 'zip_files': {
+              const files = readStringArg(args.files, args.paths, args.input);
+              const outPath = readStringArg(args.outPath, args.outputPath, args.dest, args.destination);
+              toolResult = files && outPath ? await zipFiles(files, outPath) : 'zip_files: files and outPath are required.';
+              break;
+            }
+            case 'unzip_file': {
+              const zipPath = readStringArg(args.zipPath, args.path, args.file, args.archive);
+              const destDir = readStringArg(args.destDir, args.outputDir, args.destination, args.dest);
+              toolResult = zipPath ? await unzipFile(zipPath, destDir) : 'unzip_file: zipPath is required.';
+              break;
+            }
             // Advanced search & surgical edit
             case 'find_files':       toolResult = findFiles(args.pattern, args.dirPath); break;
             case 'search_in_files':  toolResult = searchInFiles(args.query, args.fileExt, args.dirPath, args.maxResults); break;
@@ -3589,6 +3975,18 @@ export async function* runAgentLoop(
               toolResult = JSON.stringify({ ok: true });
               break;
             }
+            case 'physics_add_sensor': {
+              const sensorId = String(args.sensorId || `${String(args.sensorType || 'sensor')}_${Date.now()}`);
+              for (const event of physicsEvents(makePhysicsCmd('add_sensor', {
+                sensorId,
+                sensorType: args.sensorType,
+                objId: args.objId,
+                objId2: args.objId2,
+                target: args.target,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, sensorId, note: 'Sensor registered. Call physics_get_state() to read live sensor values.' });
+              break;
+            }
             case 'physics_run_training_loop': {
               for (const event of physicsEvents(makePhysicsCmd('run_training_loop', {
                 rewardFn: args.rewardFn,
@@ -3597,8 +3995,50 @@ export async function* runAgentLoop(
                 populationSize: args.populationSize,
                 simSteps: args.simSteps,
                 mutationRate: args.mutationRate,
+                controllerId: args.controllerId,
               }))) yield event;
               toolResult = JSON.stringify({ status: 'training_started', note: 'Evolutionary training running on the articulated creature already in the scene. Check the physics window overlay for progress. The best controller will be installed on the creature\'s hinges when complete. Call physics_get_state() to read trainingLog.' });
+              break;
+            }
+            case 'physics_spawn_automaton': {
+              const creatureId = String(args.automatonId || args.creatureId || `${String(args.kind || args.preset || 'walker').toLowerCase()}_${Date.now()}`);
+              const bodyPlan = buildPhysicsCreaturePreset(String(args.kind || args.preset || 'walker'), creatureId, {
+                origin: readVec3(args.origin),
+                scale: args.scale,
+                segmentCount: args.segmentCount,
+              });
+              for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
+                creatureId,
+                bodyPlan,
+              }))) yield event;
+              toolResult = JSON.stringify({ creatureId, kind: args.kind || args.preset || 'walker', parts: bodyPlan.length, note: 'Automaton spawned. Call physics_get_state() to inspect hinges and sensors, or physics_run_training_loop to train it.' });
+              break;
+            }
+            case 'physics_spawn_mechanism': {
+              const mechanismId = String(args.mechanismId || `${String(args.kind || 'pendulum').toLowerCase()}_${Date.now()}`);
+              const commands = buildPhysicsMechanismPreset(String(args.kind || 'pendulum'), mechanismId, {
+                origin: readVec3(args.origin),
+                scale: args.scale,
+                segmentCount: args.segmentCount,
+              });
+              for (const command of commands) {
+                for (const event of physicsEvents(makePhysicsCmd(command.type, command.payload))) yield event;
+              }
+              toolResult = JSON.stringify({ mechanismId, kind: args.kind || 'pendulum', commands: commands.length, note: 'Mechanism spawned. Use physics_get_state() to verify it, then add motors or sensors as needed.' });
+              break;
+            }
+            case 'physics_spawn_preset_creature': {
+              const creatureId = String(args.creatureId || `${String(args.preset || 'walker').toLowerCase()}_${Date.now()}`);
+              const bodyPlan = buildPhysicsCreaturePreset(String(args.preset || 'walker'), creatureId, {
+                origin: readVec3(args.origin),
+                scale: args.scale,
+                segmentCount: args.segmentCount,
+              });
+              for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
+                creatureId,
+                bodyPlan,
+              }))) yield event;
+              toolResult = JSON.stringify({ creatureId, preset: args.preset || 'walker', parts: bodyPlan.length, note: 'Preset articulated creature spawned. Train it with physics_run_training_loop, then persist it with physics_save_controller.' });
               break;
             }
             case 'physics_spawn_creature': {
@@ -3607,6 +4047,35 @@ export async function* runAgentLoop(
                 bodyPlan: args.bodyPlan,
               }))) yield event;
               toolResult = JSON.stringify({ creatureId: args.creatureId, parts: args.bodyPlan?.length ?? 0, note: 'Creature spawned. Use physics_set_motor to drive its hinges, or physics_run_training_loop to evolve locomotion.' });
+              break;
+            }
+            case 'physics_save_controller': {
+              for (const event of physicsEvents(makePhysicsCmd('save_controller', {
+                controllerId: args.controllerId,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, controllerId: args.controllerId ?? null, note: 'Controller save requested. Call physics_get_state() for confirmation, or get_best_weights("physics") to inspect the registry.' });
+              break;
+            }
+            case 'physics_load_controller': {
+              for (const event of physicsEvents(makePhysicsCmd('load_controller', {
+                controllerId: args.controllerId,
+                controllerRootId: args.rootId || args.controllerRootId,
+                trainedHinges: args.hingeIds || args.trainedHinges,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, controllerId: args.controllerId, note: 'Controller load requested. Call physics_get_state() to verify activeController and trainingLog.' });
+              break;
+            }
+            case 'physics_clear_controller': {
+              for (const event of physicsEvents(makePhysicsCmd('clear_controller'))) yield event;
+              toolResult = JSON.stringify({ ok: true, note: 'Active controller cleared.' });
+              break;
+            }
+            case 'physics_evaluate_controller': {
+              for (const event of physicsEvents(makePhysicsCmd('evaluate_controller', {
+                rewardFn: args.rewardFn,
+                simSteps: args.simSteps,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, note: 'Controller evaluation requested. Call physics_get_state() to read the resulting evaluation log.' });
               break;
             }
 
@@ -3941,6 +4410,7 @@ export async function* runAgentLoop(
               const snapshot: Record<string, unknown> = {
                 time: new Date().toISOString(),
                 memory: memStats,
+                memoryLayers: memStats.layerBreakdown,
                 memoryPolicy: memoryPolicy.summary(),
                 graphEntities: graphEntities.length,
                 graphRelations: knowledgeGraph.getAllRelations().length,
@@ -3958,6 +4428,15 @@ export async function* runAgentLoop(
                   memory: memStats.total >= 0 ? 'ok' : 'error',
                   vision: diagExists(SELF_READABLE_FILES.vision) ? 'configured' : 'missing',
                   installer: diagExists(SELF_READABLE_FILES.installer) ? 'configured' : 'missing',
+                  filesystemModule: diagExists(SELF_READABLE_FILES.filesystem) ? 'configured' : 'missing',
+                  sandboxModule: diagExists(SELF_READABLE_FILES.sandbox) ? 'configured' : 'missing',
+                  computerModule: diagExists(SELF_READABLE_FILES.computer) ? 'configured' : 'missing',
+                  schedulerModule: diagExists(SELF_READABLE_FILES.scheduler) ? 'configured' : 'missing',
+                  memoryModule: diagExists(SELF_READABLE_FILES.memory) ? 'configured' : 'missing',
+                  filesystemDispatch: 'filepath/path/file aliases accepted; dirPath/path/dir aliases accepted',
+                  createDir: typeof createDir === 'function' ? 'ready' : 'missing',
+                  listFiles: typeof listFiles === 'function' ? 'ready' : 'missing',
+                  memoryLayers: Object.fromEntries(Object.entries(memStats.layerBreakdown ?? {}).map(([layer, profile]) => [layer, `${(profile as any).count} items, ${Math.round(((profile as any).share ?? 0) * 100)}% share`])),
                   pythonVenv: diagExists(AGENT_VENV_DIR) ? 'found' : 'missing',
                   imagePipeline: imagePipeline === 'openrouter-image'
                     ? (orApiKey ? 'openrouter-ready' : 'openrouter-key-missing')
@@ -3983,6 +4462,10 @@ export async function* runAgentLoop(
             // ── Memory Advanced ──────────────────────────────────────────────
             case 'memory_stats': {
               toolResult = JSON.stringify(vectorStore.getStats(), null, 2);
+              break;
+            }
+            case 'memory_layers': {
+              toolResult = JSON.stringify(vectorStore.getLayerProfile(), null, 2);
               break;
             }
             case 'memory_list': {
@@ -4708,7 +5191,7 @@ print(json.dumps({
                   git:            ['git_status','git_diff','git_log','git_add','git_commit','git_pull','git_push','git_branch','git_checkout','git_clone','git_init','git_stash','git_show','git_blame','git_grep','git_reset'],
                   code_utils:     ['grep_search','regex_match','diff_text','count_tokens','json_format','strip_html','extract_json'],
                   encoding:       ['hash_text','base64_encode','base64_decode','base64_encode_file','base64_decode_to_file'],
-                  memory:         ['memory_store','memory_search','memory_prune','memory_boost','memory_stats','memory_list','memory_consolidate','memory_search_tags','memory_ack(id,strength?)','memory_reject(id,strength?)','memory_forget_stale(maxStreak?,minInjectionCount?,maxImportance?)','memory_clear()','memory_reset_policy()','memory_policy_summary()','memory_maintain(threshold?,maxStreak?,minInjectionCount?,maxImportance?)','memory_lattice(id?,limit?)','memory_rebuild_lattice(limitNeighbors?)','memory_delete(id)','memory_update(id,content,importance?,tags?)'],
+                  memory:         ['memory_store','memory_search','memory_prune','memory_boost','memory_stats','memory_layers','memory_list','memory_consolidate','memory_search_tags','memory_ack(id,strength?)','memory_reject(id,strength?)','memory_forget_stale(maxStreak?,minInjectionCount?,maxImportance?)','memory_clear()','memory_reset_policy()','memory_policy_summary()','memory_maintain(threshold?,maxStreak?,minInjectionCount?,maxImportance?)','memory_lattice(id?,limit?)','memory_rebuild_lattice(limitNeighbors?)','memory_delete(id)','memory_update(id,content,importance?,tags?)'],
                   olr:            ['olr_analyze(text,languageHint?,learn?,render?,theme?,window?)','olr_render(text,languageHint?,learn?,theme?)','olr_compare(textA,textB,languageHintA?,languageHintB?,learn?)','olr_stats(language?)','olr_set_gate(language,from,to,virtue,entropy)','olr_reset(language?)'],
                   knowledge_graph:['graph_add','graph_query'],
                   scheduling:     ['schedule_cron','schedule_resonance','list_tasks','cancel_task'],
@@ -4762,15 +5245,23 @@ print(json.dumps({
                     'physics_remove_spring(springId)',
                     'physics_add_hinge(hingeId?,objId,objId2,axis:[x,y,z],anchorA:[x,y,z],anchorB:[x,y,z],minAngle?,maxAngle?)  — pivot joint',
                     'physics_set_motor(hingeId,motorSpeed,motorForce)  — drive hinge at rad/s with max torque',
+                    'physics_add_sensor(sensorId?,sensorType,objId?,objId2?,target?)  — distance|speed|angle|contact sensors exposed via physics_get_state',
                     'physics_remove_hinge(hingeId)',
                     'physics_run_training_loop(rewardFn,networkLayers?,generations?,populationSize?,simSteps?,mutationRate?)  — evolutionary NN training',
                     '  rewardFn: JS arrow "(creature,step)=>number"  creature={pos,vel,step}  example: "(c)=>c.pos[0]"',
+                    'physics_spawn_preset_creature(preset,creatureId?,origin?,scale?,segmentCount?)  — quick articulated templates: walker|biped|hopper|quadruped|tripod|hexapod|crab|snake|centipede|rover',
+                    'physics_spawn_automaton(kind,automatonId?,origin?,scale?,segmentCount?)  — preferred high-level automaton builder',
+                    'physics_spawn_mechanism(kind,mechanismId?,origin?,scale?,segmentCount?)  — pendulum|double_pendulum|wheel|axle_wheel|bridge|chain',
                     'physics_spawn_creature(creatureId,bodyPlan)  — multi-body articulated creature with auto hinges',
                     '  bodyPlan: [{id,shape,position,size?,radius?,color?,mass?,hinges?:[{parentId,axis,anchorA,anchorB}]}]',
+                    'physics_save_controller(controllerId?)  — persist active trained controller into physics weights',
+                    'physics_load_controller(controllerId,rootId?,hingeIds?)  — install saved controller onto current creature',
+                    'physics_evaluate_controller(rewardFn?,simSteps?)  — score active controller on cloned sim',
+                    'physics_clear_controller()  — disable active controller and zero hinge motors',
                     'physics_camera_goto(target: [x,y,z] or objId string)',
                     'physics_set_sky(color: hex string)',
                     'physics_explode(origin:[x,y,z],strength?,falloff?)  — radial impulse burst',
-                    'physics_get_state()  — returns all object/hinge state + trainingLog directly to agent (dispatches get_state, waits 400ms, reads result)',
+                    'physics_get_state()  — returns all object/hinge/sensor state + trainingLog + activeController directly to agent (dispatches get_state, waits 400ms, reads result)',
                     'physics_run_script(script)  — (objects,springs,hinges,THREE,scene,gravity,NeuralNet) context',
                     'physics_reset()',
                   ],
@@ -4785,7 +5276,8 @@ print(json.dumps({
                   user_profile:   ['get_user_profile','update_user_profile','profile_add_fact','profile_add_goal','profile_complete_goal'],
                 },
                 tool_format: '```tool\n{ "name": "tool_name", "args": { "key": "value" } }\n```',
-                note: 'Use read_self("agent") to read your own source code. Use diagnose_system() to check health.',
+                tool_audit_contract: 'After each tool call the runtime injects a machine-readable Tool <name> audit JSON block with success, retryable, awaitingApproval, shouldVerify, verifyWith, and suggestedNextTools. React to that audit in the same turn.',
+                note: 'Use read_self("agent") to read your own source code. Use diagnose_system() to check health. After scene mutations or UI writes, verify them with physics_get_state() or check_window_result().',
               }, null, 2);
               break;
             }
@@ -4815,8 +5307,16 @@ print(json.dumps({
 
               const memStats = vectorStore.getStats();
               checks.memory_entries = (memStats as any).count ?? (memStats as any).total ?? 0;
+              checks.memory_layers = memStats.layerBreakdown;
               checks.graph_entities = knowledgeGraph.getAllEntities().length;
               checks.skills         = listSkills();
+              checks.tool_families = {
+                filesystem: typeof createDir === 'function' && typeof listFiles === 'function' ? 'ok' : 'degraded',
+                memory: typeof vectorStore.getStats === 'function' && typeof memoryConsolidator.consolidate === 'function' ? 'ok' : 'degraded',
+                terminal: typeof runSafe === 'function' ? 'ok' : 'degraded',
+                web: typeof searchInternet === 'function' ? 'ok' : 'degraded',
+                git: typeof gitStatus === 'function' ? 'ok' : 'degraded',
+              };
 
               const botsRaw = listBots();
               try {
@@ -4964,6 +5464,7 @@ except Exception as e:
             case 'prompt_self': {
               const selfTask = args.task || args.message || '';
               if (selfTask) {
+                trustedAutoContinue = selfTask;
                 finalAppendedOutput += `\n[AUTO_CONTINUE: ${selfTask}]`;
               }
               toolResult = selfTask ? `Self-prompt queued: "${selfTask.substring(0, 80)}"` : 'prompt_self: no task provided.';
@@ -5105,8 +5606,10 @@ except Exception as e:
           // success/error prefix makes it easy for the agent to detect failures at a glance
           const succeeded = !isFailure;
           const statusTag = succeeded ? '✓ OK' : '✗ FAILED';
+          const durationMs = Date.now() - toolStartedAt;
           const toolCallStats = toolCallHistory.get(toolSignature) ?? { count: 0, lastSucceeded: false };
           toolCallHistory.set(toolSignature, { count: toolCallStats.count + 1, lastSucceeded: succeeded });
+          const toolAudit = buildToolAudit(name, args, resultStr, succeeded, durationMs);
           // Neural reflection cue: appended to every tool result so the model briefly
           // reasons about what it got before deciding next steps.
           const reflectionCue = succeeded && (name === 'install_pip' || name === 'generate_image')
@@ -5114,7 +5617,7 @@ except Exception as e:
             : succeeded
               ? `\n\n[${statusTag}] Use the result only if it clearly advances the current user request. Avoid inventing extra follow-up tasks or repeating solved steps.`
               : `\n\n[${statusTag}] Use only the concrete error to choose the next step. Either make a specific correction or report the blocker. Do not ask yourself follow-up questions or retry without a specific fix.`;
-          messages.push({ role: 'system', content: `Tool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
+          messages.push({ role: 'system', content: `Tool ${name} audit:\n${JSON.stringify(toolAudit, null, 2)}\n\nTool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
           finalAppendedOutput += `\n[TOOL] ${name}: ${statusTag}\n`;
 
           // Rolling tool result compression: when old results are bloating the context,
@@ -5133,7 +5636,7 @@ except Exception as e:
             toolName: name,
             args: Object.keys(args).reduce((a: Record<string,string>, k) => { a[k] = String(args[k]).slice(0,50); return a; }, {}),
             success: callSucceeded,
-            durationMs: 0,
+            durationMs,
             outputQuality: resultStr.length > 10 ? 0.7 : 0.3,
             context: userMessage.slice(0, 100),
             timestamp: Date.now(),
@@ -5148,14 +5651,16 @@ except Exception as e:
           const errMsg = e instanceof Error ? e.message : String(e);
           const statusTag = '✗ FAILED';
           const resultStr = `Error: ${errMsg}`;
+          const durationMs = 0;
+          const toolAudit = buildToolAudit(name, args, resultStr, false, durationMs);
           const reflectionCue = `\n\n[${statusTag}] Use the concrete error to decide the next step. Either apply a specific fix or report the blocker. Do not ask yourself follow-up questions.`;
-          messages.push({ role: 'system', content: `Tool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
+          messages.push({ role: 'system', content: `Tool ${name} audit:\n${JSON.stringify(toolAudit, null, 2)}\n\nTool ${name} status: ${statusTag}\nTool ${name} result:\n${resultStr}${reflectionCue}` });
           finalAppendedOutput += `\n[TOOL] ${name}: ${statusTag}\n`;
           metaLearner.recordToolCall({
             toolName: name,
             args: Object.keys(args).reduce((a: Record<string,string>, k) => { a[k] = String(args[k]).slice(0,50); return a; }, {}),
             success: false,
-            durationMs: 0,
+            durationMs,
             outputQuality: 0,
             context: userMessage.slice(0, 100),
             timestamp: Date.now(),
@@ -5337,7 +5842,12 @@ except Exception as e:
             usedCompression: usedCompressionThisTurn,
             compressionCheckpoint: latestCompressionCheckpoint,
           });
-          yield { type: 'done', content: finalAppendedOutput.trim(), autoContinue: continuationDirective };
+          trustedAutoContinue = continuationDirective;
+          yield {
+            type: 'done',
+            content: finalAppendedOutput.replace(/\n?\[AUTO_CONTINUE:\s*[^\]]+\]/g, '').trim(),
+            autoContinue: continuationDirective,
+          };
           return; // early return — skip the normal done yield below
         }
       }
@@ -5354,9 +5864,11 @@ except Exception as e:
     yield { type: 'text', content: fallback };
   }
 
-  // Detect [AUTO_CONTINUE: ...] directive in the final response
-  const autoContinueMatch = finalAppendedOutput.match(/\[AUTO_CONTINUE:\s*([^\]]+)\]/);
-  const autoContinue = autoContinueMatch ? autoContinueMatch[1].trim() : undefined;
+  const visibleFinalOutput = finalAppendedOutput.replace(/\n?\[AUTO_CONTINUE:\s*[^\]]+\]/g, '').trim();
 
-  yield { type: 'done', content: finalAppendedOutput.trim(), ...(autoContinue ? { autoContinue } : {}) };
+  yield {
+    type: 'done',
+    content: visibleFinalOutput,
+    ...(trustedAutoContinue ? { autoContinue: trustedAutoContinue } : {}),
+  };
 }

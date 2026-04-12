@@ -7,6 +7,9 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 
+import { ensureWorkspacePaths } from '../paths-bootstrap';
+import { PATHS } from '../paths-core';
+
 const execAsync = promisify(exec);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -24,8 +27,9 @@ export interface PendingCommand {
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
-import { PATHS } from '../paths';
 const QUEUE_PATH = PATHS.terminalQueue;
+
+ensureWorkspacePaths();
 
 function readQueue(): PendingCommand[] {
   try {
@@ -210,7 +214,7 @@ export async function approveCommand(id: string): Promise<string> {
     exitCode = 0;
     entry.status = 'executed';
   } catch (e: any) {
-    output   = (e.stdout || '' + e.stderr || e.message || '').toString().slice(0, 3000);
+    output   = `${e.stdout ?? ''}${e.stderr ?? ''}${e.message ?? ''}`.slice(0, 3000);
     exitCode = e.code ?? 1;
     entry.status = 'error';
   }

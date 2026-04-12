@@ -8,9 +8,12 @@ import { weightStore } from '../weight-store';
 import { vectorStore } from '../vector-store';
 import { generateEmbedding } from '../embeddings';
 
-import { PATHS } from '../paths';
+import { ensureWorkspacePaths } from '../paths-bootstrap';
+import { PATHS } from '../paths-core';
 const VOICE_HISTORY_PATH = PATHS.voiceHistory;
 const VOICE_PROFILE_PATH = PATHS.voiceProfile;
+
+ensureWorkspacePaths();
 
 function formatVoiceMemory(transcript: string, response: string): string {
   return [

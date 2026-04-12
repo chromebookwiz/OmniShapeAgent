@@ -69,6 +69,27 @@ export interface MemoryConsolidationState {
 export type CognitiveLayer = 'working' | 'episodic' | 'semantic' | 'procedural';
 export type MemoryEmotion = 'neutral' | 'focused' | 'curious' | 'urgent' | 'cautious' | 'confident' | 'frustrated' | 'satisfied';
 
+export const COGNITIVE_LAYER_PURPOSES: Record<CognitiveLayer, string> = {
+  working: 'Active task state, scratch context, and immediate focus for the current objective.',
+  episodic: 'Specific observations, events, tool outcomes, and conversation moments tied to a situation.',
+  semantic: 'Generalized facts, stable concepts, and distilled knowledge that should outlive a single task.',
+  procedural: 'Reusable strategies, workflows, and playbooks that guide how the agent should act.',
+};
+
+export interface CognitiveLayerProfile {
+  layer: CognitiveLayer;
+  purpose: string;
+  count: number;
+  share: number;
+  avgImportance: number;
+  avgTaskSalience: number;
+  avgAcknowledgementRatio: number;
+  avgConsolidationLevel: number;
+  staleCount: number;
+  suppressedCount: number;
+  matureCount: number;
+}
+
 export interface MemoryRecord {
   id: string;
   content: string;        // Original text stored
@@ -1349,10 +1370,11 @@ class VectorStore {
     repeatedShapeMemories: number;
     matureKnowledgeCount: number;
     proceduralMemoryCount: number;
+    layerBreakdown: Record<CognitiveLayer, CognitiveLayerProfile>;
   } {
     const all = this.all();
     if (all.length === 0) {
-      return { total: 0, avgImportance: 0, avgAccessCount: 0, oldestMs: 0, newestMs: 0, topTags: [], sourceBreakdown: {}, avgAcknowledgementRatio: 0, avgConsolidationLevel: 0, avgLatticeDegree: 0, staleUnacknowledged: 0, suppressedCount: 0, geometryCoverage: 0, avgGeometryVirtue: 0, repeatedShapeMemories: 0, matureKnowledgeCount: 0, proceduralMemoryCount: 0 };
+      return { total: 0, avgImportance: 0, avgAccessCount: 0, oldestMs: 0, newestMs: 0, topTags: [], sourceBreakdown: {}, avgAcknowledgementRatio: 0, avgConsolidationLevel: 0, avgLatticeDegree: 0, staleUnacknowledged: 0, suppressedCount: 0, geometryCoverage: 0, avgGeometryVirtue: 0, repeatedShapeMemories: 0, matureKnowledgeCount: 0, proceduralMemoryCount: 0, layerBreakdown: this.getLayerProfile() };
     }
 
     const tagCounts: Record<string, number> = {};
@@ -1406,7 +1428,56 @@ class VectorStore {
       repeatedShapeMemories,
       matureKnowledgeCount,
       proceduralMemoryCount,
+      layerBreakdown: this.getLayerProfile(),
     };
+  }
+
+  getLayerProfile(): Record<CognitiveLayer, CognitiveLayerProfile> {
+    const all = this.all();
+    const empty = (): CognitiveLayerProfile => ({
+      layer: 'working',
+      purpose: COGNITIVE_LAYER_PURPOSES.working,
+      count: 0,
+      share: 0,
+      avgImportance: 0,
+      avgTaskSalience: 0,
+      avgAcknowledgementRatio: 0,
+      avgConsolidationLevel: 0,
+      staleCount: 0,
+      suppressedCount: 0,
+      matureCount: 0,
+    });
+    const profiles: Record<CognitiveLayer, CognitiveLayerProfile> = {
+      working: { ...empty(), layer: 'working', purpose: COGNITIVE_LAYER_PURPOSES.working },
+      episodic: { ...empty(), layer: 'episodic', purpose: COGNITIVE_LAYER_PURPOSES.episodic },
+      semantic: { ...empty(), layer: 'semantic', purpose: COGNITIVE_LAYER_PURPOSES.semantic },
+      procedural: { ...empty(), layer: 'procedural', purpose: COGNITIVE_LAYER_PURPOSES.procedural },
+    };
+
+    for (const record of all) {
+      const layer = record.metadata.cognitiveLayer ?? this.inferCognitiveLayer(record.metadata, record.content);
+      const profile = profiles[layer];
+      profile.count += 1;
+      profile.avgImportance += record.importance;
+      profile.avgTaskSalience += this.normalizeTaskSalience(record.metadata, layer);
+      profile.avgAcknowledgementRatio += this.getAcknowledgementRatio(record);
+      profile.avgConsolidationLevel += record.consolidation?.level ?? 0;
+      if (record.lifecycle.unacknowledgedStreak >= 3) profile.staleCount += 1;
+      if (this.isSuppressed(record)) profile.suppressedCount += 1;
+      if ((record.consolidation?.level ?? 0) >= 0.6) profile.matureCount += 1;
+    }
+
+    for (const profile of Object.values(profiles)) {
+      if (profile.count > 0) {
+        profile.share = parseFloat((profile.count / Math.max(1, all.length)).toFixed(3));
+        profile.avgImportance = parseFloat((profile.avgImportance / profile.count).toFixed(3));
+        profile.avgTaskSalience = parseFloat((profile.avgTaskSalience / profile.count).toFixed(3));
+        profile.avgAcknowledgementRatio = parseFloat((profile.avgAcknowledgementRatio / profile.count).toFixed(3));
+        profile.avgConsolidationLevel = parseFloat((profile.avgConsolidationLevel / profile.count).toFixed(3));
+      }
+    }
+
+    return profiles;
   }
 
   /**

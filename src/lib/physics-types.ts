@@ -24,7 +24,11 @@ export interface PhysicsCmd {
     | 'reset'
     | 'run_script'
     | 'run_training_loop'
-    | 'spawn_creature';
+    | 'spawn_creature'
+    | 'save_controller'
+    | 'load_controller'
+    | 'clear_controller'
+    | 'evaluate_controller';
   objId?: string;
   shape?: 'sphere' | 'box' | 'cylinder' | 'cone' | 'torus' | 'icosahedron' | 'tetrahedron' | 'capsule';
   position?: [number, number, number];
@@ -89,4 +93,8 @@ export interface PhysicsCmd {
       anchorB: [number, number, number];
     }>;
   }>;
+  controllerId?: string;
+  controllerRootId?: string;
+  trainedHinges?: string[];
+  overwrite?: boolean;
 }

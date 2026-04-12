@@ -46,13 +46,39 @@ interface HingeConstraint {
   motorForce: number;
 }
 
+interface SensorBinding {
+  id: string;
+  type: NonNullable<PhysicsCmd['sensorType']>;
+  objId?: string;
+  objId2?: string;
+  target?: [number, number, number] | string;
+}
+
 interface ActiveController {
+  controllerId?: string;
   rootId: string;
   hingeIds: string[];
   net: NeuralNet;
   step: number;
   maxMotorSpeed: number;
   baseMotorForce: number;
+  bestReward?: number;
+}
+
+interface SerializedPhysicsController {
+  version: 1;
+  controllerId?: string;
+  rootId: string;
+  hingeIds: string[];
+  maxMotorSpeed: number;
+  baseMotorForce: number;
+  step: number;
+  bestReward?: number;
+  network: {
+    sizes: number[];
+    layers: number[][];
+  };
+  savedAt: number;
 }
 
 // ── Minimal Neural Network (no deps) ─────────────────────────────────────────
@@ -101,6 +127,34 @@ class NeuralNet {
   }
 }
 
+function serializeNeuralNet(net: NeuralNet) {
+  return {
+    sizes: [...net.sizes],
+    layers: net.layers.map((layer) => Array.from(layer)),
+  };
+}
+
+function deserializeNeuralNet(serialized: { sizes: number[]; layers: number[][] }) {
+  const net = new NeuralNet(serialized.sizes);
+  net.layers = serialized.layers.map((layer) => Float32Array.from(layer));
+  return net;
+}
+
+function serializeController(controller: ActiveController): SerializedPhysicsController {
+  return {
+    version: 1,
+    controllerId: controller.controllerId,
+    rootId: controller.rootId,
+    hingeIds: [...controller.hingeIds],
+    maxMotorSpeed: controller.maxMotorSpeed,
+    baseMotorForce: controller.baseMotorForce,
+    step: controller.step,
+    bestReward: controller.bestReward,
+    network: serializeNeuralNet(controller.net),
+    savedAt: Date.now(),
+  };
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function PhysicsSimulator({
@@ -123,6 +177,7 @@ export default function PhysicsSimulator({
     objects: Map<string, PhysicsObject>;
     springs: Map<string, SpringConstraint>;
     hinges: Map<string, HingeConstraint>;
+    sensors: Map<string, SensorBinding>;
     gravity: import("three").Vector3;
     animId: number | null;
     lastTime: number;
@@ -141,6 +196,7 @@ export default function PhysicsSimulator({
   }>({
     THREE: null, renderer: null, scene: null, camera: null,
     objects: new Map(), springs: new Map(), hinges: new Map(),
+    sensors: new Map(),
     gravity: null as any, // set after THREE loads
     animId: null, lastTime: 0,
     fpsFrames: 0, fpsTime: 0, fps: 0,
@@ -173,6 +229,9 @@ export default function PhysicsSimulator({
     }
     for (const [hingeId, hinge] of Array.from(s.hinges.entries())) {
       if (hinge.a === objectId || hinge.b === objectId) s.hinges.delete(hingeId);
+    }
+    for (const [sensorId, sensor] of Array.from(s.sensors.entries())) {
+      if (sensor.objId === objectId || sensor.objId2 === objectId) s.sensors.delete(sensorId);
     }
   }, []);
 
@@ -487,12 +546,50 @@ export default function PhysicsSimulator({
           maxAngle: h.maxAngle,
         };
       }
+      const sensorState: Record<string, object> = {};
+      for (const [id, sensor] of s.sensors) {
+        const primary = sensor.objId ? s.objects.get(sensor.objId) : null;
+        const secondary = sensor.objId2 ? s.objects.get(sensor.objId2) : null;
+        let reading: number | boolean | null = null;
+        if (sensor.type === 'distance') {
+          if (primary && secondary) reading = primary.mesh.position.distanceTo(secondary.mesh.position);
+          else if (primary && Array.isArray(sensor.target)) reading = primary.mesh.position.distanceTo(new THREE.Vector3(...sensor.target));
+        } else if (sensor.type === 'speed') {
+          if (primary) reading = primary.velocity.length();
+        } else if (sensor.type === 'angle') {
+          const hinge = s.hinges.get(sensor.id) ?? (sensor.objId ? Array.from(s.hinges.values()).find((entry) => entry.a === sensor.objId || entry.b === sensor.objId) : undefined);
+          reading = hinge?.angle ?? null;
+        } else if (sensor.type === 'contact') {
+          if (primary) reading = primary.mesh.position.y <= supportExtentAlong(primary, new THREE.Vector3(0, 1, 0)) + 0.01;
+        }
+        sensorState[id] = {
+          type: sensor.type,
+          objId: sensor.objId ?? null,
+          objId2: sensor.objId2 ?? null,
+          target: sensor.target ?? null,
+          reading,
+        };
+      }
       const statePayload = {
         objects: objState,
         hinges: hingeState,
+        sensors: sensorState,
         trainingLog: s.trainingLog,
+        activeController: s.activeController
+          ? {
+              controllerId: s.activeController.controllerId ?? null,
+              rootId: s.activeController.rootId,
+              hingeIds: s.activeController.hingeIds,
+              step: s.activeController.step,
+              maxMotorSpeed: s.activeController.maxMotorSpeed,
+              baseMotorForce: s.activeController.baseMotorForce,
+              bestReward: s.activeController.bestReward ?? null,
+              networkSizes: [...s.activeController.net.sizes],
+            }
+          : null,
         objectCount: Object.keys(objState).length,
         hingeCount: Object.keys(hingeState).length,
+        sensorCount: Object.keys(sensorState).length,
         timestamp: Date.now(),
       };
       fetch('/api/physics-state', {
@@ -800,9 +897,11 @@ export default function PhysicsSimulator({
 
         // ── reset ─────────────────────────────────────────────────────────
         case "reset": {
-          if (!cmd.objId) break;
-          removeObject(cmd.objId);
+          if (cmd.objId) removeObject(cmd.objId);
+          for (const objectId of Array.from(s.objects.keys())) removeObject(objectId);
+          s.springs.clear();
           s.hinges.clear();
+          s.sensors.clear();
           s.trainingLog = [];
           s.activeController = null;
           s.gravity.set(0, -9.81, 0);
@@ -869,8 +968,14 @@ export default function PhysicsSimulator({
 
         // ── add_sensor ────────────────────────────────────────────────────
         case "add_sensor": {
-          // Sensors are evaluated via get_state; this registers sensor metadata
-          // The agent can use run_script to read sensor values
+          if (!cmd.sensorId || !cmd.sensorType) break;
+          s.sensors.set(cmd.sensorId, {
+            id: cmd.sensorId,
+            type: cmd.sensorType,
+            objId: cmd.objId,
+            objId2: cmd.objId2,
+            target: cmd.target,
+          });
           console.info("[PhysicsSimulator] sensor registered:", cmd.sensorId, cmd.sensorType, cmd.objId, cmd.objId2);
           shouldPublishState = true;
           break;
@@ -1013,12 +1118,14 @@ export default function PhysicsSimulator({
           }
 
           s.activeController = {
+            controllerId: cmd.controllerId ?? `${rootId}-controller`,
             rootId,
             hingeIds,
             net: bestNet.clone(),
             step: 0,
             maxMotorSpeed: 7,
             baseMotorForce: Math.max(20, ...hingeIds.map((hingeId) => s.hinges.get(hingeId)?.motorForce ?? 0), 45),
+            bestReward,
           };
 
           s.trainingLog.push(`Done! Best reward: ${bestReward.toFixed(2)}. Installed trained controller on ${hingeIds.length} live hinges for root '${rootId}'.`);
@@ -1028,6 +1135,146 @@ export default function PhysicsSimulator({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ trainingLog: s.trainingLog, bestReward, trainedRootId: rootId, trainedHinges: hingeIds, timestamp: Date.now() }),
           }).catch(() => {});
+          shouldPublishState = true;
+          break;
+        }
+
+        // ── save_controller ───────────────────────────────────────────────
+        case "save_controller": {
+          if (!s.activeController) {
+            s.trainingLog.push('ERROR: no active controller to save. Train or load one first.');
+            shouldPublishState = true;
+            break;
+          }
+          const controllerId = cmd.controllerId ?? s.activeController.controllerId ?? `${s.activeController.rootId}-controller`;
+          const payload = serializeController({
+            ...s.activeController,
+            controllerId,
+          });
+          fetch('/api/physics-controller', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'save',
+              controllerId,
+              controller: payload,
+              performanceScore: payload.bestReward ?? 0,
+              iterations: payload.step,
+              metadata: {
+                rootId: payload.rootId,
+                hingeIds: payload.hingeIds,
+                networkSizes: payload.network.sizes,
+              },
+            }),
+          })
+            .then((response) => response.json())
+            .then((result) => {
+              if (result?.error) {
+                s.trainingLog.push(`ERROR: failed to save controller '${controllerId}': ${result.error}`);
+              } else {
+                s.activeController = { ...s.activeController!, controllerId };
+                s.trainingLog.push(`Saved controller '${controllerId}' to ${result.filepath ?? 'weights store'}.`);
+              }
+              publishState();
+            })
+            .catch((error) => {
+              s.trainingLog.push(`ERROR: failed to save controller '${controllerId}': ${String(error)}`);
+              publishState();
+            });
+          break;
+        }
+
+        // ── load_controller ───────────────────────────────────────────────
+        case "load_controller": {
+          if (!cmd.controllerId) {
+            s.trainingLog.push('ERROR: load_controller requires controllerId.');
+            shouldPublishState = true;
+            break;
+          }
+          const requestedRootId = cmd.controllerRootId;
+          const requestedHinges = cmd.trainedHinges;
+          fetch(`/api/physics-controller?id=${encodeURIComponent(cmd.controllerId)}`)
+            .then((response) => response.json())
+            .then((result) => {
+              if (result?.error || !result?.controller) {
+                s.trainingLog.push(`ERROR: controller '${cmd.controllerId}' could not be loaded.`);
+                publishState();
+                return;
+              }
+              const loaded = result.controller as SerializedPhysicsController;
+              const rootId = requestedRootId ?? loaded.rootId ?? selectRootObjectId(s.objects, s.hinges);
+              if (!rootId || !s.objects.has(rootId)) {
+                s.trainingLog.push(`ERROR: controller '${cmd.controllerId}' loaded, but root '${rootId ?? 'unknown'}' is not present in the scene.`);
+                publishState();
+                return;
+              }
+              const hingeIds = Array.isArray(requestedHinges) && requestedHinges.length > 0
+                ? requestedHinges.filter((hingeId) => s.hinges.has(hingeId))
+                : (loaded.hingeIds ?? []).filter((hingeId) => s.hinges.has(hingeId));
+              const resolvedHinges = hingeIds.length > 0 ? hingeIds : controlledHingeIdsForRoot(rootId, s.hinges);
+              const net = deserializeNeuralNet(loaded.network);
+              if (net.sizes[net.sizes.length - 1] !== resolvedHinges.length) {
+                s.trainingLog.push(`ERROR: controller '${cmd.controllerId}' expects ${net.sizes[net.sizes.length - 1]} hinge outputs, but the scene exposes ${resolvedHinges.length}.`);
+                publishState();
+                return;
+              }
+              s.activeController = {
+                controllerId: loaded.controllerId ?? cmd.controllerId,
+                rootId,
+                hingeIds: resolvedHinges,
+                net,
+                step: 0,
+                maxMotorSpeed: loaded.maxMotorSpeed ?? 7,
+                baseMotorForce: loaded.baseMotorForce ?? 45,
+                bestReward: loaded.bestReward,
+              };
+              s.trainingLog.push(`Loaded controller '${cmd.controllerId}' onto root '${rootId}' with ${resolvedHinges.length} hinges.`);
+              publishState();
+            })
+            .catch((error) => {
+              s.trainingLog.push(`ERROR: failed to load controller '${cmd.controllerId}': ${String(error)}`);
+              publishState();
+            });
+          break;
+        }
+
+        // ── clear_controller ──────────────────────────────────────────────
+        case "clear_controller": {
+          if (s.activeController) {
+            for (const hingeId of s.activeController.hingeIds) {
+              const hinge = s.hinges.get(hingeId);
+              if (!hinge) continue;
+              hinge.motorSpeed = 0;
+              hinge.motorForce = 0;
+            }
+          }
+          s.activeController = null;
+          s.trainingLog.push('Cleared active controller.');
+          shouldPublishState = true;
+          break;
+        }
+
+        // ── evaluate_controller ───────────────────────────────────────────
+        case "evaluate_controller": {
+          if (!s.activeController) {
+            s.trainingLog.push('ERROR: no active controller to evaluate.');
+            shouldPublishState = true;
+            break;
+          }
+          let rewardFn: (creature: object, step: number) => number;
+          try {
+            rewardFn = new Function('creature', 'step', `return (${cmd.rewardFn ?? "(c) => c.pos ? c.pos[0] - 0.2 * Math.abs(c.vel?.[1] ?? 0) + 0.5 * (c.up?.[1] ?? 0) - (c.fallen ? 4 : 0) : 0"})(creature, step)`) as (creature: object, step: number) => number;
+          } catch {
+            rewardFn = ((creature: Record<string, any>) => creature.pos ? creature.pos[0] : 0) as (creature: object, step: number) => number;
+          }
+          const evaluation = evaluateNetworkOnCreature(
+            s.activeController.net,
+            s.activeController.rootId,
+            s.activeController.hingeIds,
+            cmd.simSteps ?? 300,
+            rewardFn,
+          );
+          s.trainingLog.push(`Controller evaluation reward: ${Number(evaluation.reward ?? 0).toFixed(2)} over ${cmd.simSteps ?? 300} steps.`);
           shouldPublishState = true;
           break;
         }

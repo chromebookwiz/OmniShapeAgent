@@ -12,7 +12,7 @@ const REGISTRY_PATH = PATHS.weightsRegistry;
 
 ensureWorkspacePaths();
 
-export type WeightComponent = 'voice' | 'vision' | 'policy' | 'meta' | 'memory' | 'embedding';
+export type WeightComponent = 'voice' | 'vision' | 'policy' | 'physics' | 'meta' | 'memory' | 'embedding';
 
 export interface WeightEntry {
   id: string;

@@ -3,8 +3,11 @@
 // (spawn logic lives in agent.ts switch to avoid circular deps).
 import fs from 'fs';
 
-import { PATHS } from '../paths';
+import { ensureWorkspacePaths } from '../paths-bootstrap';
+import { PATHS } from '../paths-core';
 const REGISTRY_PATH = PATHS.botsRegistry;
+
+ensureWorkspacePaths();
 
 export interface BotRecord {
   id: string;

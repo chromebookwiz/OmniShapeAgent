@@ -1,0 +1,13 @@
+# Defense in depth for local runtime state and user data.
+/memories/
+/saved_chats/
+/screenshots/
+/tmp/
+/workspace/
+/weights/
+/data/*.json
+/data/wallets/
+/.env
+/.env.*
+/.agent_venv/
+/*.tgz

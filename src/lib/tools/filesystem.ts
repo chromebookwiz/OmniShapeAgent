@@ -4,15 +4,27 @@ import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
+import { ROOT, SKILLS_DIR as SKILLS_ROOT } from '../paths-core';
+
 const execAsync = promisify(exec);
 
-// Define where skills are stored
-const SKILLS_DIR = path.join(process.cwd(), 'skills');
+function resolveWorkspacePath(targetPath: string): string {
+  return path.isAbsolute(targetPath) ? targetPath : path.resolve(ROOT, targetPath);
+}
+
+function isWithinWorkspace(targetPath: string): boolean {
+  return targetPath === ROOT || targetPath.startsWith(ROOT + path.sep);
+}
+
+function requireWorkspacePath(targetPath: string): string | null {
+  const resolved = resolveWorkspacePath(targetPath);
+  return isWithinWorkspace(resolved) ? resolved : null;
+}
 
 export function listSkills(): string {
   try {
-    if (!fs.existsSync(SKILLS_DIR)) return 'No skills directory found.';
-    const files = fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith('.md'));
+    if (!fs.existsSync(SKILLS_ROOT)) return 'No skills directory found.';
+    const files = fs.readdirSync(SKILLS_ROOT).filter(f => f.endsWith('.md'));
     if (files.length === 0) return 'No skill files found.';
     return files.map(f => f.replace('.md', '')).join(', ');
   } catch (err) {
@@ -23,7 +35,7 @@ export function listSkills(): string {
 export function readSkill(skillName: string): string {
   try {
     const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '');
-    const filepath = path.join(SKILLS_DIR, `${safeName}.md`);
+    const filepath = path.join(SKILLS_ROOT, `${safeName}.md`);
     if (!fs.existsSync(filepath)) {
       return `Skill '${skillName}' not found.`;
     }
@@ -35,7 +47,7 @@ export function readSkill(skillName: string): string {
 
 export function readFile(filepath: string): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const content = fs.readFileSync(absPath, 'utf8');
     if (content.length > 20000) {
@@ -49,7 +61,7 @@ export function readFile(filepath: string): string {
 
 export function writeFile(filepath: string, content: string): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(absPath, content, 'utf8');
     return `✓ Wrote ${content.length} chars to ${filepath} (${fs.statSync(absPath).size} bytes on disk)`;
@@ -60,7 +72,7 @@ export function writeFile(filepath: string, content: string): string {
 
 export function patchFile(filepath: string, search: string, replace: string): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const content = fs.readFileSync(absPath, 'utf8');
     if (!content.includes(search)) {
@@ -77,8 +89,8 @@ export function patchFile(filepath: string, search: string, replace: string): st
 
 export function appendFile(filepath: string, content: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), filepath);
-    if (!absPath.startsWith(process.cwd())) return "Access denied.";
+    const absPath = requireWorkspacePath(filepath);
+    if (!absPath) return "Access denied.";
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.appendFileSync(absPath, content, 'utf8');
     return `Appended ${content.length} chars to ${filepath}`;
@@ -89,8 +101,8 @@ export function appendFile(filepath: string, content: string): string {
 
 export function deleteFile(filepath: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), filepath);
-    if (!absPath.startsWith(process.cwd())) return "Access denied.";
+    const absPath = requireWorkspacePath(filepath);
+    if (!absPath) return "Access denied.";
     if (!fs.existsSync(absPath)) return "File not found.";
     fs.unlinkSync(absPath);
     return `Deleted ${filepath}`;
@@ -101,9 +113,9 @@ export function deleteFile(filepath: string): string {
 
 export function moveFile(src: string, dest: string): string {
   try {
-    const absSrc  = path.resolve(process.cwd(), src);
-    const absDest = path.resolve(process.cwd(), dest);
-    if (!absSrc.startsWith(process.cwd()) || !absDest.startsWith(process.cwd()))
+    const absSrc  = requireWorkspacePath(src);
+    const absDest = requireWorkspacePath(dest);
+    if (!absSrc || !absDest)
       return "Access denied.";
     fs.mkdirSync(path.dirname(absDest), { recursive: true });
     fs.renameSync(absSrc, absDest);
@@ -115,9 +127,9 @@ export function moveFile(src: string, dest: string): string {
 
 export function copyFile(src: string, dest: string): string {
   try {
-    const absSrc  = path.resolve(process.cwd(), src);
-    const absDest = path.resolve(process.cwd(), dest);
-    if (!absSrc.startsWith(process.cwd()) || !absDest.startsWith(process.cwd()))
+    const absSrc  = requireWorkspacePath(src);
+    const absDest = requireWorkspacePath(dest);
+    if (!absSrc || !absDest)
       return "Access denied.";
     fs.mkdirSync(path.dirname(absDest), { recursive: true });
     fs.copyFileSync(absSrc, absDest);
@@ -129,8 +141,8 @@ export function copyFile(src: string, dest: string): string {
 
 export function createDir(dirPath: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), dirPath);
-    if (!absPath.startsWith(process.cwd())) return "Access denied.";
+    const absPath = requireWorkspacePath(dirPath);
+    if (!absPath) return "Access denied.";
     fs.mkdirSync(absPath, { recursive: true });
     return `Directory created: ${dirPath}`;
   } catch (err) {
@@ -140,8 +152,8 @@ export function createDir(dirPath: string): string {
 
 export function listDir(dirPath = '.'): string {
   try {
-    const absPath = path.resolve(process.cwd(), dirPath);
-    if (!absPath.startsWith(process.cwd())) return "Access denied.";
+    const absPath = requireWorkspacePath(dirPath);
+    if (!absPath) return "Access denied.";
     if (!fs.existsSync(absPath)) return "Directory not found.";
     const entries = fs.readdirSync(absPath, { withFileTypes: true });
     const lines = entries.map(e => {
@@ -158,8 +170,8 @@ export function listDir(dirPath = '.'): string {
 
 export function fileExists(filepath: string): string {
   try {
-    const absPath = path.resolve(process.cwd(), filepath);
-    if (!absPath.startsWith(process.cwd())) return "Access denied.";
+    const absPath = requireWorkspacePath(filepath);
+    if (!absPath) return "Access denied.";
     const exists = fs.existsSync(absPath);
     if (!exists) return `Not found: ${filepath}`;
     const stat = fs.statSync(absPath);
@@ -171,12 +183,12 @@ export function fileExists(filepath: string): string {
 
 export async function zipFiles(files: string, outPath: string): Promise<string> {
   try {
-    const absOut = path.resolve(process.cwd(), outPath);
-    if (!absOut.startsWith(process.cwd())) return "Access denied.";
+    const absOut = requireWorkspacePath(outPath);
+    if (!absOut) return "Access denied.";
     const cmd = process.platform === 'win32'
       ? `powershell -Command "Compress-Archive -Path '${files.replace(/'/g, "''")}' -DestinationPath '${absOut.replace(/'/g, "''")}' -Force"`
       : `zip -r "${absOut}" ${files}`;
-    const { stdout, stderr } = await execAsync(cmd, { cwd: process.cwd(), timeout: 30_000 });
+    const { stdout, stderr } = await execAsync(cmd, { cwd: ROOT, timeout: 30_000 });
     return `Zipped to ${outPath}\n${stdout || stderr}`.trim();
   } catch (e: any) {
     return `Zip error: ${e.message}`;
@@ -185,14 +197,14 @@ export async function zipFiles(files: string, outPath: string): Promise<string> 
 
 export async function unzipFile(zipPath: string, destDir = '.'): Promise<string> {
   try {
-    const absZip  = path.resolve(process.cwd(), zipPath);
-    const absDest = path.resolve(process.cwd(), destDir);
-    if (!absZip.startsWith(process.cwd()) || !absDest.startsWith(process.cwd()))
+    const absZip  = requireWorkspacePath(zipPath);
+    const absDest = requireWorkspacePath(destDir);
+    if (!absZip || !absDest)
       return "Access denied.";
     const cmd = process.platform === 'win32'
       ? `powershell -Command "Expand-Archive -Path '${absZip.replace(/'/g, "''")}' -DestinationPath '${absDest.replace(/'/g, "''")}' -Force"`
       : `unzip -o "${absZip}" -d "${absDest}"`;
-    const { stdout } = await execAsync(cmd, { cwd: process.cwd(), timeout: 30_000 });
+    const { stdout } = await execAsync(cmd, { cwd: ROOT, timeout: 30_000 });
     return `Extracted to ${destDir}\n${stdout}`.trim();
   } catch (e: any) {
     return `Unzip error: ${e.message}`;
@@ -207,7 +219,7 @@ export async function unzipFile(zipPath: string, destDir = '.'): Promise<string>
  */
 export function readFileRange(filepath: string, startLine: number, endLine: number): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const lines = fs.readFileSync(absPath, 'utf8').split('\n');
     const total = lines.length;
@@ -228,7 +240,7 @@ export function readFileRange(filepath: string, startLine: number, endLine: numb
  */
 export function findFiles(pattern: string, dirPath = '.'): string {
   try {
-    const absDir = path.isAbsolute(dirPath) ? dirPath : path.resolve(process.cwd(), dirPath);
+    const absDir = resolveWorkspacePath(dirPath);
     if (!fs.existsSync(absDir)) return `Directory not found: ${dirPath}`;
     const SKIP = new Set(['node_modules', '.next', '.git', 'dist', '__pycache__', '.cache']);
     const results: string[] = [];
@@ -249,7 +261,7 @@ export function findFiles(pattern: string, dirPath = '.'): string {
         } else {
           const nameL = e.name.toLowerCase();
           const match = ext ? nameL.endsWith('.' + ext) : (contains ? nameL.includes(contains) : true);
-          if (match) results.push(path.relative(process.cwd(), full));
+          if (match) results.push(path.relative(ROOT, full));
         }
       }
     }
@@ -270,7 +282,7 @@ export function searchInFiles(
   query: string, fileExt?: string, dirPath = '.', maxResults = 30
 ): string {
   try {
-    const absDir = path.isAbsolute(dirPath) ? dirPath : path.resolve(process.cwd(), dirPath);
+    const absDir = resolveWorkspacePath(dirPath);
     if (!fs.existsSync(absDir)) return `Directory not found: ${dirPath}`;
     const SKIP = new Set(['node_modules', '.next', '.git', 'dist', '__pycache__', '.cache']);
     const results: string[] = [];
@@ -297,7 +309,7 @@ export function searchInFiles(
             const lines = content.split('\n');
             for (let i = 0; i < lines.length && results.length < maxResults; i++) {
               if (lines[i].toLowerCase().includes(queryL)) {
-                const rel = path.relative(process.cwd(), full);
+                const rel = path.relative(ROOT, full);
                 // Show 1 line of context before and after
                 const ctx = [
                   i > 0 ? `    ${i}: ${lines[i - 1]}` : null,
@@ -325,7 +337,7 @@ export function searchInFiles(
  */
 export function extractSection(filepath: string, startMarker: string, endMarker: string): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const content = fs.readFileSync(absPath, 'utf8');
     const startIdx = content.indexOf(startMarker);
@@ -348,7 +360,7 @@ export function extractSection(filepath: string, startMarker: string, endMarker:
  */
 export function insertAtLine(filepath: string, lineNumber: number, content: string): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const lines = fs.readFileSync(absPath, 'utf8').split('\n');
     const idx = Math.max(0, Math.min(lines.length, lineNumber - 1));
@@ -365,7 +377,7 @@ export function insertAtLine(filepath: string, lineNumber: number, content: stri
  */
 export function deleteLines(filepath: string, startLine: number, endLine: number): string {
   try {
-    const absPath = path.isAbsolute(filepath) ? filepath : path.resolve(process.cwd(), filepath);
+    const absPath = resolveWorkspacePath(filepath);
     if (!fs.existsSync(absPath)) return `File not found: ${filepath}`;
     const lines = fs.readFileSync(absPath, 'utf8').split('\n');
     const from  = Math.max(1, startLine) - 1;

@@ -15,7 +15,7 @@
 
 import fs   from 'fs';
 import path from 'path';
-import { DATA_DIR } from './paths-core';
+import { DATA_DIR, ROOT } from './paths-core';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -157,7 +157,7 @@ export function applyPatch(
 ): string {
   if (!oldCode.trim()) return `skipped:${impId} — no oldCode provided; apply manually.`;
   try {
-    const abs = path.resolve(process.cwd(), filePath);
+    const abs = path.resolve(ROOT, filePath);
     if (!fs.existsSync(abs)) return `error:${impId} — file not found: ${filePath}`;
     const src = fs.readFileSync(abs, 'utf8');
     if (!src.includes(oldCode)) return `error:${impId} — pattern not found in ${filePath}`;
@@ -205,7 +205,7 @@ export function readSourcesForAnalysis(
   const out: Record<string, string> = {};
   for (const f of files) {
     try {
-      const abs  = path.resolve(process.cwd(), f);
+      const abs  = path.resolve(ROOT, f);
       if (!fs.existsSync(abs)) continue;
       const text  = fs.readFileSync(abs, 'utf8');
       const lines = text.split('\n');

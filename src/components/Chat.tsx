@@ -470,6 +470,9 @@ export default function Chat() {
   const [showCryptoWallet, setShowCryptoWallet] = useState(false);
   // Moltbook panel
   const [showMoltbook, setShowMoltbook] = useState(false);
+  const [showLocalClawdBuilder, setShowLocalClawdBuilder] = useState(false);
+  const [localClawdAppName, setLocalClawdAppName] = useState(() => `localclawd-app-${Date.now().toString(36)}`);
+  const [localClawdSpecification, setLocalClawdSpecification] = useState('');
   const [heartbeatMode, setHeartbeatMode] = useState(false);
   const [heartbeatIntervalMinutes, setHeartbeatIntervalMinutes] = useState<number>(() => {
     try {
@@ -798,6 +801,7 @@ export default function Chat() {
     setShowHallOfFame(false);
     setShowMoltbook(false);
     setShowCryptoWallet(false);
+    setShowLocalClawdBuilder(false);
   }, []);
 
   const startNewSession = useCallback(() => {
@@ -821,6 +825,28 @@ export default function Chat() {
       handleSendRef.current?.({ msg: message });
     }, 0);
   }, []);
+
+  const launchLocalClawdBuild = useCallback((targetDirRaw?: string, specificationRaw?: string) => {
+    const targetDir = (targetDirRaw?.trim() || localClawdAppName.trim() || `localclawd-app-${Date.now().toString(36)}`)
+      .replace(/\s+/g, '-')
+      .replace(/[^a-zA-Z0-9-_]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || `localclawd-app-${Date.now().toString(36)}`;
+    const specification = (specificationRaw?.trim() || localClawdSpecification.trim());
+    if (!specification) {
+      appendSystemMessage('LocalClawd builder needs an app specification before it can run.');
+      setLocalClawdAppName(targetDir);
+      setShowLocalClawdBuilder(true);
+      return false;
+    }
+    queueAgentPrompt(
+      `Coding surveyor workflow: create a new directory named "${targetDir}" in the workspace root, verify the LocalClawd CLI is available with a terminal check, and if it is missing install it with npm install -g localclawd. Then invoke LocalClawd inside that directory to build this application: ${specification}. Act as the architect supervising another agent: inspect what LocalClawd generates, review and correct the implementation as needed, run tests or build checks as progress is made, and keep iterating until the app is in a working state or you hit a concrete blocker.`
+    );
+    setLocalClawdAppName(targetDir);
+    setShowLocalClawdBuilder(false);
+    appendSystemMessage(`Queued LocalClawd build supervision for ${targetDir}.`);
+    return true;
+  }, [appendSystemMessage, localClawdAppName, localClawdSpecification, queueAgentPrompt]);
 
   const runLocalCommand = useCallback((rawInput: string) => {
     const trimmed = rawInput.trim();
@@ -916,13 +942,13 @@ export default function Chat() {
         const targetDir = dirNameRaw || `localclawd-app-${Date.now().toString(36)}`;
         const specification = specParts.join(' ').trim();
         if (!specification) {
-          appendSystemMessage('Usage: /localclawd <directory> <app specification>. Example: /localclawd inventory-app build a small inventory dashboard with tests.');
+          setLocalClawdAppName(targetDir);
+          setLocalClawdSpecification('');
+          setShowLocalClawdBuilder(true);
+          appendSystemMessage('Opened LocalClawd builder. Enter an app name and specification, or run /localclawd <directory> <app specification>.');
           break;
         }
-        queueAgentPrompt(
-          `Coding surveyor workflow: create a new directory named "${targetDir}" in the workspace root, verify the LocalClawd CLI is available with a terminal check, and if it is missing install it with npm install -g localclawd. Then invoke LocalClawd inside that directory to build this application: ${specification}. Act as the architect supervising another agent: inspect what LocalClawd generates, review and correct the implementation as needed, run tests or build checks as progress is made, and keep iterating until the app is in a working state or you hit a concrete blocker.`
-        );
-        appendSystemMessage(`Queued LocalClawd build supervision for ${targetDir}.`);
+        launchLocalClawdBuild(targetDir, specification);
         break;
       }
       case 'history':
@@ -1011,7 +1037,7 @@ export default function Chat() {
 
     setShowActionMenu(false);
     return true;
-  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, heartbeatIntervalMinutes, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, surveyorMode, windowManager]);
+  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, heartbeatIntervalMinutes, launchLocalClawdBuild, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, surveyorMode, windowManager]);
 
   const normalizedComposerInput = input.trimStart();
   const composerCommandToken = normalizedComposerInput.startsWith('/')
@@ -1714,7 +1740,7 @@ export default function Chat() {
                         <ActionMenuButton icon={<Icons.Memory />} label="Memory Browser" command="/memory" description="Inspect, boost, and delete persistent memories." active={showMemoryPanel} onClick={() => { resetUtilityPanels(); setShowMemoryPanel(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Trophy />} label="Hall of Fame" command="/hall" description="Inspect top learned bot runs and strategies." active={showHallOfFame} onClick={() => { resetUtilityPanels(); setShowHallOfFame(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Physics />} label="Physics Simulator" command="/physics" description="Open the physics workspace for live experiments." active={physicsModeActive} onClick={openPhysicsWindow} />
-                        <ActionMenuButton icon={<Icons.Architect />} label="LocalClawd Builder" command="/localclawd" description="Create a new directory and supervise LocalClawd as it builds and tests the requested app." onClick={() => { appendSystemMessage('Run /localclawd <directory> <app specification> to launch a supervised LocalClawd build.'); setShowActionMenu(false); }} />
+                        <ActionMenuButton icon={<Icons.Architect />} label="LocalClawd Builder" command="/localclawd" description="Open a builder panel to define an app name and specification, then supervise LocalClawd as it builds and tests it." onClick={() => { resetUtilityPanels(); setShowLocalClawdBuilder(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Bitcoin />} label="Crypto Wallet" command="/wallet" description="Manage local wallets and balance lookups." active={showCryptoWallet} onClick={() => { resetUtilityPanels(); setShowCryptoWallet(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Moltbook />} label="Moltbook" command="/moltbook" description="Open Moltbook shortcuts and posting prompts." active={showMoltbook} onClick={() => { resetUtilityPanels(); setShowMoltbook(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Bubble />} label="Discord Workflow" command="/discord" description="Have the agent inspect or run the next Discord action through tools and memory." onClick={() => { runLocalCommand('/discord'); setShowActionMenu(false); }} />
@@ -2362,6 +2388,55 @@ export default function Chat() {
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">API Key</p>
                   <p className="text-[10px] text-black/50">Set <code className="bg-black/5 px-1 rounded">MOLTBOOK_API_KEY</code> env var after registration.</p>
                   <a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-black/60 hover:text-black underline">moltbook.com</a>
+                </div>
+              </div>
+            </FloatingPanel>
+          )}
+
+          {showLocalClawdBuilder && (
+            <FloatingPanel title="LocalClawd Builder" onClose={() => setShowLocalClawdBuilder(false)} defaultW={440} defaultH={430} defaultX={typeof window !== 'undefined' ? Math.max(40, window.innerWidth - 480) : 560} defaultY={84}>
+              <div className="flex h-full flex-col bg-[#FDFCF0] text-black">
+                <div className="space-y-2 border-b border-black/10 px-5 py-4">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Supervised Builder</p>
+                  <p className="text-sm font-black">Define an app name and spec, then queue a LocalClawd build under coding surveyor supervision.</p>
+                  <p className="text-xs leading-relaxed text-black/50">The agent will create the directory, verify the LocalClawd CLI, install it if missing, inspect generated code, and keep iterating until the app is working or a concrete blocker appears.</p>
+                </div>
+                <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-[0.18em] text-black/40">App Name</label>
+                    <input
+                      value={localClawdAppName}
+                      onChange={(e) => setLocalClawdAppName(e.target.value)}
+                      placeholder="inventory-dashboard"
+                      className="w-full rounded-xl border border-black/15 bg-white px-3 py-2.5 text-sm font-black outline-none transition-colors focus:border-black"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-[0.18em] text-black/40">Specifications</label>
+                    <textarea
+                      value={localClawdSpecification}
+                      onChange={(e) => setLocalClawdSpecification(e.target.value)}
+                      placeholder="Build a small inventory dashboard with product CRUD, search, tests, and a clean responsive UI."
+                      className="min-h-[180px] w-full resize-y rounded-xl border border-black/15 bg-white px-3 py-3 text-sm leading-relaxed outline-none transition-colors focus:border-black"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-black/10 px-5 py-4">
+                  <button
+                    onClick={() => {
+                      setLocalClawdAppName(`localclawd-app-${Date.now().toString(36)}`);
+                      setLocalClawdSpecification('');
+                    }}
+                    className="rounded-full border border-black/15 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-black/55 transition-colors hover:border-black/35 hover:text-black"
+                  >
+                    Reset
+                  </button>
+                  <button
+                    onClick={() => { launchLocalClawdBuild(); }}
+                    className="rounded-full bg-black px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-[#FDFCF0] transition-colors hover:bg-black/85"
+                  >
+                    Queue Build
+                  </button>
                 </div>
               </div>
             </FloatingPanel>

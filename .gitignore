@@ -103,6 +103,7 @@ temp/
 /tmp/
 /screenshots/
 /saved_chats/
+/memories/
 /data/*.json
 !/data/.gitkeep
 /data/wallets/

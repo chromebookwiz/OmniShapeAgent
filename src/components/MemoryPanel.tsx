@@ -35,6 +35,21 @@ interface MemoryStats {
   avgLatticeDegree: number;
   staleUnacknowledged: number;
   suppressedCount?: number;
+  layerBreakdown?: Record<'working' | 'episodic' | 'semantic' | 'procedural', CognitiveLayerProfile>;
+}
+
+interface CognitiveLayerProfile {
+  layer: 'working' | 'episodic' | 'semantic' | 'procedural';
+  purpose: string;
+  count: number;
+  share: number;
+  avgImportance: number;
+  avgTaskSalience: number;
+  avgAcknowledgementRatio: number;
+  avgConsolidationLevel: number;
+  staleCount: number;
+  suppressedCount: number;
+  matureCount: number;
 }
 
 interface MemoryPolicySummary {
@@ -184,6 +199,7 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
   const [addContent, setAddContent] = useState('');
   const [addTags, setAddTags] = useState('');
   const [addImportance, setAddImportance] = useState(1.0);
+  const [addLayer, setAddLayer] = useState<MemoryRecord['cognitiveLayer']>('working');
   const [addEmotion, setAddEmotion] = useState<MemoryRecord['emotion']>('focused');
   const [addTriggerKeywords, setAddTriggerKeywords] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -285,6 +301,7 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
           content: addContent.trim(),
           importance: addImportance,
           tags: addTags.split(',').map(t => t.trim()).filter(Boolean),
+          cognitiveLayer: addLayer,
           emotion: addEmotion,
           triggerKeywords: addTriggerKeywords.split(',').map(t => t.trim().toLowerCase()).filter(Boolean),
           source: 'user',
@@ -295,6 +312,7 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
       setAddContent('');
       setAddTags('');
       setAddImportance(1.0);
+      setAddLayer('working');
       setAddEmotion('focused');
       setAddTriggerKeywords('');
       setTimeout(() => { setShowAddForm(false); setAddStatus(''); }, 1200);
@@ -405,6 +423,36 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
         </div>
       )}
 
+      {stats?.layerBreakdown && (
+        <div className="border-b border-black/5 px-6 py-3 bg-black/[0.02] flex-shrink-0">
+          <div className="mb-2 text-[9px] font-black uppercase tracking-widest text-black/35">Layer Roles</div>
+          <div className="grid grid-cols-1 gap-2">
+            {(Object.values(stats.layerBreakdown) as CognitiveLayerProfile[]).map((profile) => (
+              <div key={profile.layer} className="rounded-lg border border-black/10 bg-white px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-black/55">{profile.layer}</div>
+                    <div className="mt-1 text-[10px] leading-relaxed text-black/45">{profile.purpose}</div>
+                  </div>
+                  <div className="text-right text-[9px] font-black uppercase tracking-widest text-black/35">
+                    <div>{profile.count} items</div>
+                    <div>{Math.round(profile.share * 100)}% share</div>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-3 text-[8px] font-black uppercase tracking-widest text-black/35">
+                  <span>imp {profile.avgImportance.toFixed(2)}</span>
+                  <span>task {Math.round(profile.avgTaskSalience * 100)}%</span>
+                  <span>ack {Math.round(profile.avgAcknowledgementRatio * 100)}%</span>
+                  <span>mature {profile.matureCount}</span>
+                  <span>stale {profile.staleCount}</span>
+                  <span>suppressed {profile.suppressedCount}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Add form */}
       {showAddForm && (
         <div className="px-6 py-4 border-b border-black/10 bg-black/[0.02] flex-shrink-0 space-y-2">
@@ -428,6 +476,16 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
               placeholder="trigger keywords"
               className="flex-1 bg-white border border-black/30 rounded-lg px-3 py-1.5 text-xs font-black outline-none focus:border-black placeholder:text-black/20"
             />
+            <select
+              value={addLayer ?? 'working'}
+              onChange={e => setAddLayer(e.target.value as MemoryRecord['cognitiveLayer'])}
+              className="bg-white border border-black/30 rounded-lg px-3 py-1.5 text-xs font-black outline-none focus:border-black"
+            >
+              <option value="working">working</option>
+              <option value="episodic">episodic</option>
+              <option value="semantic">semantic</option>
+              <option value="procedural">procedural</option>
+            </select>
             <select
               value={addEmotion}
               onChange={e => setAddEmotion(e.target.value as MemoryRecord['emotion'])}
@@ -500,6 +558,12 @@ export default function MemoryPanel({ isOpen, onClose }: MemoryPanelProps) {
           className="text-[9px] font-black text-black/30 uppercase tracking-widest border border-black/10 rounded px-2 py-1 hover:border-black hover:text-black transition-colors"
         >
           Maintain
+        </button>
+        <button
+          onClick={() => runMaintenance({ action: 'maintain_layers', threshold: 0.05 }, 'Balancing layers')}
+          className="text-[9px] font-black text-black/30 uppercase tracking-widest border border-black/10 rounded px-2 py-1 hover:border-black hover:text-black transition-colors"
+        >
+          Balance Layers
         </button>
         <button
           onClick={() => runMaintenance({ action: 'rebuild_lattice', limitNeighbors: 6 }, 'Rebuilding lattice')}
