@@ -23,6 +23,10 @@ interface PhysicsObject {
   friction: number;
   sleeping: boolean;
   sleepTimer: number;
+  ownerId?: string;
+  team?: string;
+  contactDamage: number;
+  partRole?: string;
 }
 
 interface SpringConstraint {
@@ -56,6 +60,7 @@ interface SensorBinding {
 
 interface ActiveController {
   controllerId?: string;
+  combatantId?: string;
   rootId: string;
   hingeIds: string[];
   net: NeuralNet;
@@ -79,6 +84,59 @@ interface SerializedPhysicsController {
     layers: number[][];
   };
   savedAt: number;
+}
+
+interface PhysicsRules {
+  arenaHalfExtent: number;
+  wallRestitution: number;
+  groundFriction: number;
+  groundProfile: 'flat' | 'hills';
+  groundAmplitude: number;
+  groundFrequency: number;
+  contactDamageScale: number;
+  impactDamageThreshold: number;
+  boundaryDamagePerSecond: number;
+  hazardRingRadius: number;
+  hazardRingDamagePerSecond: number;
+  friendlyFire: boolean;
+  allowSleep: boolean;
+}
+
+interface Combatant {
+  id: string;
+  rootId: string;
+  hingeIds: string[];
+  partIds: string[];
+  team: string;
+  health: number;
+  maxHealth: number;
+  aggression: number;
+  contactDamage: number;
+  eliminated: boolean;
+}
+
+const DEFAULT_PHYSICS_RULES: PhysicsRules = {
+  arenaHalfExtent: 19,
+  wallRestitution: 0.35,
+  groundFriction: 0.7,
+  groundProfile: 'flat',
+  groundAmplitude: 0,
+  groundFrequency: 0.18,
+  contactDamageScale: 4.5,
+  impactDamageThreshold: 2.6,
+  boundaryDamagePerSecond: 0,
+  hazardRingRadius: 0,
+  hazardRingDamagePerSecond: 0,
+  friendlyFire: false,
+  allowSleep: true,
+};
+
+function sampleGroundHeight(x: number, z: number, rules: PhysicsRules) {
+  if (rules.groundProfile !== 'hills' || rules.groundAmplitude <= 0) return 0;
+  const freq = Math.max(0.02, rules.groundFrequency);
+  const ridge = Math.sin(x * freq) * Math.cos(z * freq * 0.9);
+  const swell = 0.45 * Math.sin((x + z) * freq * 0.55);
+  return rules.groundAmplitude * (ridge + swell);
 }
 
 // ── Minimal Neural Network (no deps) ─────────────────────────────────────────
@@ -178,6 +236,12 @@ export default function PhysicsSimulator({
     springs: Map<string, SpringConstraint>;
     hinges: Map<string, HingeConstraint>;
     sensors: Map<string, SensorBinding>;
+    combatants: Map<string, Combatant>;
+    activeControllers: Map<string, ActiveController>;
+    primaryControllerRootId: string | null;
+    physicsRules: PhysicsRules;
+    simTime: number;
+    combatHitCooldowns: Map<string, number>;
     gravity: import("three").Vector3;
     animId: number | null;
     lastTime: number;
@@ -191,18 +255,26 @@ export default function PhysicsSimulator({
     orbitPhi: number;
     orbitRadius: number;
     orbitTarget: import("three").Vector3;
+    groundMesh: import("three").Mesh | null;
     trainingLog: string[];
     activeController: ActiveController | null;
   }>({
     THREE: null, renderer: null, scene: null, camera: null,
     objects: new Map(), springs: new Map(), hinges: new Map(),
     sensors: new Map(),
+    combatants: new Map(),
+    activeControllers: new Map(),
+    primaryControllerRootId: null,
+    physicsRules: { ...DEFAULT_PHYSICS_RULES },
+    simTime: 0,
+    combatHitCooldowns: new Map(),
     gravity: null as any, // set after THREE loads
     animId: null, lastTime: 0,
     fpsFrames: 0, fpsTime: 0, fps: 0,
     orbitActive: false, orbitLastX: 0, orbitLastY: 0,
     orbitTheta: 0.6, orbitPhi: 0.42, orbitRadius: 18,
     orbitTarget: null as any,
+    groundMesh: null,
     trainingLog: [],
     activeController: null,
   });
@@ -245,6 +317,21 @@ export default function PhysicsSimulator({
     const t = s.orbitTarget;
     s.camera.position.set(x + t.x, y + t.y, z + t.z);
     s.camera.lookAt(t);
+  }, []);
+
+  const refreshGroundMesh = useCallback(() => {
+    const s = stateRef.current;
+    const mesh = s.groundMesh;
+    if (!mesh) return;
+    const geometry = mesh.geometry as import('three').PlaneGeometry;
+    const positions = geometry.attributes.position;
+    for (let index = 0; index < positions.count; index++) {
+      const x = positions.getX(index);
+      const z = -positions.getY(index);
+      positions.setZ(index, sampleGroundHeight(x, z, s.physicsRules));
+    }
+    positions.needsUpdate = true;
+    geometry.computeVertexNormals();
   }, []);
 
   // ── Command processing ────────────────────────────────────────────────────
@@ -294,6 +381,9 @@ export default function PhysicsSimulator({
       restitution: number;
       friction: number;
       contactedGround: boolean;
+      ownerId?: string;
+      team?: string;
+      contactDamage: number;
     };
     type SimHinge = {
       id: string;
@@ -354,10 +444,33 @@ export default function PhysicsSimulator({
       const related = Array.from(hinges.values()).filter((hinge) => hinge.a === rootId || hinge.b === rootId || (prefix && hinge.id.includes(prefix)));
       return (related.length > 0 ? related : Array.from(hinges.values())).map((hinge) => hinge.id).sort();
     };
+    const resolveRootId = (rootOrCombatantId?: string | null, combatantId?: string | null) => {
+      if (combatantId && s.combatants.has(combatantId)) return s.combatants.get(combatantId)?.rootId ?? null;
+      if (rootOrCombatantId && s.combatants.has(rootOrCombatantId)) return s.combatants.get(rootOrCombatantId)?.rootId ?? null;
+      return rootOrCombatantId ?? null;
+    };
+    const nearestOpponentForRoot = (bodies: Map<string, SimBody>, rootId: string) => {
+      const root = bodies.get(rootId);
+      if (!root) return null;
+      let best: SimBody | null = null;
+      let bestDist = Infinity;
+      for (const body of bodies.values()) {
+        if (body.id === rootId || body.ownerId === root.ownerId) continue;
+        const dist = body.position.distanceTo(root.position);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = body;
+        }
+      }
+      return best;
+    };
     const buildObservation = (bodies: Map<string, SimBody>, hinges: SimHinge[], rootId: string) => {
       const root = bodies.get(rootId);
       if (!root) return { values: [0, 0, 0, 0, 0, 0, 1, 0] };
       const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
+      const nearestOpponent = nearestOpponentForRoot(bodies, rootId);
+      const combatant = root.ownerId ? s.combatants.get(root.ownerId) : null;
+      const enemyCombatant = nearestOpponent?.ownerId ? s.combatants.get(nearestOpponent.ownerId) : null;
       const values = [
         root.position.x / 10,
         root.position.y / 5,
@@ -366,6 +479,12 @@ export default function PhysicsSimulator({
         root.velocity.y / 6,
         root.velocity.z / 6,
         up.y,
+        (combatant?.health ?? 100) / Math.max(1, combatant?.maxHealth ?? 100),
+        (enemyCombatant?.health ?? 100) / Math.max(1, enemyCombatant?.maxHealth ?? 100),
+        nearestOpponent ? (nearestOpponent.position.x - root.position.x) / 12 : 0,
+        nearestOpponent ? (nearestOpponent.position.z - root.position.z) / 12 : 0,
+        nearestOpponent ? nearestOpponent.velocity.length() / 8 : 0,
+        Math.max(0, root.position.length() - s.physicsRules.arenaHalfExtent) / Math.max(1, s.physicsRules.arenaHalfExtent),
       ];
       for (const hinge of hinges) values.push(hinge.angle / Math.PI, hinge.motorSpeed / 8);
       values.push(Array.from(bodies.values()).filter((body) => body.contactedGround).length / Math.max(1, bodies.size));
@@ -390,6 +509,9 @@ export default function PhysicsSimulator({
           restitution: body.restitution,
           friction: body.friction,
           contactedGround: false,
+          ownerId: body.ownerId,
+          team: body.team,
+          contactDamage: body.contactDamage,
         });
       }
       const hinges = Array.from(s.hinges.values()).map((hinge) => ({
@@ -405,10 +527,39 @@ export default function PhysicsSimulator({
         motorSpeed: hinge.motorSpeed,
         motorForce: hinge.motorForce,
       }));
-      return { bodies, hinges };
+      const combatants = new Map<string, Combatant>();
+      for (const [id, combatant] of s.combatants.entries()) {
+        combatants.set(id, {
+          ...combatant,
+          hingeIds: [...combatant.hingeIds],
+          partIds: [...combatant.partIds],
+        });
+      }
+      return { bodies, hinges, combatants };
     };
-    const simulateBodiesStep = (bodies: Map<string, SimBody>, hinges: SimHinge[], dtStep: number) => {
+    const applyCombatDamage = (
+      combatants: Map<string, Combatant>,
+      attackerId: string | undefined,
+      defenderId: string | undefined,
+      amount: number,
+      pairCooldowns: Map<string, number>,
+      clock: number,
+    ) => {
+      if (!defenderId || attackerId === defenderId || amount <= 0) return;
+      const attacker = attackerId ? combatants.get(attackerId) : null;
+      const defender = combatants.get(defenderId);
+      if (!defender || defender.eliminated) return;
+      if (attacker && !s.physicsRules.friendlyFire && attacker.team === defender.team) return;
+      const pairKey = `${attackerId}->${defenderId}`;
+      const lastHit = pairCooldowns.get(pairKey) ?? -Infinity;
+      if (clock - lastHit < 0.12) return;
+      pairCooldowns.set(pairKey, clock);
+      defender.health = Math.max(0, defender.health - amount);
+      if (defender.health <= 0) defender.eliminated = true;
+    };
+    const simulateBodiesStep = (bodies: Map<string, SimBody>, hinges: SimHinge[], combatants: Map<string, Combatant>, dtStep: number, clockRef: { value: number }, pairCooldowns: Map<string, number>) => {
       for (const body of bodies.values()) body.contactedGround = false;
+      clockRef.value += dtStep;
       for (const hinge of hinges) {
         const a = bodies.get(hinge.a);
         const b = bodies.get(hinge.b);
@@ -453,9 +604,21 @@ export default function PhysicsSimulator({
           body.position.y = floor;
           body.contactedGround = true;
           if (body.velocity.y < 0) body.velocity.y *= -body.restitution;
-          const grip = clamp(1 - body.friction * dtStep * 18, 0.2, 1);
+          const grip = clamp(1 - Math.max(body.friction, s.physicsRules.groundFriction) * dtStep * 18, 0.2, 1);
           body.velocity.x *= grip;
           body.velocity.z *= grip;
+        }
+        if (s.physicsRules.hazardRingRadius > 0) {
+          const radialDistance = Math.sqrt(body.position.x * body.position.x + body.position.z * body.position.z);
+          if (radialDistance > s.physicsRules.hazardRingRadius && body.ownerId) {
+            applyCombatDamage(combatants, '__hazard__', body.ownerId, s.physicsRules.hazardRingDamagePerSecond * dtStep, pairCooldowns, clockRef.value + radialDistance * 0.0001);
+          }
+        }
+        if (s.physicsRules.boundaryDamagePerSecond > 0 && body.ownerId) {
+          const overflow = Math.max(0, Math.abs(body.position.x) - s.physicsRules.arenaHalfExtent) + Math.max(0, Math.abs(body.position.z) - s.physicsRules.arenaHalfExtent);
+          if (overflow > 0) {
+            applyCombatDamage(combatants, '__boundary__', body.ownerId, overflow * s.physicsRules.boundaryDamagePerSecond * dtStep, pairCooldowns, clockRef.value + overflow * 0.0001);
+          }
         }
       }
       const list = Array.from(bodies.values());
@@ -481,15 +644,24 @@ export default function PhysicsSimulator({
           const impulse = (-(1 + restitution) * relVel) / invMassSum;
           if (a.invMass > 0) a.velocity.addScaledVector(normal, -impulse * a.invMass);
           if (b.invMass > 0) b.velocity.addScaledVector(normal, impulse * b.invMass);
+          const impactSpeed = Math.abs(relVel);
+          if (impactSpeed > s.physicsRules.impactDamageThreshold) {
+            const averageDamage = (a.contactDamage + b.contactDamage) * 0.5;
+            const damage = Math.max(0, (impactSpeed - s.physicsRules.impactDamageThreshold) * s.physicsRules.contactDamageScale * averageDamage * dtStep);
+            applyCombatDamage(combatants, a.ownerId, b.ownerId, damage, pairCooldowns, clockRef.value);
+            applyCombatDamage(combatants, b.ownerId, a.ownerId, damage, pairCooldowns, clockRef.value + 0.00001);
+          }
         }
       }
     };
     const evaluateNetworkOnCreature = (net: NeuralNet, rootId: string, hingeIds: string[], simSteps: number, rewardFn: (creature: Record<string, unknown>, step: number) => number) => {
-      const { bodies, hinges } = cloneSimulationState();
+      const { bodies, hinges, combatants } = cloneSimulationState();
       const controlled = hingeIds.map((hingeId) => hinges.find((hinge) => hinge.id === hingeId)).filter((hinge): hinge is SimHinge => Boolean(hinge));
       if (!bodies.has(rootId) || controlled.length === 0) return { reward: -Infinity };
       const maxMotorSpeed = 7;
       const baseMotorForce = Math.max(20, ...controlled.map((hinge) => hinge.motorForce || 0), 45);
+      const clockRef = { value: 0 };
+      const pairCooldowns = new Map<string, number>();
       let totalReward = 0;
       for (let step = 0; step < simSteps; step++) {
         const actions = net.forward(buildObservation(bodies, controlled, rootId).values);
@@ -497,9 +669,24 @@ export default function PhysicsSimulator({
           controlled[i].motorSpeed = clamp(actions[i] ?? 0, -1, 1) * maxMotorSpeed;
           controlled[i].motorForce = baseMotorForce;
         }
-        for (let sub = 0; sub < 4; sub++) simulateBodiesStep(bodies, hinges, 0.016 / 4);
+        for (const [combatantId, controller] of s.activeControllers.entries()) {
+          if (controller.rootId === rootId) continue;
+          const liveCombatant = combatants.get(combatantId);
+          if (!liveCombatant || liveCombatant.eliminated) continue;
+          const opponentHinges = controller.hingeIds.map((hingeId) => hinges.find((hinge) => hinge.id === hingeId)).filter((hinge): hinge is SimHinge => Boolean(hinge));
+          if (opponentHinges.length === 0 || !bodies.has(controller.rootId)) continue;
+          const opponentActions = controller.net.forward(buildObservation(bodies, opponentHinges, controller.rootId).values);
+          for (let i = 0; i < opponentHinges.length; i++) {
+            opponentHinges[i].motorSpeed = clamp(opponentActions[i] ?? 0, -1, 1) * controller.maxMotorSpeed;
+            opponentHinges[i].motorForce = Math.max(opponentHinges[i].motorForce, controller.baseMotorForce);
+          }
+        }
+        for (let sub = 0; sub < 4; sub++) simulateBodiesStep(bodies, hinges, combatants, 0.016 / 4, clockRef, pairCooldowns);
         const root = bodies.get(rootId)!;
         const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
+        const selfCombatant = root.ownerId ? combatants.get(root.ownerId) : null;
+        const nearestOpponent = nearestOpponentForRoot(bodies, rootId);
+        const opponentCombatant = nearestOpponent?.ownerId ? combatants.get(nearestOpponent.ownerId) : null;
         const creature = {
           pos: root.position.toArray(),
           vel: root.velocity.toArray(),
@@ -507,15 +694,28 @@ export default function PhysicsSimulator({
           hingeAngles: controlled.map((hinge) => hinge.angle),
           hingeSpeeds: controlled.map((hinge) => hinge.motorSpeed),
           contacts: Array.from(bodies.values()).filter((body) => body.contactedGround).map((body) => body.id),
+          ownHealth: selfCombatant?.health ?? null,
+          ownMaxHealth: selfCombatant?.maxHealth ?? null,
+          opponentHealth: opponentCombatant?.health ?? null,
+          opponentMaxHealth: opponentCombatant?.maxHealth ?? null,
+          enemy: nearestOpponent
+            ? {
+                id: nearestOpponent.id,
+                pos: nearestOpponent.position.toArray(),
+                vel: nearestOpponent.velocity.toArray(),
+              }
+            : null,
           fallen: up.y < 0.2 || root.position.y < 0.35,
           step,
         };
         try {
           totalReward += rewardFn(creature, step);
         } catch {
-          totalReward += root.position.x - Math.abs(root.velocity.y) * 0.2;
+          totalReward += (selfCombatant?.maxHealth ?? 100) - (opponentCombatant?.health ?? 0) + root.position.x - Math.abs(root.velocity.y) * 0.2;
         }
         if (creature.fallen) totalReward -= 8;
+        if (selfCombatant?.eliminated) totalReward -= 40;
+        if (opponentCombatant?.eliminated) totalReward += 60;
       }
       return { reward: totalReward };
     };
@@ -533,6 +733,10 @@ export default function PhysicsSimulator({
           restitution: obj.restitution,
           friction: obj.friction,
           fixed: obj.fixed,
+          ownerId: obj.ownerId ?? null,
+          team: obj.team ?? null,
+          contactDamage: obj.contactDamage,
+          partRole: obj.partRole ?? null,
         };
       }
       const hingeState: Record<string, object> = {};
@@ -561,6 +765,18 @@ export default function PhysicsSimulator({
           reading = hinge?.angle ?? null;
         } else if (sensor.type === 'contact') {
           if (primary) reading = primary.mesh.position.y <= supportExtentAlong(primary, new THREE.Vector3(0, 1, 0)) + 0.01;
+        } else if (sensor.type === 'health') {
+          const combatantId = typeof sensor.target === 'string' ? sensor.target : primary?.ownerId;
+          reading = combatantId ? s.combatants.get(combatantId)?.health ?? null : null;
+        } else if (sensor.type === 'enemy_distance') {
+          if (primary?.ownerId) {
+            const enemy = Array.from(s.objects.values())
+              .filter((candidate) => candidate.ownerId && candidate.ownerId !== primary.ownerId)
+              .sort((left, right) => left.mesh.position.distanceTo(primary.mesh.position) - right.mesh.position.distanceTo(primary.mesh.position))[0];
+            reading = enemy ? primary.mesh.position.distanceTo(enemy.mesh.position) : null;
+          }
+        } else if (sensor.type === 'boundary_distance') {
+          if (primary) reading = Math.max(0, s.physicsRules.arenaHalfExtent - Math.max(Math.abs(primary.mesh.position.x), Math.abs(primary.mesh.position.z)));
         }
         sensorState[id] = {
           type: sensor.type,
@@ -570,26 +786,60 @@ export default function PhysicsSimulator({
           reading,
         };
       }
+      const combatantState: Record<string, object> = {};
+      for (const [id, combatant] of s.combatants) {
+        combatantState[id] = {
+          rootId: combatant.rootId,
+          team: combatant.team,
+          health: combatant.health,
+          maxHealth: combatant.maxHealth,
+          aggression: combatant.aggression,
+          contactDamage: combatant.contactDamage,
+          hingeIds: [...combatant.hingeIds],
+          partIds: [...combatant.partIds],
+          eliminated: combatant.eliminated,
+        };
+      }
+      const activeControllers: Record<string, object> = {};
+      for (const [rootId, controller] of s.activeControllers) {
+        activeControllers[rootId] = {
+          controllerId: controller.controllerId ?? null,
+          combatantId: controller.combatantId ?? null,
+          rootId: controller.rootId,
+          hingeIds: [...controller.hingeIds],
+          step: controller.step,
+          maxMotorSpeed: controller.maxMotorSpeed,
+          baseMotorForce: controller.baseMotorForce,
+          bestReward: controller.bestReward ?? null,
+          networkSizes: [...controller.net.sizes],
+        };
+      }
+      const primaryController = s.primaryControllerRootId ? s.activeControllers.get(s.primaryControllerRootId) ?? null : Array.from(s.activeControllers.values())[0] ?? null;
       const statePayload = {
         objects: objState,
         hinges: hingeState,
         sensors: sensorState,
+        combatants: combatantState,
+        rules: { ...s.physicsRules },
         trainingLog: s.trainingLog,
-        activeController: s.activeController
+        activeController: primaryController
           ? {
-              controllerId: s.activeController.controllerId ?? null,
-              rootId: s.activeController.rootId,
-              hingeIds: s.activeController.hingeIds,
-              step: s.activeController.step,
-              maxMotorSpeed: s.activeController.maxMotorSpeed,
-              baseMotorForce: s.activeController.baseMotorForce,
-              bestReward: s.activeController.bestReward ?? null,
-              networkSizes: [...s.activeController.net.sizes],
+              controllerId: primaryController.controllerId ?? null,
+              combatantId: primaryController.combatantId ?? null,
+              rootId: primaryController.rootId,
+              hingeIds: primaryController.hingeIds,
+              step: primaryController.step,
+              maxMotorSpeed: primaryController.maxMotorSpeed,
+              baseMotorForce: primaryController.baseMotorForce,
+              bestReward: primaryController.bestReward ?? null,
+              networkSizes: [...primaryController.net.sizes],
             }
           : null,
+        activeControllers,
         objectCount: Object.keys(objState).length,
         hingeCount: Object.keys(hingeState).length,
         sensorCount: Object.keys(sensorState).length,
+        combatantCount: Object.keys(combatantState).length,
         timestamp: Date.now(),
       };
       fetch('/api/physics-state', {
@@ -721,6 +971,10 @@ export default function PhysicsSimulator({
               fixed: isFixed,
               sleeping: isFixed,  // fixed bodies don't simulate
               sleepTimer: isFixed ? 999 : 0,
+              ownerId: undefined,
+              team: cmd.team,
+              contactDamage: Math.max(0.1, Number(cmd.contactDamage ?? 1)),
+              partRole: undefined,
             });
           }
           shouldPublishState = true;
@@ -810,6 +1064,8 @@ export default function PhysicsSimulator({
             case "mass":       obj.mass = Number(cmd.value); break;
             case "restitution": obj.restitution = Math.max(0, Math.min(1, Number(cmd.value))); break;
             case "friction":   obj.friction = Math.max(0, Math.min(1, Number(cmd.value))); break;
+            case "contactDamage": obj.contactDamage = Math.max(0.1, Number(cmd.value)); break;
+            case "team": obj.team = String(cmd.value ?? obj.team ?? 'neutral'); break;
           }
           mat.needsUpdate = true;
           shouldPublishState = true;
@@ -822,6 +1078,30 @@ export default function PhysicsSimulator({
             s.gravity.set(...cmd.gravity);
             shouldPublishState = true;
           }
+          break;
+        }
+
+        // ── set_rules ─────────────────────────────────────────────────────
+        case "set_rules": {
+          if (cmd.gravity) s.gravity.set(...cmd.gravity);
+          s.physicsRules = {
+            ...s.physicsRules,
+            ...(typeof cmd.arenaHalfExtent === 'number' ? { arenaHalfExtent: Math.max(6, cmd.arenaHalfExtent) } : {}),
+            ...(typeof cmd.wallRestitution === 'number' ? { wallRestitution: Math.max(0, Math.min(1, cmd.wallRestitution)) } : {}),
+            ...(typeof cmd.groundFriction === 'number' ? { groundFriction: Math.max(0, Math.min(1, cmd.groundFriction)) } : {}),
+            ...(cmd.groundProfile === 'flat' || cmd.groundProfile === 'hills' ? { groundProfile: cmd.groundProfile } : {}),
+            ...(typeof cmd.groundAmplitude === 'number' ? { groundAmplitude: Math.max(0, Math.min(6, cmd.groundAmplitude)) } : {}),
+            ...(typeof cmd.groundFrequency === 'number' ? { groundFrequency: Math.max(0.02, Math.min(1.2, cmd.groundFrequency)) } : {}),
+            ...(typeof cmd.contactDamageScale === 'number' ? { contactDamageScale: Math.max(0, cmd.contactDamageScale) } : {}),
+            ...(typeof cmd.impactDamageThreshold === 'number' ? { impactDamageThreshold: Math.max(0.1, cmd.impactDamageThreshold) } : {}),
+            ...(typeof cmd.boundaryDamagePerSecond === 'number' ? { boundaryDamagePerSecond: Math.max(0, cmd.boundaryDamagePerSecond) } : {}),
+            ...(typeof cmd.hazardRingRadius === 'number' ? { hazardRingRadius: Math.max(0, cmd.hazardRingRadius) } : {}),
+            ...(typeof cmd.hazardRingDamagePerSecond === 'number' ? { hazardRingDamagePerSecond: Math.max(0, cmd.hazardRingDamagePerSecond) } : {}),
+            ...(typeof cmd.friendlyFire === 'boolean' ? { friendlyFire: cmd.friendlyFire } : {}),
+            ...(typeof cmd.allowSleep === 'boolean' ? { allowSleep: cmd.allowSleep } : {}),
+          };
+          refreshGroundMesh();
+          shouldPublishState = true;
           break;
         }
 
@@ -902,6 +1182,13 @@ export default function PhysicsSimulator({
           s.springs.clear();
           s.hinges.clear();
           s.sensors.clear();
+          s.combatants.clear();
+          s.activeControllers.clear();
+          s.primaryControllerRootId = null;
+          s.combatHitCooldowns.clear();
+          s.physicsRules = { ...DEFAULT_PHYSICS_RULES };
+          refreshGroundMesh();
+          s.simTime = 0;
           s.trainingLog = [];
           s.activeController = null;
           s.gravity.set(0, -9.81, 0);
@@ -991,10 +1278,19 @@ export default function PhysicsSimulator({
           for (const hingeId of Array.from(s.hinges.keys())) {
             if (hingeId.startsWith(`${cmd.creatureId}_hinge_`)) s.hinges.delete(hingeId);
           }
+          s.combatants.delete(cmd.creatureId);
+          for (const [existingRootId, controller] of Array.from(s.activeControllers.entries())) {
+            if (controller.combatantId === cmd.creatureId || existingRootId.startsWith(`${cmd.creatureId}_`)) {
+              s.activeControllers.delete(existingRootId);
+            }
+          }
 
           const partIds = new Set(cmd.bodyPlan.map((part) => part.id));
+          const creaturePartIds: string[] = [];
+          const rootPart = cmd.bodyPlan.find((part) => !part.hinges || part.hinges.length === 0) ?? cmd.bodyPlan[0];
           for (const part of cmd.bodyPlan) {
             const partId = `${cmd.creatureId}_${part.id}`;
+            creaturePartIds.push(partId);
             const color = part.color ?? "#c0d0ff";
             const mass = part.mass ?? 1;
             const pos = part.position ?? [0, 2, 0];
@@ -1032,6 +1328,10 @@ export default function PhysicsSimulator({
               fixed: false,
               restitution: 0.2, friction: 0.7,
               sleeping: false, sleepTimer: 0,
+              ownerId: cmd.creatureId,
+              team: cmd.team ?? cmd.creatureId,
+              contactDamage: Math.max(0.15, Number(part.contactDamage ?? cmd.contactDamage ?? 1)),
+              partRole: part.role ?? undefined,
             });
           }
           for (const part of cmd.bodyPlan) {
@@ -1054,6 +1354,20 @@ export default function PhysicsSimulator({
               });
             }
           }
+          const rootId = `${cmd.creatureId}_${rootPart.id}`;
+          const hingeIds = Array.from(s.hinges.values()).filter((hinge) => hinge.id.startsWith(`${cmd.creatureId}_hinge_`)).map((hinge) => hinge.id);
+          s.combatants.set(cmd.creatureId, {
+            id: cmd.creatureId,
+            rootId,
+            hingeIds,
+            partIds: creaturePartIds,
+            team: cmd.team ?? cmd.creatureId,
+            health: Math.max(1, Number(cmd.health ?? 100)),
+            maxHealth: Math.max(1, Number(cmd.health ?? 100)),
+            aggression: Math.max(0, Number(cmd.aggression ?? 1)),
+            contactDamage: Math.max(0.15, Number(cmd.contactDamage ?? 1)),
+            eliminated: false,
+          });
           shouldPublishState = true;
           break;
         }
@@ -1065,8 +1379,9 @@ export default function PhysicsSimulator({
           const simSteps = cmd.simSteps ?? 300;
           const mutRate = cmd.mutationRate ?? 0.15;
           const rewardSrc = cmd.rewardFn ?? "(creature) => creature.pos ? creature.pos[0] - 0.25 * Math.abs(creature.vel?.[1] ?? 0) + 0.6 * (creature.up?.[1] ?? 0) - (creature.fallen ? 4 : 0) : 0";
-          const rootId = selectRootObjectId(s.objects, s.hinges);
+          const rootId = resolveRootId(cmd.controllerRootId, cmd.combatantId) ?? selectRootObjectId(s.objects, s.hinges);
           const hingeIds = rootId ? controlledHingeIdsForRoot(rootId, s.hinges) : [];
+          const combatantId = cmd.combatantId ?? Array.from(s.combatants.values()).find((combatant) => combatant.rootId === rootId)?.id;
 
           if (!rootId || hingeIds.length === 0) {
             s.trainingLog = ['ERROR: build an articulated creature with at least one hinge before training.'];
@@ -1119,6 +1434,7 @@ export default function PhysicsSimulator({
 
           s.activeController = {
             controllerId: cmd.controllerId ?? `${rootId}-controller`,
+            combatantId,
             rootId,
             hingeIds,
             net: bestNet.clone(),
@@ -1127,6 +1443,8 @@ export default function PhysicsSimulator({
             baseMotorForce: Math.max(20, ...hingeIds.map((hingeId) => s.hinges.get(hingeId)?.motorForce ?? 0), 45),
             bestReward,
           };
+          s.activeControllers.set(rootId, s.activeController);
+          s.primaryControllerRootId = rootId;
 
           s.trainingLog.push(`Done! Best reward: ${bestReward.toFixed(2)}. Installed trained controller on ${hingeIds.length} live hinges for root '${rootId}'.`);
           console.info("[PhysicsSimulator] Training complete. Best reward:", bestReward.toFixed(2));
@@ -1141,14 +1459,16 @@ export default function PhysicsSimulator({
 
         // ── save_controller ───────────────────────────────────────────────
         case "save_controller": {
-          if (!s.activeController) {
+          const rootId = resolveRootId(cmd.controllerRootId, cmd.combatantId) ?? s.primaryControllerRootId;
+          const activeController = rootId ? s.activeControllers.get(rootId) ?? null : null;
+          if (!activeController) {
             s.trainingLog.push('ERROR: no active controller to save. Train or load one first.');
             shouldPublishState = true;
             break;
           }
-          const controllerId = cmd.controllerId ?? s.activeController.controllerId ?? `${s.activeController.rootId}-controller`;
+          const controllerId = cmd.controllerId ?? activeController.controllerId ?? `${activeController.rootId}-controller`;
           const payload = serializeController({
-            ...s.activeController,
+            ...activeController,
             controllerId,
           });
           fetch('/api/physics-controller', {
@@ -1172,7 +1492,10 @@ export default function PhysicsSimulator({
               if (result?.error) {
                 s.trainingLog.push(`ERROR: failed to save controller '${controllerId}': ${result.error}`);
               } else {
-                s.activeController = { ...s.activeController!, controllerId };
+                const updated = { ...activeController, controllerId };
+                s.activeControllers.set(updated.rootId, updated);
+                s.activeController = updated;
+                s.primaryControllerRootId = updated.rootId;
                 s.trainingLog.push(`Saved controller '${controllerId}' to ${result.filepath ?? 'weights store'}.`);
               }
               publishState();
@@ -1202,7 +1525,7 @@ export default function PhysicsSimulator({
                 return;
               }
               const loaded = result.controller as SerializedPhysicsController;
-              const rootId = requestedRootId ?? loaded.rootId ?? selectRootObjectId(s.objects, s.hinges);
+              const rootId = resolveRootId(requestedRootId ?? loaded.rootId, cmd.combatantId) ?? selectRootObjectId(s.objects, s.hinges);
               if (!rootId || !s.objects.has(rootId)) {
                 s.trainingLog.push(`ERROR: controller '${cmd.controllerId}' loaded, but root '${rootId ?? 'unknown'}' is not present in the scene.`);
                 publishState();
@@ -1218,8 +1541,10 @@ export default function PhysicsSimulator({
                 publishState();
                 return;
               }
+              const combatantId = cmd.combatantId ?? Array.from(s.combatants.values()).find((combatant) => combatant.rootId === rootId)?.id;
               s.activeController = {
                 controllerId: loaded.controllerId ?? cmd.controllerId,
+                combatantId,
                 rootId,
                 hingeIds: resolvedHinges,
                 net,
@@ -1228,6 +1553,8 @@ export default function PhysicsSimulator({
                 baseMotorForce: loaded.baseMotorForce ?? 45,
                 bestReward: loaded.bestReward,
               };
+              s.activeControllers.set(rootId, s.activeController);
+              s.primaryControllerRootId = rootId;
               s.trainingLog.push(`Loaded controller '${cmd.controllerId}' onto root '${rootId}' with ${resolvedHinges.length} hinges.`);
               publishState();
             })
@@ -1240,23 +1567,31 @@ export default function PhysicsSimulator({
 
         // ── clear_controller ──────────────────────────────────────────────
         case "clear_controller": {
-          if (s.activeController) {
-            for (const hingeId of s.activeController.hingeIds) {
+          const rootId = resolveRootId(cmd.controllerRootId, cmd.combatantId);
+          const targets = rootId ? [rootId] : Array.from(s.activeControllers.keys());
+          for (const targetRootId of targets) {
+            const controller = s.activeControllers.get(targetRootId);
+            if (!controller) continue;
+            for (const hingeId of controller.hingeIds) {
               const hinge = s.hinges.get(hingeId);
               if (!hinge) continue;
               hinge.motorSpeed = 0;
               hinge.motorForce = 0;
             }
+            s.activeControllers.delete(targetRootId);
           }
-          s.activeController = null;
-          s.trainingLog.push('Cleared active controller.');
+          s.primaryControllerRootId = rootId && s.activeControllers.has(rootId) ? rootId : (Array.from(s.activeControllers.keys())[0] ?? null);
+          s.activeController = s.primaryControllerRootId ? s.activeControllers.get(s.primaryControllerRootId) ?? null : null;
+          s.trainingLog.push(rootId ? `Cleared active controller for '${rootId}'.` : 'Cleared all active controllers.');
           shouldPublishState = true;
           break;
         }
 
         // ── evaluate_controller ───────────────────────────────────────────
         case "evaluate_controller": {
-          if (!s.activeController) {
+          const rootId = resolveRootId(cmd.controllerRootId, cmd.combatantId) ?? s.primaryControllerRootId;
+          const activeController = rootId ? s.activeControllers.get(rootId) ?? null : null;
+          if (!activeController) {
             s.trainingLog.push('ERROR: no active controller to evaluate.');
             shouldPublishState = true;
             break;
@@ -1268,9 +1603,9 @@ export default function PhysicsSimulator({
             rewardFn = ((creature: Record<string, any>) => creature.pos ? creature.pos[0] : 0) as (creature: object, step: number) => number;
           }
           const evaluation = evaluateNetworkOnCreature(
-            s.activeController.net,
-            s.activeController.rootId,
-            s.activeController.hingeIds,
+            activeController.net,
+            activeController.rootId,
+            activeController.hingeIds,
             cmd.simSteps ?? 300,
             rewardFn,
           );
@@ -1283,8 +1618,8 @@ export default function PhysicsSimulator({
         case "run_script": {
           if (!cmd.script) break;
           try {
-            new Function("objects", "springs", "hinges", "THREE", "scene", "gravity", "NeuralNet", cmd.script)(
-              s.objects, s.springs, s.hinges, THREE, s.scene, s.gravity, NeuralNet
+            new Function("objects", "springs", "hinges", "combatants", "controllers", "rules", "THREE", "scene", "gravity", "NeuralNet", cmd.script)(
+              s.objects, s.springs, s.hinges, s.combatants, s.activeControllers, s.physicsRules, THREE, s.scene, s.gravity, NeuralNet
             );
             shouldPublishState = true;
           } catch (e) {
@@ -1368,7 +1703,7 @@ export default function PhysicsSimulator({
 
       // ── Ground ───────────────────────────────────────────────────────────
       // Reflective dark plane
-      const groundGeo = new THREE.PlaneGeometry(40, 40, 1, 1);
+      const groundGeo = new THREE.PlaneGeometry(64, 64, 96, 96);
       const groundMat = new THREE.MeshStandardMaterial({
         color: 0x111318,
         metalness: 0.4,
@@ -1378,6 +1713,8 @@ export default function PhysicsSimulator({
       ground.rotation.x = -Math.PI / 2;
       ground.receiveShadow = true;
       scene.add(ground);
+      s.groundMesh = ground;
+      refreshGroundMesh();
 
       // Grid lines (emissive so they glow faintly)
       const grid = new THREE.GridHelper(40, 40, 0x1a2040, 0x141820);
@@ -1394,8 +1731,6 @@ export default function PhysicsSimulator({
       const LINEAR_DAMPING  = 0.985;
       const ANGULAR_DAMPING = 0.88;
       const SUB_STEPS       = 4;      // physics sub-steps per frame
-      const GROUND_Y        = 0;
-
       // ── Animation loop ────────────────────────────────────────────────────
       const tmpVec = new THREE.Vector3();
       const tmpQuat = new THREE.Quaternion();
@@ -1416,6 +1751,9 @@ export default function PhysicsSimulator({
         restitution: number;
         friction: number;
         contactedGround: boolean;
+        ownerId?: string;
+        team?: string;
+        contactDamage: number;
       };
 
       type SimHinge = {
@@ -1515,11 +1853,30 @@ export default function PhysicsSimulator({
           .sort();
       };
 
+      const nearestOpponentForRoot = (bodies: Map<string, SimBody>, rootId: string) => {
+        const root = bodies.get(rootId);
+        if (!root) return null;
+        let best: SimBody | null = null;
+        let bestDist = Infinity;
+        for (const body of bodies.values()) {
+          if (body.id === rootId || body.ownerId === root.ownerId) continue;
+          const dist = body.position.distanceTo(root.position);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = body;
+          }
+        }
+        return best;
+      };
+
       const buildObservation = (bodies: Map<string, SimBody>, hinges: SimHinge[], rootId: string) => {
         const root = bodies.get(rootId);
         if (!root) return { values: [0, 0, 0, 0, 0, 0, 1], contacts: 0 };
         const up = new THREE.Vector3(0, 1, 0).applyQuaternion(root.quaternion);
         const contacts = Array.from(bodies.values()).reduce((sum, body) => sum + (body.contactedGround ? 1 : 0), 0);
+        const nearestOpponent = nearestOpponentForRoot(bodies, rootId);
+        const combatant = root.ownerId ? s.combatants.get(root.ownerId) : null;
+        const enemyCombatant = nearestOpponent?.ownerId ? s.combatants.get(nearestOpponent.ownerId) : null;
         const values = [
           root.position.x / 10,
           root.position.y / 5,
@@ -1528,6 +1885,12 @@ export default function PhysicsSimulator({
           root.velocity.y / 6,
           root.velocity.z / 6,
           up.y,
+          (combatant?.health ?? 100) / Math.max(1, combatant?.maxHealth ?? 100),
+          (enemyCombatant?.health ?? 100) / Math.max(1, enemyCombatant?.maxHealth ?? 100),
+          nearestOpponent ? (nearestOpponent.position.x - root.position.x) / 12 : 0,
+          nearestOpponent ? (nearestOpponent.position.z - root.position.z) / 12 : 0,
+          nearestOpponent ? nearestOpponent.velocity.length() / 8 : 0,
+          Math.max(0, root.position.length() - s.physicsRules.arenaHalfExtent) / Math.max(1, s.physicsRules.arenaHalfExtent),
         ];
         for (const hinge of hinges) {
           values.push(hinge.angle / Math.PI, hinge.motorSpeed / 8);
@@ -1555,6 +1918,9 @@ export default function PhysicsSimulator({
             restitution: body.restitution,
             friction: body.friction,
             contactedGround: false,
+            ownerId: body.ownerId,
+            team: body.team,
+            contactDamage: body.contactDamage,
           });
         }
         const hinges = Array.from(s.hinges.values()).map((hinge) => ({
@@ -1622,7 +1988,7 @@ export default function PhysicsSimulator({
             body.quaternion.premultiply(dq).normalize();
           }
 
-          const floor = GROUND_Y + supportExtentAlong(body, new THREE.Vector3(0, 1, 0));
+          const floor = sampleGroundHeight(body.position.x, body.position.z, s.physicsRules) + supportExtentAlong(body, new THREE.Vector3(0, 1, 0));
           if (body.position.y < floor) {
             body.position.y = floor;
             body.contactedGround = true;
@@ -1633,7 +1999,7 @@ export default function PhysicsSimulator({
             body.angularVelocity.multiplyScalar(clamp(1 - body.friction * dtStep * 8, 0.35, 1));
           }
 
-          const WALL = 19;
+          const WALL = s.physicsRules.arenaHalfExtent;
           for (const axis of ['x', 'z'] as const) {
             if (body.position[axis] > WALL) {
               body.position[axis] = WALL;
@@ -1724,6 +2090,7 @@ export default function PhysicsSimulator({
 
         const dt = Math.min((s.lastTime ? (now - s.lastTime) / 1000 : 0.016), 0.05);
         s.lastTime = now;
+        s.simTime += dt;
 
         s.fpsFrames++;
         s.fpsTime += dt;
@@ -1736,11 +2103,40 @@ export default function PhysicsSimulator({
 
         const subDt = dt / SUB_STEPS;
 
+        const applyLiveCombatDamage = (attackerId: string | undefined, defenderId: string | undefined, amount: number, timeOffset = 0) => {
+          if (!defenderId || attackerId === defenderId || amount <= 0) return;
+          const attacker = attackerId ? s.combatants.get(attackerId) ?? null : null;
+          const defender = s.combatants.get(defenderId);
+          if (!defender || defender.eliminated) return;
+          if (attacker && !s.physicsRules.friendlyFire && attacker.team === defender.team) return;
+          const key = `${attackerId}->${defenderId}`;
+          const currentTime = s.simTime + timeOffset;
+          const lastHit = s.combatHitCooldowns.get(key) ?? -Infinity;
+          if (currentTime - lastHit < 0.12) return;
+          s.combatHitCooldowns.set(key, currentTime);
+          defender.health = Math.max(0, defender.health - amount);
+          if (defender.health <= 0) {
+            defender.eliminated = true;
+            const controller = s.activeControllers.get(defender.rootId);
+            if (controller) {
+              for (const hingeId of controller.hingeIds) {
+                const hinge = s.hinges.get(hingeId);
+                if (!hinge) continue;
+                hinge.motorSpeed = 0;
+                hinge.motorForce = 0;
+              }
+            }
+          }
+        };
+
         for (let step = 0; step < SUB_STEPS; step++) {
-          if (s.activeController) {
-            const controlledHinges = s.activeController.hingeIds
+          for (const [rootId, controller] of s.activeControllers.entries()) {
+            const controllerCombatant = controller.combatantId ? s.combatants.get(controller.combatantId) : Array.from(s.combatants.values()).find((combatant) => combatant.rootId === rootId);
+            if (controllerCombatant?.eliminated) continue;
+            const controlledHinges = controller.hingeIds
               .map((hingeId) => s.hinges.get(hingeId))
               .filter((hinge): hinge is HingeConstraint => Boolean(hinge));
+            if (controlledHinges.length === 0) continue;
             const simBodies = new Map<string, SimBody>();
             for (const [id, body] of s.objects.entries()) {
               simBodies.set(id, {
@@ -1759,6 +2155,9 @@ export default function PhysicsSimulator({
                 restitution: body.restitution,
                 friction: body.friction,
                 contactedGround: false,
+                ownerId: body.ownerId,
+                team: body.team,
+                contactDamage: body.contactDamage,
               });
             }
             const observation = buildObservation(simBodies, controlledHinges.map((hinge) => ({
@@ -1773,13 +2172,13 @@ export default function PhysicsSimulator({
               maxAngle: hinge.maxAngle,
               motorSpeed: hinge.motorSpeed,
               motorForce: hinge.motorForce,
-            })), s.activeController.rootId).values;
-            const actions = s.activeController.net.forward(observation);
+            })), controller.rootId).values;
+            const actions = controller.net.forward(observation);
             for (let i = 0; i < controlledHinges.length; i++) {
-              controlledHinges[i].motorSpeed = clamp(actions[i] ?? 0, -1, 1) * s.activeController.maxMotorSpeed;
-              controlledHinges[i].motorForce = Math.max(controlledHinges[i].motorForce, s.activeController.baseMotorForce);
+              controlledHinges[i].motorSpeed = clamp(actions[i] ?? 0, -1, 1) * controller.maxMotorSpeed;
+              controlledHinges[i].motorForce = Math.max(controlledHinges[i].motorForce, controller.baseMotorForce);
             }
-            s.activeController.step += 1;
+            controller.step += 1;
           }
 
           // Spring forces
@@ -1868,35 +2267,49 @@ export default function PhysicsSimulator({
             }
 
             // Ground collision
-            const floor = GROUND_Y + supportExtentAlong(obj, new THREE.Vector3(0, 1, 0));
+            const floor = sampleGroundHeight(obj.mesh.position.x, obj.mesh.position.z, s.physicsRules) + supportExtentAlong(obj, new THREE.Vector3(0, 1, 0));
             if (obj.mesh.position.y < floor) {
               obj.mesh.position.y = floor;
               if (obj.velocity.y < 0) {
                 obj.velocity.y *= -obj.restitution;
                 // Friction on horizontal velocity
-                const lateralFactor = 1 - obj.friction * subDt * 30;
+                const lateralFactor = 1 - Math.max(obj.friction, s.physicsRules.groundFriction) * subDt * 30;
                 obj.velocity.x *= Math.max(0, lateralFactor);
                 obj.velocity.z *= Math.max(0, lateralFactor);
               }
               // Ground contact angular friction
-              obj.angularVelocity.multiplyScalar(1 - obj.friction * 0.15);
+              obj.angularVelocity.multiplyScalar(1 - Math.max(obj.friction, s.physicsRules.groundFriction) * 0.15);
+            }
+
+            if (s.physicsRules.hazardRingRadius > 0 && obj.ownerId) {
+              const radialDistance = Math.sqrt(obj.mesh.position.x * obj.mesh.position.x + obj.mesh.position.z * obj.mesh.position.z);
+              if (radialDistance > s.physicsRules.hazardRingRadius) {
+                applyLiveCombatDamage('__hazard__', obj.ownerId, s.physicsRules.hazardRingDamagePerSecond * subDt, radialDistance * 0.0001);
+              }
             }
 
             // Arena walls (soft boundary — push back)
-            const WALL = 19;
+            const WALL = s.physicsRules.arenaHalfExtent;
             for (const axis of ["x", "z"] as const) {
               if (obj.mesh.position[axis] > WALL) {
                 obj.mesh.position[axis] = WALL;
-                if (obj.velocity[axis] > 0) obj.velocity[axis] *= -obj.restitution;
+                if (obj.velocity[axis] > 0) obj.velocity[axis] *= -Math.max(obj.restitution, s.physicsRules.wallRestitution);
               } else if (obj.mesh.position[axis] < -WALL) {
                 obj.mesh.position[axis] = -WALL;
-                if (obj.velocity[axis] < 0) obj.velocity[axis] *= -obj.restitution;
+                if (obj.velocity[axis] < 0) obj.velocity[axis] *= -Math.max(obj.restitution, s.physicsRules.wallRestitution);
+              }
+            }
+
+            if (s.physicsRules.boundaryDamagePerSecond > 0 && obj.ownerId) {
+              const overflow = Math.max(0, Math.abs(obj.mesh.position.x) - WALL) + Math.max(0, Math.abs(obj.mesh.position.z) - WALL);
+              if (overflow > 0) {
+                applyLiveCombatDamage('__boundary__', obj.ownerId, overflow * s.physicsRules.boundaryDamagePerSecond * subDt, overflow * 0.0001);
               }
             }
 
             // Sleep check
             const speed = obj.velocity.length() + obj.angularVelocity.length();
-            if (speed < SLEEP_THRESHOLD && obj.mesh.position.y < floor + 0.05) {
+            if (s.physicsRules.allowSleep && speed < SLEEP_THRESHOLD && obj.mesh.position.y < floor + 0.05) {
               obj.sleepTimer += subDt;
               if (obj.sleepTimer > SLEEP_DELAY) { obj.sleeping = true; }
             } else {
@@ -1954,6 +2367,13 @@ export default function PhysicsSimulator({
                 b.velocity.y += jy * b.invMass;
                 b.velocity.z += jz * b.invMass;
               }
+              const impactSpeed = Math.abs(relVel);
+              if (impactSpeed > s.physicsRules.impactDamageThreshold) {
+                const averageDamage = (a.contactDamage + b.contactDamage) * 0.5;
+                const damage = Math.max(0, (impactSpeed - s.physicsRules.impactDamageThreshold) * s.physicsRules.contactDamageScale * averageDamage * subDt);
+                applyLiveCombatDamage(a.ownerId, b.ownerId, damage);
+                applyLiveCombatDamage(b.ownerId, a.ownerId, damage, 0.00001);
+              }
               a.sleeping = false; a.sleepTimer = 0;
               b.sleeping = false; b.sleepTimer = 0;
             }
@@ -1970,6 +2390,7 @@ export default function PhysicsSimulator({
           if (sleeping > 0) parts.push(`${sleeping} asleep`);
           if (s.springs.size > 0) parts.push(`${s.springs.size} springs`);
           if (s.hinges.size > 0) parts.push(`${s.hinges.size} hinges`);
+          if (s.combatants.size > 0) parts.push(`${Array.from(s.combatants.values()).filter((combatant) => !combatant.eliminated).length}/${s.combatants.size} combatants`);
           parts.push(`${s.fps.toFixed(0)} fps`);
           if (s.trainingLog.length > 0) parts.push(s.trainingLog[s.trainingLog.length - 1].slice(0, 48));
           overlayRef.current.textContent = parts.join('  ');
@@ -1985,7 +2406,7 @@ export default function PhysicsSimulator({
       if (s.animId !== null) cancelAnimationFrame(s.animId);
       if (s.renderer) { s.renderer.dispose(); s.renderer = null; }
       s.scene = null; s.camera = null;
-      s.objects.clear(); s.springs.clear();
+      s.objects.clear(); s.springs.clear(); s.hinges.clear(); s.sensors.clear(); s.combatants.clear(); s.activeControllers.clear(); s.combatHitCooldowns.clear();
       s.THREE = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

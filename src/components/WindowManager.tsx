@@ -20,7 +20,7 @@ import {
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
 import type { PhysicsCmd } from '@/lib/physics-types';
-const PhysicsSimulator = dynamic(() => import('./PhysicsSimulator'), { ssr: false });
+const PhysicsStudio = dynamic(() => import('./PhysicsStudio'), { ssr: false });
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -486,7 +486,7 @@ function DraggableWindow({
           </div>
         ) : win.contentType === 'physics' ? (
           <div style={{ width: '100%', height: '100%', background: '#0a0a0a' }}>
-            <PhysicsSimulator commands={win.physicsCmds ?? []} width={win.w} height={win.h - 32} />
+            <PhysicsStudio windowId={win.id} commands={win.physicsCmds ?? []} width={win.w} height={win.h - 32} />
           </div>
         ) : (
           /* HTML content — sandboxed iframe with postMessage listener injected */

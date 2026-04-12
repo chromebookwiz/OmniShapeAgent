@@ -26,6 +26,7 @@ import { calibrateVisionOnline, sceneHash, detectSceneChange, estimateMotionFiel
 import { enqueueCommand, getPendingCommands, approveCommand, denyCommand, runSafe, clearCompleted } from './tools/terminal-tools';
 import { generateWallet, unlockWallet, checkBalance, getPrice, listWallets, storeAgentPassword, getAgentPassword } from './tools/crypto-wallet';
 import type { PhysicsCmd } from './physics-types';
+import { deletePhysicsBlueprint, getPhysicsBlueprint, listPhysicsBlueprints, savePhysicsBlueprint } from './physics-blueprint-store';
 import { waitForPhysicsStateAfter } from './physics-state-store';
 import { setWindowResult, getWindowResult } from './window-result-store';
 import { instagramPost, instagramGetProfile, instagramGetPosts, instagramGetInsights, instagramSchedulePost } from './tools/instagram';
@@ -1208,7 +1209,7 @@ Examples:
 
 **IMPORTANT: Every physics tool auto-opens the window. Always start with physics_spawn or physics_reset to open it. Call physics_get_state() or vision_self_check() after spawning to confirm the design is visible.**
 
-3D physics + ML sandbox. Multi-shape rigid bodies, inertia-aware angular response, hinge joints with motors and limits, spring constraints, radial impulses, evolutionary neural net training, controller persistence, and live sensor inspection. ACES tone-mapped rendering.
+3D physics + ML sandbox. Multi-shape rigid bodies, inertia-aware angular response, hinge joints with motors and limits, spring constraints, radial impulses, mutable arena rules, combatant health, simultaneous neural controllers, duel orchestration, controller persistence, and live sensor inspection. ACES tone-mapped rendering.
 
 **Shapes**: \`sphere\`, \`box\`, \`cylinder\`, \`cone\`, \`torus\`, \`icosahedron\`, \`tetrahedron\`, \`capsule\`
 
@@ -1220,12 +1221,14 @@ Examples:
 - \`physics_set_position(objId, position)\` / \`physics_set_velocity\` / \`physics_set_angular_velocity\`
 - \`physics_set_property(objId, property, value)\` — mass, restitution, friction, color, emissive, etc.
 - \`physics_set_gravity([x,y,z])\` — default [0,-9.81,0]; set [0,0,0] for space
+- \`physics_set_rules(arenaHalfExtent?, wallRestitution?, groundFriction?, groundProfile?, groundAmplitude?, groundFrequency?, contactDamageScale?, impactDamageThreshold?, boundaryDamagePerSecond?, hazardRingRadius?, hazardRingDamagePerSecond?, friendlyFire?, allowSleep?, gravity?)\` — mutate arena, terrain, and combat rules without rebuilding the sim
 
 **Constraints / machine design**:
 - \`physics_add_spring(objId, objId2, restLength, stiffness, damping, springId)\`
 - \`physics_add_hinge(hingeId, objId, objId2, axis:[x,y,z], anchorA:[x,y,z], anchorB:[x,y,z])\` — rigid pivot. anchorA/B are local body offsets
 - \`physics_set_motor(hingeId, motorSpeed, motorForce)\` — drive hinge (rad/s, max torque)
 - \`physics_add_sensor(sensorId?, sensorType, objId?, objId2?, target?)\` — sensorType: \`distance\` | \`speed\` | \`angle\` | \`contact\`; readings appear in \`physics_get_state()\`
+- \`physics_add_sensor(sensorId?, sensorType, objId?, objId2?, target?)\` — sensorType: \`distance\` | \`speed\` | \`angle\` | \`contact\` | \`health\` | \`enemy_distance\` | \`boundary_distance\`; readings appear in \`physics_get_state()\`
 - \`physics_remove_hinge(hingeId)\` / \`physics_remove_spring(springId)\`
 - \`physics_explode(origin, strength, falloff)\`
 
@@ -1236,16 +1239,23 @@ Examples:
 - \`physics_spawn_preset_creature(preset, creatureId?, origin?, scale?, segmentCount?)\` — quick-start templates: \`walker\`, \`biped\`, \`hopper\`, \`quadruped\`, \`tripod\`, \`hexapod\`, \`crab\`, \`snake\`, \`centipede\`, \`rover\`
 - \`physics_spawn_automaton(kind, automatonId?, origin?, scale?, segmentCount?)\` — preferred high-level articulated automaton builder
 - \`physics_spawn_mechanism(kind, mechanismId?, origin?, scale?, segmentCount?)\` — high-level mechanism builder for \`pendulum\`, \`double_pendulum\`, \`wheel\`, \`axle_wheel\`, \`bridge\`, \`chain\`
-- \`physics_spawn_creature(creatureId, bodyPlan)\` — multi-body articulated creature with auto-hinges
-- \`physics_save_controller(controllerId?)\` — persist the current trained controller into the physics weight store
-- \`physics_load_controller(controllerId, rootId?, hingeIds?)\` — load a saved neural controller onto the current scene
-- \`physics_evaluate_controller(rewardFn?, simSteps?)\` — score the active controller on a cloned simulation without disturbing the live scene
-- \`physics_clear_controller()\` — disable the active neural controller and zero its hinge motors
+- \`physics_spawn_duelists(leftPreset?, rightPreset?, leftId?, rightId?, spacing?, scale?, arenaHalfExtent?, health?, contactDamage?)\` — spawn two combat-ready automata in one arena with duel rules active
+- \`physics_spawn_creature(creatureId, bodyPlan, team?, health?, contactDamage?, aggression?)\` — multi-body articulated creature with auto-hinges and optional combat metadata
+- \`physics_run_training_loop(rewardFn, networkLayers?, generations?, populationSize?, simSteps?, mutationRate?, combatantId?, controllerRootId?, controllerId?)\` — evolve locomotion or combat policies; when multiple fighters exist, target one explicitly
+- \`physics_save_controller(controllerId?, combatantId?, controllerRootId?)\` — persist a trained controller into the physics weight store
+- \`physics_load_controller(controllerId, combatantId?, rootId?, hingeIds?)\` — load a saved neural controller onto a specific fighter
+- \`physics_evaluate_controller(rewardFn?, simSteps?, combatantId?, controllerRootId?)\` — score a targeted controller on a cloned simulation without disturbing the live scene
+- \`physics_clear_controller(combatantId?, controllerRootId?)\` — disable one controller or all controllers and zero hinge motors
+- \`physics_list_blueprints()\` — list stored bot blueprints from the Physics Studio library
+- \`physics_get_blueprint(blueprintId)\` — inspect one stored bot blueprint, including body plan and defaults
+- \`physics_save_blueprint(blueprintId, bodyPlan, settings?, name?, notes?)\` — persist a bot design for later deployment or training
+- \`physics_deploy_blueprint(blueprintId, creatureId?, team?, health?, contactDamage?, aggression?)\` — spawn a stored bot blueprint into the live arena
+- \`physics_delete_blueprint(blueprintId)\` — remove a stored bot blueprint
 
 **Scene / utility**:
 - \`physics_set_sky(color)\`, \`physics_camera_goto(target)\`, \`physics_reset()\`
-- \`physics_get_state()\` — returns all positions/velocities/hinges/sensors/trainingLog/activeController
-- \`physics_run_script(script)\` — raw JS with scope: \`(objects, springs, hinges, THREE, scene, gravity, NeuralNet)\`
+- \`physics_get_state()\` — returns all positions/velocities/hinges/sensors/combatants/rules/trainingLog/activeControllers
+- \`physics_run_script(script)\` — raw JS with scope: \`(objects, springs, hinges, combatants, controllers, rules, THREE, scene, gravity, NeuralNet)\`
 
 **Correct tool-check pipeline:**
 1. Mutate the scene with a physics tool.
@@ -1305,6 +1315,17 @@ Mechanism + sensor:
 \`\`\`
 \`\`\`tool
 {"name":"physics_add_sensor","args":{"sensorType":"distance","sensorId":"bridge_span","objId":"bridge1_segment_0","objId2":"bridge1_segment_5"}}
+\`\`\`
+\`\`\`tool
+{"name":"physics_get_state","args":{}}
+\`\`\`
+
+Duel arena:
+\`\`\`tool
+{"name":"physics_spawn_duelists","args":{"leftPreset":"biped","rightPreset":"hexapod","leftId":"red_one","rightId":"blue_one","spacing":10,"health":140,"contactDamage":1.35}}
+\`\`\`
+\`\`\`tool
+{"name":"physics_run_training_loop","args":{"combatantId":"red_one","rewardFn":"(c) => 3 * ((c.ownMaxHealth ?? 100) - (c.opponentHealth ?? 100)) + (c.enemy ? -Math.hypot(c.enemy.pos[0]-c.pos[0], c.enemy.pos[2]-c.pos[2]) : 0) - (c.fallen ? 12 : 0)","generations":18,"populationSize":14,"simSteps":220,"controllerId":"red_duelist_v1"}}
 \`\`\`
 \`\`\`tool
 {"name":"physics_get_state","args":{}}
@@ -3049,10 +3070,10 @@ export async function* runAgentLoop(
     const observations: string[] = [];
 
     if (toolName.startsWith('physics_')) {
-      if (/physics_spawn|physics_spawn_creature|physics_spawn_preset_creature|physics_spawn_automaton|physics_spawn_mechanism|physics_add_hinge|physics_add_sensor|physics_set_motor|physics_run_training_loop|physics_load_controller|physics_save_controller/.test(toolName)) {
+      if (/physics_spawn|physics_spawn_creature|physics_spawn_preset_creature|physics_spawn_automaton|physics_spawn_mechanism|physics_spawn_duelists|physics_deploy_blueprint|physics_add_hinge|physics_add_sensor|physics_set_motor|physics_set_rules|physics_run_training_loop|physics_load_controller|physics_save_controller/.test(toolName)) {
         verifyWith.push('physics_get_state');
       }
-      if (/physics_spawn|physics_spawn_creature|physics_spawn_preset_creature|physics_spawn_automaton|physics_spawn_mechanism/.test(toolName)) {
+      if (/physics_spawn|physics_spawn_creature|physics_spawn_preset_creature|physics_spawn_automaton|physics_spawn_mechanism|physics_spawn_duelists|physics_deploy_blueprint/.test(toolName)) {
         suggestedNextTools.push('physics_get_state', 'vision_self_check');
       }
       if (toolName === 'physics_run_training_loop') {
@@ -3877,6 +3898,26 @@ export async function* runAgentLoop(
               toolResult = JSON.stringify({ gravity: args.gravity });
               break;
             }
+            case 'physics_set_rules': {
+              for (const event of physicsEvents(makePhysicsCmd('set_rules', {
+                gravity: args.gravity,
+                arenaHalfExtent: args.arenaHalfExtent,
+                wallRestitution: args.wallRestitution,
+                groundFriction: args.groundFriction,
+                groundProfile: args.groundProfile,
+                groundAmplitude: args.groundAmplitude,
+                groundFrequency: args.groundFrequency,
+                contactDamageScale: args.contactDamageScale,
+                impactDamageThreshold: args.impactDamageThreshold,
+                boundaryDamagePerSecond: args.boundaryDamagePerSecond,
+                hazardRingRadius: args.hazardRingRadius,
+                hazardRingDamagePerSecond: args.hazardRingDamagePerSecond,
+                friendlyFire: args.friendlyFire,
+                allowSleep: args.allowSleep,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, note: 'Physics rules updated. Call physics_get_state() to verify rules and combatant state.' });
+              break;
+            }
             case 'physics_add_spring': {
               const springId = args.springId || `spring_${Date.now()}`;
               for (const event of physicsEvents(makePhysicsCmd('add_spring', {
@@ -3996,8 +4037,10 @@ export async function* runAgentLoop(
                 simSteps: args.simSteps,
                 mutationRate: args.mutationRate,
                 controllerId: args.controllerId,
+                controllerRootId: args.rootId || args.controllerRootId,
+                combatantId: args.combatantId,
               }))) yield event;
-              toolResult = JSON.stringify({ status: 'training_started', note: 'Evolutionary training running on the articulated creature already in the scene. Check the physics window overlay for progress. The best controller will be installed on the creature\'s hinges when complete. Call physics_get_state() to read trainingLog.' });
+              toolResult = JSON.stringify({ status: 'training_started', note: 'Evolutionary training started. Target a specific fighter with combatantId or controllerRootId when multiple automata share the arena. Call physics_get_state() to read trainingLog and controller state.' });
               break;
             }
             case 'physics_spawn_automaton': {
@@ -4010,8 +4053,12 @@ export async function* runAgentLoop(
               for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
                 creatureId,
                 bodyPlan,
+                team: args.team,
+                health: args.health,
+                contactDamage: args.contactDamage,
+                aggression: args.aggression,
               }))) yield event;
-              toolResult = JSON.stringify({ creatureId, kind: args.kind || args.preset || 'walker', parts: bodyPlan.length, note: 'Automaton spawned. Call physics_get_state() to inspect hinges and sensors, or physics_run_training_loop to train it.' });
+              toolResult = JSON.stringify({ creatureId, kind: args.kind || args.preset || 'walker', parts: bodyPlan.length, note: 'Automaton spawned. It is combat-ready if you assign a team and rules. Call physics_get_state() to inspect hinges, combatants, and sensors, or physics_run_training_loop to train it.' });
               break;
             }
             case 'physics_spawn_mechanism': {
@@ -4037,21 +4084,137 @@ export async function* runAgentLoop(
               for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
                 creatureId,
                 bodyPlan,
+                team: args.team,
+                health: args.health,
+                contactDamage: args.contactDamage,
+                aggression: args.aggression,
               }))) yield event;
               toolResult = JSON.stringify({ creatureId, preset: args.preset || 'walker', parts: bodyPlan.length, note: 'Preset articulated creature spawned. Train it with physics_run_training_loop, then persist it with physics_save_controller.' });
+              break;
+            }
+            case 'physics_spawn_duelists': {
+              const leftId = String(args.leftId || args.redId || 'duelist_red');
+              const rightId = String(args.rightId || args.blueId || 'duelist_blue');
+              const leftPreset = String(args.leftPreset || args.redPreset || 'biped');
+              const rightPreset = String(args.rightPreset || args.bluePreset || 'hexapod');
+              const spacing = Math.max(4, Number(args.spacing ?? 10));
+              const scale = Math.max(0.35, Number(args.scale ?? 1));
+              const leftPlan = buildPhysicsCreaturePreset(leftPreset, leftId, {
+                origin: v3(-spacing * 0.5, 0, 0),
+                scale,
+                segmentCount: args.segmentCount,
+              });
+              const rightPlan = buildPhysicsCreaturePreset(rightPreset, rightId, {
+                origin: v3(spacing * 0.5, 0, 0),
+                scale,
+                segmentCount: args.segmentCount,
+              });
+              for (const event of physicsEvents(makePhysicsCmd('set_rules', {
+                arenaHalfExtent: args.arenaHalfExtent ?? Math.max(12, spacing + 4),
+                contactDamageScale: args.contactDamageScale ?? 5,
+                impactDamageThreshold: args.impactDamageThreshold ?? 2.6,
+                boundaryDamagePerSecond: args.boundaryDamagePerSecond ?? 0,
+                hazardRingRadius: args.hazardRingRadius ?? 0,
+                hazardRingDamagePerSecond: args.hazardRingDamagePerSecond ?? 0,
+                friendlyFire: args.friendlyFire ?? false,
+                groundFriction: args.groundFriction ?? 0.7,
+                wallRestitution: args.wallRestitution ?? 0.35,
+                allowSleep: args.allowSleep ?? false,
+              }))) yield event;
+              for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
+                creatureId: leftId,
+                bodyPlan: leftPlan,
+                team: 'red',
+                health: args.leftHealth ?? args.health ?? 120,
+                contactDamage: args.leftDamage ?? args.contactDamage ?? 1.25,
+                aggression: args.leftAggression ?? 1.15,
+              }))) yield event;
+              for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
+                creatureId: rightId,
+                bodyPlan: rightPlan,
+                team: 'blue',
+                health: args.rightHealth ?? args.health ?? 120,
+                contactDamage: args.rightDamage ?? args.contactDamage ?? 1.25,
+                aggression: args.rightAggression ?? 1.15,
+              }))) yield event;
+              toolResult = JSON.stringify({
+                ok: true,
+                leftId,
+                rightId,
+                leftPreset,
+                rightPreset,
+                note: 'Two duelists spawned with combat rules enabled. Train each fighter with physics_run_training_loop({ combatantId }) or load controllers onto each root, then inspect combatants with physics_get_state().',
+              });
               break;
             }
             case 'physics_spawn_creature': {
               for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
                 creatureId: args.creatureId,
                 bodyPlan: args.bodyPlan,
+                team: args.team,
+                health: args.health,
+                contactDamage: args.contactDamage,
+                aggression: args.aggression,
               }))) yield event;
-              toolResult = JSON.stringify({ creatureId: args.creatureId, parts: args.bodyPlan?.length ?? 0, note: 'Creature spawned. Use physics_set_motor to drive its hinges, or physics_run_training_loop to evolve locomotion.' });
+              toolResult = JSON.stringify({ creatureId: args.creatureId, parts: args.bodyPlan?.length ?? 0, note: 'Creature spawned. Use physics_set_motor to drive its hinges, physics_set_rules to configure the arena, or physics_run_training_loop to evolve locomotion or combat behavior.' });
+              break;
+            }
+            case 'physics_list_blueprints': {
+              toolResult = JSON.stringify({ blueprints: listPhysicsBlueprints() });
+              break;
+            }
+            case 'physics_get_blueprint': {
+              const blueprintId = String(args.blueprintId || args.id || args.name || '');
+              if (!blueprintId) throw new Error('physics_get_blueprint requires blueprintId');
+              const blueprint = getPhysicsBlueprint(blueprintId);
+              if (!blueprint) throw new Error(`Blueprint ${blueprintId} not found.`);
+              toolResult = JSON.stringify(blueprint);
+              break;
+            }
+            case 'physics_save_blueprint': {
+              const blueprint = savePhysicsBlueprint({
+                id: args.blueprintId || args.id || args.name,
+                name: args.name || args.blueprintId || args.id,
+                templates: args.templates,
+                parts: args.parts,
+                hinges: args.hinges,
+                bodyPlan: args.bodyPlan,
+                settings: args.settings,
+                notes: args.notes,
+              });
+              toolResult = JSON.stringify({ ok: true, blueprintId: blueprint.id, partCount: blueprint.bodyPlan?.length ?? blueprint.parts?.length ?? 0, note: 'Blueprint saved. Use physics_deploy_blueprint() to spawn it, or physics_get_blueprint() to inspect it.' });
+              break;
+            }
+            case 'physics_deploy_blueprint': {
+              const blueprintId = String(args.blueprintId || args.id || args.name || '');
+              if (!blueprintId) throw new Error('physics_deploy_blueprint requires blueprintId');
+              const blueprint = getPhysicsBlueprint(blueprintId);
+              if (!blueprint) throw new Error(`Blueprint ${blueprintId} not found.`);
+              if (!Array.isArray(blueprint.bodyPlan) || blueprint.bodyPlan.length === 0) throw new Error(`Blueprint ${blueprintId} has no deployable body plan.`);
+              const settings = blueprint.settings ?? {};
+              const creatureId = String(args.creatureId || blueprint.name || blueprint.id);
+              for (const event of physicsEvents(makePhysicsCmd('spawn_creature', {
+                creatureId,
+                bodyPlan: blueprint.bodyPlan as any,
+                team: args.team ?? settings.team,
+                health: args.health ?? settings.health,
+                contactDamage: args.contactDamage ?? settings.contactDamage,
+                aggression: args.aggression ?? settings.aggression,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, blueprintId, creatureId, parts: blueprint.bodyPlan.length, note: 'Stored blueprint deployed. Call physics_get_state() to confirm the combatant, then train or load its controller.' });
+              break;
+            }
+            case 'physics_delete_blueprint': {
+              const blueprintId = String(args.blueprintId || args.id || args.name || '');
+              if (!blueprintId) throw new Error('physics_delete_blueprint requires blueprintId');
+              toolResult = JSON.stringify({ ok: deletePhysicsBlueprint(blueprintId), blueprintId });
               break;
             }
             case 'physics_save_controller': {
               for (const event of physicsEvents(makePhysicsCmd('save_controller', {
                 controllerId: args.controllerId,
+                controllerRootId: args.rootId || args.controllerRootId,
+                combatantId: args.combatantId,
               }))) yield event;
               toolResult = JSON.stringify({ ok: true, controllerId: args.controllerId ?? null, note: 'Controller save requested. Call physics_get_state() for confirmation, or get_best_weights("physics") to inspect the registry.' });
               break;
@@ -4060,20 +4223,26 @@ export async function* runAgentLoop(
               for (const event of physicsEvents(makePhysicsCmd('load_controller', {
                 controllerId: args.controllerId,
                 controllerRootId: args.rootId || args.controllerRootId,
+                combatantId: args.combatantId,
                 trainedHinges: args.hingeIds || args.trainedHinges,
               }))) yield event;
-              toolResult = JSON.stringify({ ok: true, controllerId: args.controllerId, note: 'Controller load requested. Call physics_get_state() to verify activeController and trainingLog.' });
+              toolResult = JSON.stringify({ ok: true, controllerId: args.controllerId, note: 'Controller load requested. Call physics_get_state() to verify activeControllers, combatants, and trainingLog.' });
               break;
             }
             case 'physics_clear_controller': {
-              for (const event of physicsEvents(makePhysicsCmd('clear_controller'))) yield event;
-              toolResult = JSON.stringify({ ok: true, note: 'Active controller cleared.' });
+              for (const event of physicsEvents(makePhysicsCmd('clear_controller', {
+                controllerRootId: args.rootId || args.controllerRootId,
+                combatantId: args.combatantId,
+              }))) yield event;
+              toolResult = JSON.stringify({ ok: true, note: 'Controller clear requested.' });
               break;
             }
             case 'physics_evaluate_controller': {
               for (const event of physicsEvents(makePhysicsCmd('evaluate_controller', {
                 rewardFn: args.rewardFn,
                 simSteps: args.simSteps,
+                controllerRootId: args.rootId || args.controllerRootId,
+                combatantId: args.combatantId,
               }))) yield event;
               toolResult = JSON.stringify({ ok: true, note: 'Controller evaluation requested. Call physics_get_state() to read the resulting evaluation log.' });
               break;
@@ -5241,28 +5410,35 @@ print(json.dumps({
                     'physics_set_position(objId,position:[x,y,z])',
                     'physics_set_property(objId,property,value)  — color|emissive|metalness|roughness|opacity|wireframe|mass|restitution|friction',
                     'physics_set_gravity(gravity:[x,y,z])  — default [0,-9.81,0]',
+                    'physics_set_rules(arenaHalfExtent?,wallRestitution?,groundFriction?,groundProfile?,groundAmplitude?,groundFrequency?,contactDamageScale?,impactDamageThreshold?,boundaryDamagePerSecond?,hazardRingRadius?,hazardRingDamagePerSecond?,friendlyFire?,allowSleep?,gravity?)  — mutate arena, hills, and combat rules live',
                     'physics_add_spring(objId,objId2,restLength?,stiffness?,damping?,springId?)',
                     'physics_remove_spring(springId)',
                     'physics_add_hinge(hingeId?,objId,objId2,axis:[x,y,z],anchorA:[x,y,z],anchorB:[x,y,z],minAngle?,maxAngle?)  — pivot joint',
                     'physics_set_motor(hingeId,motorSpeed,motorForce)  — drive hinge at rad/s with max torque',
-                    'physics_add_sensor(sensorId?,sensorType,objId?,objId2?,target?)  — distance|speed|angle|contact sensors exposed via physics_get_state',
+                    'physics_add_sensor(sensorId?,sensorType,objId?,objId2?,target?)  — distance|speed|angle|contact|health|enemy_distance|boundary_distance sensors exposed via physics_get_state',
                     'physics_remove_hinge(hingeId)',
-                    'physics_run_training_loop(rewardFn,networkLayers?,generations?,populationSize?,simSteps?,mutationRate?)  — evolutionary NN training',
-                    '  rewardFn: JS arrow "(creature,step)=>number"  creature={pos,vel,step}  example: "(c)=>c.pos[0]"',
+                    'physics_run_training_loop(rewardFn,networkLayers?,generations?,populationSize?,simSteps?,mutationRate?,combatantId?,controllerRootId?,controllerId?)  — evolutionary NN training for locomotion or combat',
+                    '  rewardFn: JS arrow "(creature,step)=>number"  creature={pos,vel,up,enemy,ownHealth,opponentHealth,step}  example: "(c)=>c.pos[0]"',
                     'physics_spawn_preset_creature(preset,creatureId?,origin?,scale?,segmentCount?)  — quick articulated templates: walker|biped|hopper|quadruped|tripod|hexapod|crab|snake|centipede|rover',
                     'physics_spawn_automaton(kind,automatonId?,origin?,scale?,segmentCount?)  — preferred high-level automaton builder',
                     'physics_spawn_mechanism(kind,mechanismId?,origin?,scale?,segmentCount?)  — pendulum|double_pendulum|wheel|axle_wheel|bridge|chain',
-                    'physics_spawn_creature(creatureId,bodyPlan)  — multi-body articulated creature with auto hinges',
-                    '  bodyPlan: [{id,shape,position,size?,radius?,color?,mass?,hinges?:[{parentId,axis,anchorA,anchorB}]}]',
-                    'physics_save_controller(controllerId?)  — persist active trained controller into physics weights',
-                    'physics_load_controller(controllerId,rootId?,hingeIds?)  — install saved controller onto current creature',
-                    'physics_evaluate_controller(rewardFn?,simSteps?)  — score active controller on cloned sim',
-                    'physics_clear_controller()  — disable active controller and zero hinge motors',
+                    'physics_spawn_duelists(leftPreset?,rightPreset?,leftId?,rightId?,spacing?,scale?,arenaHalfExtent?,health?,contactDamage?)  — spawn two combatants in one arena',
+                    'physics_spawn_creature(creatureId,bodyPlan,team?,health?,contactDamage?,aggression?)  — multi-body articulated creature with auto hinges and combat metadata',
+                    '  bodyPlan: [{id,shape,position,size?,radius?,color?,mass?,role?,contactDamage?,hinges?:[{parentId,axis,anchorA,anchorB}]}]',
+                    'physics_list_blueprints()  — list stored Physics Studio bot blueprints',
+                    'physics_get_blueprint(blueprintId)  — inspect one stored blueprint body plan and defaults',
+                    'physics_save_blueprint(blueprintId,bodyPlan,settings?,name?,notes?)  — persist a bot design for later reuse',
+                    'physics_deploy_blueprint(blueprintId,creatureId?,team?,health?,contactDamage?,aggression?)  — spawn a stored blueprint into the live arena',
+                    'physics_delete_blueprint(blueprintId)  — remove a stored blueprint',
+                    'physics_save_controller(controllerId?,combatantId?,controllerRootId?)  — persist targeted trained controller into physics weights',
+                    'physics_load_controller(controllerId,combatantId?,rootId?,hingeIds?)  — install saved controller onto specific fighter',
+                    'physics_evaluate_controller(rewardFn?,simSteps?,combatantId?,controllerRootId?)  — score targeted controller on cloned sim',
+                    'physics_clear_controller(combatantId?,controllerRootId?)  — disable one or all active controllers and zero hinge motors',
                     'physics_camera_goto(target: [x,y,z] or objId string)',
                     'physics_set_sky(color: hex string)',
                     'physics_explode(origin:[x,y,z],strength?,falloff?)  — radial impulse burst',
-                    'physics_get_state()  — returns all object/hinge/sensor state + trainingLog + activeController directly to agent (dispatches get_state, waits 400ms, reads result)',
-                    'physics_run_script(script)  — (objects,springs,hinges,THREE,scene,gravity,NeuralNet) context',
+                    'physics_get_state()  — returns all object/hinge/sensor/combatant/rule state + trainingLog + activeControllers directly to agent (dispatches get_state, waits 400ms, reads result)',
+                    'physics_run_script(script)  — (objects,springs,hinges,combatants,controllers,rules,THREE,scene,gravity,NeuralNet) context',
                     'physics_reset()',
                   ],
                   ui_windows:     ['create_ui_window  → auto-registers in window-result-store','close_ui_window','set_window_content_html','edit_window_content_html','set_window_content_iframe','display_image_in_window','save_ui_window','restore_ui_window','eval_in_window','check_window_result(id)  → loaded|error|pending status'],

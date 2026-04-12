@@ -213,7 +213,6 @@ const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { command: 'memory-prune', usage: '/memory-prune', description: 'Review stale memories and prune or suppress what is unhelpful.', icon: 'Memory', section: 'more', aliases: ['prune'] },
   { command: 'history', usage: '/history', description: 'Open saved chats.', icon: 'Bubble', section: 'more', aliases: ['saved'] },
   { command: 'memory', usage: '/memory', description: 'Open the memory browser.', icon: 'Memory', section: 'more' },
-  { command: 'hall', usage: '/hall', description: 'Open the hall of fame.', icon: 'Trophy', section: 'more', aliases: ['halloffame'] },
   { command: 'wallet', usage: '/wallet', description: 'Open the crypto wallet.', icon: 'Bitcoin', section: 'more' },
   { command: 'moltbook', usage: '/moltbook', description: 'Open Moltbook tools and prompts.', icon: 'Moltbook', section: 'more' },
   { command: 'physics', usage: '/physics', description: 'Open the physics simulator.', icon: 'Physics', section: 'more' },
@@ -882,7 +881,6 @@ export default function Chat() {
           '/memory-prune - review and prune stale memory\n' +
           '/history - open saved chats\n' +
           '/memory - open memory browser\n' +
-          '/hall - open hall of fame\n' +
           '/wallet - open crypto wallet\n' +
           '/moltbook - open Moltbook panel\n' +
           '/physics - open physics simulator\n' +
@@ -964,9 +962,11 @@ export default function Chat() {
         break;
       case 'hall':
       case 'halloffame':
+      case 'valhalla':
+      case 'trophyroom':
         resetUtilityPanels();
         setShowHallOfFame(true);
-        appendSystemMessage('Opened hall of fame.');
+        appendSystemMessage('Opened the hidden hall of fame.');
         break;
       case 'wallet':
         resetUtilityPanels();
@@ -1060,6 +1060,21 @@ export default function Chat() {
   useEffect(() => {
     setSelectedCommandIndex(0);
   }, [composerCommandToken]);
+
+  useEffect(() => {
+    const onPhysicsStudioAgent = (event: Event) => {
+      const detail = (event as CustomEvent<{ prompt?: string; source?: string }>).detail;
+      if (!detail?.prompt) return;
+      queueAgentPrompt(detail.prompt);
+      appendSystemMessage(detail.source === 'physics-studio'
+        ? 'Physics Studio queued an agent action.'
+        : 'Queued an agent action from the physics window.');
+    };
+    window.addEventListener('sa:physics-studio-agent', onPhysicsStudioAgent as EventListener);
+    return () => {
+      window.removeEventListener('sa:physics-studio-agent', onPhysicsStudioAgent as EventListener);
+    };
+  }, [appendSystemMessage, queueAgentPrompt]);
 
   const handleComposerKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (showCommandSuggestions) {
@@ -1187,7 +1202,7 @@ export default function Chat() {
             let sp = systemPrompt;
             if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
             else sp += '\n\n[NORMAL CHAT MODE] This is a single-turn response. Do not behave as if autonomous mode is active. Do not narrate hidden planning, ask yourself follow-up questions, or trigger your own continuation unless the user explicitly asks for unattended execution.';
-            if (physicsModeActive) sp += '\n\n[PHYSICS MODE ACTIVE] When building a machine, use a concrete workflow: physics_reset(), physics_spawn() a fixed chassis or axle, physics_spawn() the moving part, physics_add_hinge() to connect them, physics_set_motor() to automate it, then physics_get_state() or vision_self_check() to verify the result. Give at least one explicit machine example when you explain or act.';
+            if (physicsModeActive) sp += '\n\n[PHYSICS WINDOW OPEN] If the task depends on the Physics Studio builder, bot library, duel controls, hill terrain options, or Torch Lab deploy panel, first call read_skill("physics-studio"). Use that skill only while the physics window is open.';
             if (surveyorMode) sp += '\n\n[CODING SURVEYOR MODE ACTIVE] You are the architect and reviewer supervising application creation through the LocalClawd CLI. Before using it, verify the CLI is available with a terminal command. If LocalClawd is missing, install it with npm install -g localclawd. Then use LocalClawd to generate or iterate on the application while you oversee architecture, validate outputs, inspect files, correct mistakes, and decide the next step. Do not hand-wave the process: explicitly supervise creation, check generated artifacts, and keep control of requirements and quality.';
             return sp;
           })(),
@@ -1738,7 +1753,6 @@ export default function Chat() {
                       <div className="grid grid-cols-1 gap-2">
                         <ActionMenuButton icon={<Icons.Bubble />} label="Saved Chats" command="/history" description="Browse, restore, and delete saved chat sessions." active={showSavedPanel} onClick={() => { resetUtilityPanels(); setShowSavedPanel(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Memory />} label="Memory Browser" command="/memory" description="Inspect, boost, and delete persistent memories." active={showMemoryPanel} onClick={() => { resetUtilityPanels(); setShowMemoryPanel(true); setShowActionMenu(false); }} />
-                        <ActionMenuButton icon={<Icons.Trophy />} label="Hall of Fame" command="/hall" description="Inspect top learned bot runs and strategies." active={showHallOfFame} onClick={() => { resetUtilityPanels(); setShowHallOfFame(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Physics />} label="Physics Simulator" command="/physics" description="Open the physics workspace for live experiments." active={physicsModeActive} onClick={openPhysicsWindow} />
                         <ActionMenuButton icon={<Icons.Architect />} label="LocalClawd Builder" command="/localclawd" description="Open a builder panel to define an app name and specification, then supervise LocalClawd as it builds and tests it." onClick={() => { resetUtilityPanels(); setShowLocalClawdBuilder(true); setShowActionMenu(false); }} />
                         <ActionMenuButton icon={<Icons.Bitcoin />} label="Crypto Wallet" command="/wallet" description="Manage local wallets and balance lookups." active={showCryptoWallet} onClick={() => { resetUtilityPanels(); setShowCryptoWallet(true); setShowActionMenu(false); }} />

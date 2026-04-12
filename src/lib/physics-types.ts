@@ -24,6 +24,7 @@ export interface PhysicsCmd {
     | 'reset'
     | 'run_script'
     | 'run_training_loop'
+    | 'set_rules'
     | 'spawn_creature'
     | 'save_controller'
     | 'load_controller'
@@ -64,7 +65,7 @@ export interface PhysicsCmd {
   motorSpeed?: number;
   motorForce?: number;
   sensorId?: string;
-  sensorType?: 'distance' | 'speed' | 'angle' | 'contact';
+  sensorType?: 'distance' | 'speed' | 'angle' | 'contact' | 'health' | 'enemy_distance' | 'boundary_distance';
   target?: [number, number, number] | string;
   skyColor?: string;
   origin?: [number, number, number];
@@ -78,6 +79,23 @@ export interface PhysicsCmd {
   simSteps?: number;
   mutationRate?: number;
   creatureId?: string;
+  team?: string;
+  health?: number;
+  contactDamage?: number;
+  aggression?: number;
+  arenaHalfExtent?: number;
+  wallRestitution?: number;
+  groundFriction?: number;
+  groundProfile?: 'flat' | 'hills';
+  groundAmplitude?: number;
+  groundFrequency?: number;
+  contactDamageScale?: number;
+  impactDamageThreshold?: number;
+  boundaryDamagePerSecond?: number;
+  hazardRingRadius?: number;
+  hazardRingDamagePerSecond?: number;
+  friendlyFire?: boolean;
+  allowSleep?: boolean;
   bodyPlan?: Array<{
     id: string;
     shape: string;
@@ -86,6 +104,8 @@ export interface PhysicsCmd {
     radius?: number;
     color?: string;
     mass?: number;
+    role?: string;
+    contactDamage?: number;
     hinges?: Array<{
       parentId: string;
       axis: [number, number, number];
@@ -95,6 +115,8 @@ export interface PhysicsCmd {
   }>;
   controllerId?: string;
   controllerRootId?: string;
+  combatantId?: string;
+  opponentCombatantId?: string;
   trainedHinges?: string[];
   overwrite?: boolean;
 }

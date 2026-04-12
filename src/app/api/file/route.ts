@@ -10,6 +10,7 @@ const ALLOWED_DIRS = [
   path.join(process.cwd(), 'public'),
   path.join(process.cwd(), 'output'),
   path.join(process.cwd(), 'data'),
+  path.join(process.cwd(), 'skills'),
   '/tmp',
   os.tmpdir(), // handles Windows %TEMP% as well
 ];
