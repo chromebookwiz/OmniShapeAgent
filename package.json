@@ -1,6 +1,6 @@
 {
   "name": "omnishapeagent",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Local AI agent with chat, tool use, persistent memory, and vision",
   "keywords": [
     "ai",

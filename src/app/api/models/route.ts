@@ -179,10 +179,15 @@ export async function GET(req: Request) {
   // ── 5. OpenRouter ─────────────────────────────────────────────────────────
   const openrouterKey = searchParams.get('openrouterApiKey') || process.env.OPENROUTER_API_KEY || '';
   let openrouterModels: Array<{ id: string; name: string }> = [];
+  let openrouterError: string | null = null;
   if (openrouterKey) {
     try {
       const r = await ft('https://openrouter.ai/api/v1/models', {
-        headers: { 'Authorization': `Bearer ${openrouterKey}` }
+        headers: {
+          'Authorization': `Bearer ${openrouterKey}`,
+          'HTTP-Referer': 'https://shapeagent.local',
+          'X-Title': 'OmniShapeAgent',
+        }
       }, 4000);
       if (r.ok) {
         const data = await r.json().catch(() => null);
@@ -191,14 +196,22 @@ export async function GET(req: Request) {
             .map((m: any) => ({ id: m.id as string, name: (m.name || m.id) as string }))
             .slice(0, 150);
         }
+      } else {
+        const errText = await r.text().catch(() => '');
+        openrouterError = r.status === 401 || r.status === 403
+          ? 'OpenRouter rejected the API key.'
+          : `OpenRouter model fetch failed (HTTP ${r.status}). ${errText.slice(0, 120)}`.trim();
       }
-    } catch { /* OpenRouter offline or invalid key */ }
+    } catch {
+      openrouterError = 'OpenRouter model fetch failed. Check network access and API key.';
+    }
   }
 
   return NextResponse.json({
     ollamaModels,
     vllmModels: vllmList,
     openrouterModels,
+    ...(openrouterError ? { openrouterError } : {}),
     ...(ollamaModels.length === 0 && vllmList.length === 0 && openrouterModels.length === 0
       ? { warning: 'No models found. Check your Ollama URL, vLLM endpoint, or OpenRouter API key.' }
       : {}),

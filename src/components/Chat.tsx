@@ -281,13 +281,14 @@ interface ProviderModelPickerProps {
   openrouterApiKey: string; setOpenrouterApiKey: (v: string) => void;
   openrouterModel: string; setOpenrouterModel: (v: string) => void;
   openrouterModels: Array<{ id: string; name: string }>; openrouterStatus: string;
+  openrouterError: string | null;
 }
 
 function ProviderModelPicker({
   provider, label,
   ollamaUrl, setOllamaUrl, ollamaModel, setOllamaModel, ollamaModels, ollamaStatus,
   vllmUrl, setVllmUrl, vllmModel, setVllmModel, vllmModels, vllmStatus, vllmProbeResult, runVllmProbe,
-  openrouterApiKey, setOpenrouterApiKey, openrouterModel, setOpenrouterModel, openrouterModels, openrouterStatus,
+  openrouterApiKey, setOpenrouterApiKey, openrouterModel, setOpenrouterModel, openrouterModels, openrouterStatus, openrouterError,
 }: ProviderModelPickerProps) {
   return (
     <div className="space-y-3">
@@ -367,8 +368,8 @@ function ProviderModelPicker({
               Model {openrouterStatus === 'ok' ? ` - ${openrouterModels.length}` : ''}
             </label>
             {openrouterModels.length === 0 ? (
-              <div className="text-xs text-amber-700 font-black px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
-                {openrouterApiKey ? 'No models - press Refresh' : 'Enter API key first'}
+              <div className={`text-xs font-black px-3 py-2 rounded-lg border ${openrouterStatus === 'fail' ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                {openrouterError ? openrouterError : openrouterApiKey ? 'No models - press Refresh' : 'Enter API key first'}
               </div>
             ) : (
               <select value={openrouterModel} onChange={(e) => setOpenrouterModel(e.target.value)}
@@ -422,6 +423,7 @@ export default function Chat() {
   const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'ok' | 'fail' | 'no-models'>('unknown');
   const [vllmStatus, setVllmStatus] = useState<'unknown' | 'ok' | 'fail' | 'no-models'>('unknown');
   const [openrouterStatus, setOpenrouterStatus] = useState<'unknown' | 'ok' | 'fail' | 'no-models'>('unknown');
+  const [openrouterError, setOpenrouterError] = useState<string | null>(null);
   const [vllmProbeResult, setVllmProbeResult] = useState<string | null>(null);
   const [showHallOfFame, setShowHallOfFame] = useState(false);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
@@ -542,6 +544,7 @@ export default function Chat() {
     setOllamaStatus('unknown');
     setVllmStatus('unknown');
     setOpenrouterStatus('unknown');
+    setOpenrouterError(null);
 
     try {
       const params = new URLSearchParams();
@@ -555,11 +558,15 @@ export default function Chat() {
       const ollama: string[] = Array.isArray(data.ollamaModels) ? data.ollamaModels : [];
       const vllm: Array<{ model: string; hostPort: string; chatUrl?: string }> = Array.isArray(data.vllmModels) ? data.vllmModels : [];
       const or: Array<{ id: string; name: string }> = Array.isArray(data.openrouterModels) ? data.openrouterModels : [];
+      const openrouterFailure = typeof data.openrouterError === 'string' && data.openrouterError.trim()
+        ? data.openrouterError.trim()
+        : null;
 
       setOllamaModels(ollama);
       setVllmModels(vllm);
       setOpenrouterModels(or);
-      setOpenrouterStatus(or.length > 0 ? 'ok' : openrouterApiKey ? 'no-models' : 'unknown');
+      setOpenrouterStatus(or.length > 0 ? 'ok' : openrouterFailure ? 'fail' : openrouterApiKey ? 'no-models' : 'unknown');
+      setOpenrouterError(openrouterFailure);
       if (!openrouterModel && or.length > 0) setOpenrouterModel(`openrouter:${or[0].id}`);
 
       // Per-provider status
@@ -584,7 +591,7 @@ export default function Chat() {
             primaryProvider === 'vllm'
                 ? `vLLM: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models - switch provider.' : ''}`
               : primaryProvider === 'openrouter'
-              ? `OpenRouter: no models found. Check your API key in settings.`
+              ? `OpenRouter: ${openrouterFailure || 'no models found. Check your API key in settings.'}`
                 : `Ollama: no models found at ${ollamaUrl}. ${vllm.length > 0 ? 'vLLM has models - switch provider.' : ''}`
           );
         } else {
@@ -592,7 +599,7 @@ export default function Chat() {
         }
       } else {
         setConnStatus('fail');
-        setConnectionError(`No models found. Ollama: ${ollamaUrl} | vLLM: ${vllmUrl || '(not set)'} | OpenRouter: ${openrouterApiKey ? 'key set but no models' : 'no key'}`);
+        setConnectionError(`No models found. Ollama: ${ollamaUrl} | vLLM: ${vllmUrl || '(not set)'} | OpenRouter: ${openrouterFailure || (openrouterApiKey ? 'key set but no models' : 'no key')}`);
       }
     } catch {
       setConnStatus('fail');
@@ -1983,26 +1990,6 @@ export default function Chat() {
                 <p className="text-[10px] text-amber-700 font-black">Select two providers below, then send a topic to begin.</p>
               )}
 
-              {/* Per-provider status dropdown */}
-              <div className="space-y-1">
-                <label className="text-[9px] font-black uppercase tracking-widest text-black/40">Active Provider</label>
-                <select
-                  value={primaryProvider}
-                  onChange={(e) => setPrimaryProvider(e.target.value as 'ollama' | 'vllm' | 'openrouter')}
-                  className="w-full bg-white border-2 border-black rounded-lg px-3 py-2.5 text-xs font-black outline-none appearance-none cursor-pointer hover:bg-black/5 transition-colors"
-                >
-                  <option value="ollama">
-                    Ollama - Local {ollamaStatus === 'ok' ? `(${ollamaModels.length} models)` : ollamaStatus === 'no-models' ? '(no models)' : '(checking...)'}
-                  </option>
-                  <option value="vllm">
-                    vLLM - Cluster {vllmStatus === 'ok' ? `(${vllmModels.length} models)` : vllmStatus === 'no-models' ? '(no models)' : '(checking...)'}
-                  </option>
-                  <option value="openrouter">
-                    OpenRouter - Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length} models)` : openrouterApiKey ? '(checking...)' : '(set API key)'}
-                  </option>
-                </select>
-              </div>
-              
               <div className="space-y-4 text-black">
                 {parallelMode ? (
                   /* Parallel mode: pick 2 providers */
@@ -2072,6 +2059,7 @@ export default function Chat() {
                         openrouterApiKey={openrouterApiKey} setOpenrouterApiKey={setOpenrouterApiKey}
                         openrouterModel={openrouterModel} setOpenrouterModel={setOpenrouterModel}
                         openrouterModels={openrouterModels} openrouterStatus={openrouterStatus}
+                        openrouterError={openrouterError}
                       />
                       {/* Secondary model picker */}
                       <ProviderModelPicker
@@ -2087,6 +2075,7 @@ export default function Chat() {
                         openrouterApiKey={openrouterApiKey} setOpenrouterApiKey={setOpenrouterApiKey}
                         openrouterModel={openrouterModel} setOpenrouterModel={setOpenrouterModel}
                         openrouterModels={openrouterModels} openrouterStatus={openrouterStatus}
+                        openrouterError={openrouterError}
                       />
                     </div>
                   </div>
@@ -2120,6 +2109,7 @@ export default function Chat() {
                       openrouterApiKey={openrouterApiKey} setOpenrouterApiKey={setOpenrouterApiKey}
                       openrouterModel={openrouterModel} setOpenrouterModel={setOpenrouterModel}
                       openrouterModels={openrouterModels} openrouterStatus={openrouterStatus}
+                        openrouterError={openrouterError}
                     />
                   </div>
                 )}

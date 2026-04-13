@@ -1719,6 +1719,9 @@ function resolveProviderInfo(
 
   if (model.startsWith('openrouter:')) {
     const key = openrouterApiKey || process.env.OPENROUTER_API_KEY || '';
+    if (!key.trim()) {
+      throw new Error('OpenRouter API key missing. Add it in settings or set OPENROUTER_API_KEY.');
+    }
     headers['Authorization'] = `Bearer ${key}`;
     headers['HTTP-Referer'] = 'https://shapeagent.local';
     headers['X-Title'] = 'OmniShapeAgent';
@@ -2172,6 +2175,11 @@ async function* callVllm(
   headers: Record<string, string>
 ): AsyncGenerator<{ type: 'text' | 'reasoning' | 'content', content: string }> {
 
+  const providerLabel = endpoint.includes('openrouter.ai') ? 'OpenRouter' : 'vLLM';
+  const authHint = providerLabel === 'OpenRouter'
+    ? 'Check the OpenRouter API key in settings or OPENROUTER_API_KEY.'
+    : 'Set VLLM_API_KEY env var.';
+
   const v1Base = toV1Base(endpoint);
   const canonicalChat = `${v1Base}/chat/completions`;
   const legacyCompl   = `${v1Base}/completions`;
@@ -2274,7 +2282,7 @@ async function* callVllm(
         const errBody = await resp.text();
         // Model-not-found — no point trying other paths, same model will fail everywhere
         if (errBody.includes('does not exist') || errBody.includes('not found') || errBody.includes('NotFoundError')) {
-          throw new Error(`vLLM: Model not found — ${errBody.slice(0, 200)}`);
+          throw new Error(`${providerLabel}: model not found — ${errBody.slice(0, 200)}`);
         }
         errors.push(`${url} stream:${streamMode} → HTTP 404: ${errBody.slice(0, 100)}`);
         continue; // path not found — try next path
@@ -2288,7 +2296,7 @@ async function* callVllm(
       // 401/403 → auth issue — no point trying other paths, same key
       if (status === 401 || status === 403) {
         const errBody = await resp.text();
-        return { error: `vLLM auth error (HTTP ${status}): ${errBody}\nSet VLLM_API_KEY env var.` };
+        throw new Error(`${providerLabel} auth error (HTTP ${status}): ${errBody}\n${authHint}`);
       }
 
       // Any other error — report and try next
@@ -2309,7 +2317,7 @@ async function* callVllm(
   const detail = networkErrors.length
     ? `${uniqueHosts.join(', ')} unreachable (${networkErrors.length} paths tried)`
     : otherErrors.slice(0, 2).join('; ');
-  throw new Error(`vLLM: all endpoint paths failed — ${detail}`);
+  throw new Error(`${providerLabel}: all endpoint paths failed — ${detail}`);
 }
 
 /** Call Ollama endpoint with real-time <think> tag streaming as reasoning chunks */
