@@ -14,6 +14,20 @@ type Message = {
   content: string;
 };
 
+type ProviderKind = 'ollama' | 'vllm' | 'openrouter';
+
+function isProviderKind(value: string | null): value is ProviderKind {
+  return value === 'ollama' || value === 'vllm' || value === 'openrouter';
+}
+
+function providerFromModel(value: string | null): ProviderKind | null {
+  if (!value) return null;
+  if (value.startsWith('ollama:')) return 'ollama';
+  if (value.startsWith('vllm:')) return 'vllm';
+  if (value.startsWith('openrouter:')) return 'openrouter';
+  return null;
+}
+
 const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision engineering assistant. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. Normal chat is single-turn and user-directed: unless autonomy is explicitly enabled, do not act as if you are in autonomous mode, do not ask yourself what to do next, and do not schedule follow-up turns on your own.`;
 
 
@@ -394,25 +408,68 @@ export default function Chat() {
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [vllmModels, setVllmModels] = useState<Array<{ model: string; hostPort: string; chatUrl?: string }>>([]);
   const [openrouterModels, setOpenrouterModels] = useState<Array<{ id: string; name: string }>>([]);
-  const [ollamaModel, setOllamaModel] = useState<string>('');
-  const [vllmModel, setVllmModel] = useState<string>('');
-  const [openrouterModel, setOpenrouterModel] = useState<string>('');
+  const [ollamaModel, setOllamaModel] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('sa_model_ollama') ?? '';
+      return stored.startsWith('ollama:') ? stored : '';
+    } catch {
+      return '';
+    }
+  });
+  const [vllmModel, setVllmModel] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('sa_model_vllm') ?? localStorage.getItem('sa_active_model') ?? '';
+      return stored.startsWith('vllm:') ? stored : '';
+    } catch {
+      return '';
+    }
+  });
+  const [openrouterModel, setOpenrouterModel] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('sa_model_openrouter') ?? localStorage.getItem('sa_active_model') ?? '';
+      return stored.startsWith('openrouter:') ? stored : '';
+    } catch {
+      return '';
+    }
+  });
   const [openrouterApiKey, setOpenrouterApiKey] = useState<string>(() => {
     try { return localStorage.getItem('sa_openrouter_key') ?? ''; } catch { return ''; }
   });
-  const [primaryProvider, setPrimaryProvider] = useState<'ollama' | 'vllm' | 'openrouter'>('vllm');
-  const [secondaryProvider, setSecondaryProvider] = useState<'ollama' | 'vllm' | 'openrouter'>('ollama');
+  const [primaryProvider, setPrimaryProvider] = useState<ProviderKind>(() => {
+    try {
+      const stored = localStorage.getItem('sa_primary_provider');
+      if (isProviderKind(stored)) return stored;
+      const derived = providerFromModel(localStorage.getItem('sa_active_model'));
+      return derived ?? 'vllm';
+    } catch {
+      return 'vllm';
+    }
+  });
+  const [secondaryProvider, setSecondaryProvider] = useState<ProviderKind>(() => {
+    try {
+      const stored = localStorage.getItem('sa_secondary_provider');
+      return isProviderKind(stored) ? stored : 'ollama';
+    } catch {
+      return 'ollama';
+    }
+  });
   const [savedChats, setSavedChats] = useState<Array<{ id: string; name: string; createdAt: string; updatedAt: string; summary: string | null; messageCount: number }>>([]);
   const [chatSummaries, setChatSummaries] = useState<Record<string, string>>({});
   // Tracks the persisted file ID for the current conversation - set after first save
   const currentChatIdRef = useRef<string | null>(null);
   const [chatName, setChatName] = useState('My Chat');
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
-  const [ollamaUrl, setOllamaUrl] = useState('http://127.0.0.1:11434');
-  const [vllmUrl, setVllmUrl] = useState('http://192.168.1.34:8000');
+  const [ollamaUrl, setOllamaUrl] = useState(() => {
+    try { return localStorage.getItem('sa_ollama_url') ?? 'http://127.0.0.1:11434'; } catch { return 'http://127.0.0.1:11434'; }
+  });
+  const [vllmUrl, setVllmUrl] = useState(() => {
+    try { return localStorage.getItem('sa_vllm_url') ?? 'http://192.168.1.34:8000'; } catch { return 'http://192.168.1.34:8000'; }
+  });
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const [temperature, setTemperature] = useState(0.7);
-  const [parallelMode, setParallelMode] = useState(false);
+  const [parallelMode, setParallelMode] = useState(() => {
+    try { return localStorage.getItem('sa_parallel_mode') === 'true'; } catch { return false; }
+  });
   const [isParallelRunning, setIsParallelRunning] = useState(false);
   const [showSavedPanel, setShowSavedPanel] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
@@ -642,6 +699,46 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem('sa_openrouter_key', openrouterApiKey); } catch {}
   }, [openrouterApiKey]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_primary_provider', primaryProvider); } catch {}
+  }, [primaryProvider]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_secondary_provider', secondaryProvider); } catch {}
+  }, [secondaryProvider]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_parallel_mode', String(parallelMode)); } catch {}
+  }, [parallelMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_ollama_url', ollamaUrl); } catch {}
+  }, [ollamaUrl]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_vllm_url', vllmUrl); } catch {}
+  }, [vllmUrl]);
+
+  useEffect(() => {
+    if (!ollamaModel) return;
+    try { localStorage.setItem('sa_model_ollama', ollamaModel); } catch {}
+  }, [ollamaModel]);
+
+  useEffect(() => {
+    if (!vllmModel) return;
+    try { localStorage.setItem('sa_model_vllm', vllmModel); } catch {}
+  }, [vllmModel]);
+
+  useEffect(() => {
+    if (!openrouterModel) return;
+    try { localStorage.setItem('sa_model_openrouter', openrouterModel); } catch {}
+  }, [openrouterModel]);
+
+  useEffect(() => {
+    if (primaryProvider !== secondaryProvider) return;
+    setSecondaryProvider(primaryProvider === 'ollama' ? 'vllm' : 'ollama');
+  }, [primaryProvider, secondaryProvider]);
 
   useEffect(() => {
     try { localStorage.setItem('sa_auto_approve_terminal', String(autoApproveTerminal)); } catch {}
