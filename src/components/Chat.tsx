@@ -289,6 +289,7 @@ interface ProviderModelPickerProps {
   ollamaModel: string; setOllamaModel: (v: string) => void;
   ollamaModels: string[]; ollamaStatus: string;
   vllmUrl: string; setVllmUrl: (v: string) => void;
+  vllmApiKey: string; setVllmApiKey: (v: string) => void;
   vllmModel: string; setVllmModel: (v: string) => void;
   vllmModels: Array<{ model: string; hostPort: string; chatUrl?: string }>; vllmStatus: string;
   vllmProbeResult: string | null; runVllmProbe: () => void;
@@ -301,7 +302,7 @@ interface ProviderModelPickerProps {
 function ProviderModelPicker({
   provider, label,
   ollamaUrl, setOllamaUrl, ollamaModel, setOllamaModel, ollamaModels, ollamaStatus,
-  vllmUrl, setVllmUrl, vllmModel, setVllmModel, vllmModels, vllmStatus, vllmProbeResult, runVllmProbe,
+  vllmUrl, setVllmUrl, vllmApiKey, setVllmApiKey, vllmModel, setVllmModel, vllmModels, vllmStatus, vllmProbeResult, runVllmProbe,
   openrouterApiKey, setOpenrouterApiKey, openrouterModel, setOpenrouterModel, openrouterModels, openrouterStatus, openrouterError,
 }: ProviderModelPickerProps) {
   return (
@@ -349,6 +350,16 @@ function ProviderModelPicker({
             {vllmProbeResult && (
               <pre className="text-[8px] font-mono bg-black/5 rounded p-2 max-h-20 overflow-y-auto whitespace-pre-wrap text-black/50">{vllmProbeResult}</pre>
             )}
+          </div>
+          <div className="space-y-1">
+            <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">API Key</label>
+            <input
+              type="password"
+              value={vllmApiKey}
+              onChange={(e) => setVllmApiKey(e.target.value)}
+              placeholder="Optional bearer token"
+              className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-black"
+            />
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">Model</label>
@@ -434,6 +445,9 @@ export default function Chat() {
   });
   const [openrouterApiKey, setOpenrouterApiKey] = useState<string>(() => {
     try { return localStorage.getItem('sa_openrouter_key') ?? ''; } catch { return ''; }
+  });
+  const [vllmApiKey, setVllmApiKey] = useState<string>(() => {
+    try { return localStorage.getItem('sa_vllm_key') ?? ''; } catch { return ''; }
   });
   const [primaryProvider, setPrimaryProvider] = useState<ProviderKind>(() => {
     try {
@@ -560,12 +574,23 @@ export default function Chat() {
   const [mediaUrlDraft, setMediaUrlDraft] = useState('');
   // Stable ref to handleSend - lets the parallel-mode useEffect call it without stale closures
   const handleSendRef = useRef<((overrides?: { msg?: string; images?: { name: string; dataUrl: string }[] }) => Promise<void>) | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   // Track last assistant message for voice auto-speak
   const lastAssistantMsg = messages.filter(m => m.role === 'assistant').at(-1)?.content ?? '';
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
+
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    const maxHeight = 224;
+    el.style.height = '0px';
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${Math.max(64, nextHeight)}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [input]);
 
   // Generate a one-sentence summary by sending the first few exchanges to the LLM.
   // Called only ONCE per conversation (on first save). Never regenerated.
@@ -592,6 +617,7 @@ export default function Chat() {
           synergyMode: 'off',
           stream: false,
           openrouterApiKey: openrouterApiKey || undefined,
+          vllmApiKey: vllmApiKey || undefined,
           ollamaUrl,
           vllmUrl,
         }),
@@ -602,7 +628,7 @@ export default function Chat() {
     } catch {
       return msgs.find(m => m.role === 'user')?.content?.slice(0, 60) ?? '';
     }
-  }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmModel, vllmUrl]);
+  }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmApiKey, vllmModel, vllmUrl]);
 
   const testConnection = useCallback(async () => {
     setConnStatus('testing');
@@ -616,6 +642,7 @@ export default function Chat() {
       const params = new URLSearchParams();
       if (ollamaUrl) params.set('ollamaUrl', ollamaUrl);
       if (vllmUrl) params.set('vllmUrl', vllmUrl);
+      if (vllmApiKey) params.set('vllmApiKey', vllmApiKey);
       if (openrouterApiKey) params.set('openrouterApiKey', openrouterApiKey);
 
       const res = await fetch('/api/models?' + params.toString());
@@ -671,13 +698,15 @@ export default function Chat() {
       setConnStatus('fail');
       setConnectionError('Connection failed. Check network.');
     }
-  }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmModel, vllmUrl]);
+  }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmApiKey, vllmModel, vllmUrl]);
 
   const runVllmProbe = async () => {
     if (!vllmUrl) return;
     setVllmProbeResult('Probing - testing all endpoint paths...');
     try {
-      const res = await fetch(`/api/vllm-probe?url=${encodeURIComponent(vllmUrl)}`);
+      const params = new URLSearchParams({ url: vllmUrl });
+      if (vllmApiKey) params.set('apiKey', vllmApiKey);
+      const res = await fetch(`/api/vllm-probe?${params.toString()}`);
       const data = await res.json();
       const lines = [
         `SUMMARY: ${data.summary || 'no summary'}`,
@@ -708,6 +737,10 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem('sa_openrouter_key', openrouterApiKey); } catch {}
   }, [openrouterApiKey]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_vllm_key', vllmApiKey); } catch {}
+  }, [vllmApiKey]);
 
   useEffect(() => {
     try { localStorage.setItem('sa_primary_provider', primaryProvider); } catch {}
@@ -1189,7 +1222,9 @@ export default function Chat() {
     };
   }, [appendSystemMessage, queueAgentPrompt]);
 
-  const handleComposerKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleComposerKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+
     if (showCommandSuggestions) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -1207,6 +1242,7 @@ export default function Chat() {
         return;
       }
       if (e.key === 'Enter') {
+        if (e.shiftKey) return;
         const hasSpaces = normalizedComposerInput.includes(' ');
         const exactCommand = COMMAND_DEFINITIONS.some((definition) => {
           const base = definition.command.split(' ')[0].toLowerCase();
@@ -1220,7 +1256,7 @@ export default function Chat() {
       }
     }
 
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendRef.current?.();
     }
@@ -1322,6 +1358,7 @@ export default function Chat() {
           temperature,
           synergyMode: mode,
           openrouterApiKey: openrouterApiKey || undefined,
+          vllmApiKey: vllmApiKey || undefined,
           disabledToolGroups: (() => {
             const allGroups = ['web', 'terminal', 'files', 'git', 'vision', 'computer', 'memory', 'comms', 'bots', 'scheduler', 'image', 'self'];
             return allGroups.filter(g => !enabledToolGroups.has(g));
@@ -2161,6 +2198,7 @@ export default function Chat() {
                         ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                         ollamaModels={ollamaModels} ollamaStatus={ollamaStatus}
                         vllmUrl={vllmUrl} setVllmUrl={setVllmUrl}
+                        vllmApiKey={vllmApiKey} setVllmApiKey={setVllmApiKey}
                         vllmModel={vllmModel} setVllmModel={setVllmModel}
                         vllmModels={vllmModels} vllmStatus={vllmStatus}
                         vllmProbeResult={vllmProbeResult} runVllmProbe={runVllmProbe}
@@ -2177,6 +2215,7 @@ export default function Chat() {
                         ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                         ollamaModels={ollamaModels} ollamaStatus={ollamaStatus}
                         vllmUrl={vllmUrl} setVllmUrl={setVllmUrl}
+                        vllmApiKey={vllmApiKey} setVllmApiKey={setVllmApiKey}
                         vllmModel={vllmModel} setVllmModel={setVllmModel}
                         vllmModels={vllmModels} vllmStatus={vllmStatus}
                         vllmProbeResult={vllmProbeResult} runVllmProbe={runVllmProbe}
@@ -2211,6 +2250,7 @@ export default function Chat() {
                       ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                       ollamaModels={ollamaModels} ollamaStatus={ollamaStatus}
                       vllmUrl={vllmUrl} setVllmUrl={setVllmUrl}
+                      vllmApiKey={vllmApiKey} setVllmApiKey={setVllmApiKey}
                       vllmModel={vllmModel} setVllmModel={setVllmModel}
                       vllmModels={vllmModels} vllmStatus={vllmStatus}
                       vllmProbeResult={vllmProbeResult} runVllmProbe={runVllmProbe}
@@ -2716,7 +2756,7 @@ export default function Chat() {
                 </div>
               )}
 
-              <div className="flex items-stretch overflow-hidden border-2 border-black bg-white shadow-[8px_8px_0px_#000000]">
+              <div className="flex items-end overflow-hidden border-2 border-black bg-white shadow-[8px_8px_0px_#000000]">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -2729,18 +2769,19 @@ export default function Chat() {
                   onClick={() => fileInputRef.current?.click()}
                   title="Attach files or images"
                   disabled={attachUploading}
-                  className="flex items-center border-r border-black/10 px-3 text-black/30 transition-colors hover:bg-black/5 hover:text-black"
+                  className="flex h-full items-center self-stretch border-r border-black/10 px-3 text-black/30 transition-colors hover:bg-black/5 hover:text-black"
                 >
                   <Icons.Paperclip />
                 </button>
                 <button
                   onClick={() => setShowMediaUrlInput(v => !v)}
                   title="Attach image/video URL"
-                  className={`flex items-center border-r border-black/10 px-3 transition-colors ${showMediaUrlInput ? 'bg-black/5 text-black' : 'text-black/30 hover:bg-black/5 hover:text-black'}`}
+                  className={`flex h-full items-center self-stretch border-r border-black/10 px-3 transition-colors ${showMediaUrlInput ? 'bg-black/5 text-black' : 'text-black/30 hover:bg-black/5 hover:text-black'}`}
                 >
                   <Icons.Link />
                 </button>
-                <input
+                <textarea
+                  ref={composerRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleComposerKeyDown}
@@ -2751,17 +2792,26 @@ export default function Chat() {
                       ? 'Butt in...'
                       : 'Type / for commands or enter a message...'
                   }
-                  className="flex-1 border-none bg-transparent px-5 py-5 text-[16px] font-black text-black outline-none placeholder:text-black/10 md:px-8 md:py-6 md:text-sm"
-                  autoCapitalize="none"
+                  rows={1}
+                  name="agent-prompt"
+                  autoComplete="off"
                   autoCorrect="off"
+                  autoSave="off"
+                  data-form-type="other"
+                  data-lpignore="true"
+                  data-1p-ignore="true"
+                  data-bwignore="true"
+                  className="max-h-56 min-h-[64px] flex-1 resize-none border-none bg-transparent px-5 py-5 text-[16px] font-black leading-relaxed text-black outline-none placeholder:text-black/20 md:px-8 md:py-6 md:text-sm"
+                  autoCapitalize="none"
                   spellCheck={false}
+                  enterKeyHint="send"
                 />
                 {isLoading && (
                   <>
                     <button
                       onClick={handleStop}
                       title="Stop generation (keep partial output)"
-                      className="flex items-center gap-1.5 border-l-2 border-black bg-amber-50 px-4 text-[9px] font-black uppercase tracking-widest text-amber-700 transition-colors hover:bg-amber-100"
+                      className="flex h-full items-center gap-1.5 self-stretch border-l-2 border-black bg-amber-50 px-4 text-[9px] font-black uppercase tracking-widest text-amber-700 transition-colors hover:bg-amber-100"
                     >
                       <span className="inline-block h-3 w-3 rounded-sm border-2 border-amber-700" />
                       Stop
@@ -2769,7 +2819,7 @@ export default function Chat() {
                     <button
                       onClick={handleKill}
                       title="Kill - abort and discard current response"
-                      className="flex items-center gap-1.5 border-l-2 border-black bg-red-50 px-4 text-[9px] font-black uppercase tracking-widest text-red-600 transition-colors hover:bg-red-100"
+                      className="flex h-full items-center gap-1.5 self-stretch border-l-2 border-black bg-red-50 px-4 text-[9px] font-black uppercase tracking-widest text-red-600 transition-colors hover:bg-red-100"
                     >
                       <span className="text-base leading-none">x</span>
                       Kill
@@ -2779,7 +2829,7 @@ export default function Chat() {
                 <button
                   onClick={() => handleSend()}
                   disabled={(!input.trim() && attachments.length === 0) || isLoading || connStatus !== 'ok'}
-                  className={`flex items-center justify-center border-l-2 border-black px-12 transition-all active:scale-95 ${
+                  className={`flex h-full items-center justify-center self-stretch border-l-2 border-black px-12 transition-all active:scale-95 ${
                     (input.trim() || attachments.length > 0) && !isLoading && connStatus === 'ok'
                       ? 'bg-black text-[#FDFCF0]'
                       : 'bg-black/5 text-black/20'

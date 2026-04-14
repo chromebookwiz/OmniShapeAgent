@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   try {
     const {
       message, history, model, systemPrompt, temperature, synergyMode, companionModel,
-      openrouterApiKey, disabledToolGroups, imagePipeline, imageModel, autoApproveTerminal,
+      openrouterApiKey, vllmApiKey, disabledToolGroups, imagePipeline, imageModel, autoApproveTerminal,
       metacognition, compressionCheckpoint, autonomousMode,
       contextWindow, attachedImages, attachedMediaUrls,
       // Per-request URL overrides — forwarded from CLI config or web app settings
@@ -25,6 +25,7 @@ export async function POST(req: Request) {
       synergyMode: (synergyMode as any) || 'off',
       companionModel,
       openrouterApiKey,
+      vllmApiKey,
       disabledToolGroups: Array.isArray(disabledToolGroups) ? disabledToolGroups : [],
       imagePipeline: imagePipeline || undefined,
       imageModel: imageModel || undefined,

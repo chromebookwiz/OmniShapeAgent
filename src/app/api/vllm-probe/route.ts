@@ -21,7 +21,7 @@ export async function GET(req: Request) {
 
   const base = rawUrl.replace(/\/+$/, '').replace(/\/v1(\/.*)?$/, '');
   const v1Base = `${base}/v1`;
-  const apiKey = process.env.VLLM_API_KEY;
+  const apiKey = searchParams.get('apiKey') || process.env.VLLM_API_KEY || '';
   const authH: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   const steps: string[] = [];
   let models: string[] = [];

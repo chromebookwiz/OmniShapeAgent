@@ -53,9 +53,10 @@ async function looksLikeOllama(base: string): Promise<boolean> {
  * Try to fetch /v1/models from a base URL.
  * Returns the parsed model names, or [] on any failure.
  */
-async function fetchVllmModels(base: string, timeoutMs = 1200): Promise<string[]> {
+async function fetchVllmModels(base: string, timeoutMs = 1200, apiKey = ''): Promise<string[]> {
   try {
-    const r = await ft(`${base}/v1/models`, { method: 'GET' }, timeoutMs);
+    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+    const r = await ft(`${base}/v1/models`, { method: 'GET', headers }, timeoutMs);
     if (!r.ok) return [];
     const data = await r.json().catch(() => null);
     return parseModels(data);
@@ -84,6 +85,7 @@ export async function GET(req: Request) {
 
   const ollamaUrlParam = searchParams.get('ollamaUrl') || process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
   const vllmUrlParam   = searchParams.get('vllmUrl')   || process.env.VLLM_URL   || '';
+  const vllmApiKey     = searchParams.get('vllmApiKey') || process.env.VLLM_API_KEY || '';
   const extraHosts     = (searchParams.get('vllmSparkHosts') || process.env.VLLM_HOSTS || '')
     .split(',').map(h => h.trim()).filter(Boolean);
 
@@ -117,7 +119,7 @@ export async function GET(req: Request) {
 
       // Fetch models and run Ollama fingerprint in parallel
       const [names, isOllama] = await Promise.all([
-        fetchVllmModels(base, 3000),
+        fetchVllmModels(base, 3000, vllmApiKey),
         looksLikeOllama(base),
       ]);
 
@@ -146,7 +148,7 @@ export async function GET(req: Request) {
     const scanTasks = allHosts.flatMap(host =>
       VLLM_PORTS.map(port => async () => {
         const base = `http://${host}:${port}`;
-        const names = await fetchVllmModels(base, 700);
+        const names = await fetchVllmModels(base, 700, vllmApiKey);
         if (names.length === 0) return;
 
         // Quick Ollama check — prevents listing OpenWebUI/Ollama models as vLLM

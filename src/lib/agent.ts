@@ -100,6 +100,7 @@ export interface AgentOptions {
   synergyMode?: 'off' | 'parallel' | 'neural';
   companionModel?: string;
   openrouterApiKey?: string;
+  vllmApiKey?: string;
   disabledToolGroups?: string[];
   imagePipeline?: 'stable-diffusion' | 'openrouter-image';
   imageModel?: string;
@@ -1710,7 +1711,7 @@ function getHistoryTokenCount(history: Message[]): number {
 function resolveProviderInfo(
   model: string,
   openrouterApiKey?: string,
-  overrideUrls?: { ollamaUrl?: string; vllmUrl?: string }
+  overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string }
 ): { endpoint: string; targetModel: string; headers: Record<string,string>; backend: 'ollama' | 'vllm' | 'openrouter' } {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -1750,7 +1751,8 @@ function resolveProviderInfo(
       const base = rawBase.replace(/\/$/, '');
       endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     }
-    if (process.env.VLLM_API_KEY) headers['Authorization'] = `Bearer ${process.env.VLLM_API_KEY}`;
+    const vllmKey = overrideUrls?.vllmApiKey || process.env.VLLM_API_KEY || '';
+    if (vllmKey) headers['Authorization'] = `Bearer ${vllmKey}`;
     return { endpoint, targetModel, headers, backend: 'vllm' };
   }
 
@@ -1766,7 +1768,8 @@ function resolveProviderInfo(
     const base = effectiveVllmUrl.replace(/\/$/, '');
     const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const targetModel = process.env.VLLM_MODEL || model || 'default';
-    if (process.env.VLLM_API_KEY) headers['Authorization'] = `Bearer ${process.env.VLLM_API_KEY}`;
+    const vllmKey = overrideUrls?.vllmApiKey || process.env.VLLM_API_KEY || '';
+    if (vllmKey) headers['Authorization'] = `Bearer ${vllmKey}`;
     return { endpoint, targetModel, headers, backend: 'vllm' };
   }
 
@@ -1839,9 +1842,10 @@ async function callProviderOnce(
   prompt: string,
   model: string,
   openrouterApiKey?: string,
+  overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string },
   systemInstr = 'You are a precision context compression engine. Be concise and technical.'
 ): Promise<string> {
-  const { endpoint, targetModel, headers, backend } = resolveProviderInfo(model, openrouterApiKey);
+  const { endpoint, targetModel, headers, backend } = resolveProviderInfo(model, openrouterApiKey, overrideUrls);
   const payload = {
     model: targetModel,
     messages: [
@@ -1866,6 +1870,7 @@ async function callProviderOnce(
 
 interface CompressionOptions {
   openrouterApiKey?: string;
+  overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string };
   keepRecent?: number;
   maxPassDepth?: number;   // recursion guard
 }
@@ -1939,7 +1944,7 @@ async function compressHistory(
   model: string,
   opts: CompressionOptions = {}
 ): Promise<Message[]> {
-  const { openrouterApiKey, keepRecent = 6, maxPassDepth = 2 } = opts;
+  const { openrouterApiKey, overrideUrls, keepRecent = 6, maxPassDepth = 2 } = opts;
   const totalTokens = getHistoryTokenCount(history);
   console.log(`[Agent] Compressing context: ${totalTokens.toLocaleString()} tokens (threshold=${CONTEXT_THRESHOLD.toLocaleString()})`);
 
@@ -1998,7 +2003,7 @@ async function compressHistory(
       `ENTITIES: <key variables, URLs, IDs, names>\n\n` +
       sampleMsgs.map(m => `[${m.role.toUpperCase()}]: ${m.content.slice(0, 300)}`).join('\n');
     const extracted = await callProviderOnce(
-      entityPrompt, model, openrouterApiKey,
+      entityPrompt, model, openrouterApiKey, overrideUrls,
       'You are a structured fact extraction engine. Output exactly the requested fields, nothing else.'
     );
     if (extracted) entityBlock = `\n### Extracted Facts:\n${extracted}\n`;
@@ -2026,7 +2031,7 @@ async function compressHistory(
     priorSummaryText +
     `[NEW HISTORY TO SUMMARIZE]:\n\n${historyText}`;
 
-  const summaryContent = await callProviderOnce(summaryPrompt, model, openrouterApiKey,
+  const summaryContent = await callProviderOnce(summaryPrompt, model, openrouterApiKey, overrideUrls,
     'You are a precision context compression engine. Preserve all technical specifics.'
   );
 
@@ -2230,19 +2235,25 @@ async function* callVllm(
           let content = '';
           let reasoning = '';
           const decoder = new TextDecoder();
+          let pending = '';
+          let sawDone = false;
           
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             
-            const chunkText = decoder.decode(value, { stream: true });
-            const lines = chunkText.split('\n');
+            pending += decoder.decode(value, { stream: true });
+            const lines = pending.split('\n');
+            pending = lines.pop() ?? '';
             
             for (const line of lines) {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data:')) continue;
               const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') break;
+              if (dataStr === '[DONE]') {
+                sawDone = true;
+                break;
+              }
               
               try {
                 const json = JSON.parse(dataStr);
@@ -2259,8 +2270,33 @@ async function* callVllm(
             }
               } catch { /* skip partial lines */ }
             }
+
+            if (sawDone) break;
           }
-          return { content, reasoning };
+
+          const finalChunk = pending.trim();
+          if (finalChunk.startsWith('data:')) {
+            const dataStr = finalChunk.slice(5).trim();
+            if (dataStr && dataStr !== '[DONE]') {
+              try {
+                const json = JSON.parse(dataStr);
+                const deltaContent = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.text ?? '';
+                const deltaReasoning = json.choices?.[0]?.delta?.reasoning_content ?? json.choices?.[0]?.delta?.reasoning ?? '';
+                if (deltaContent) {
+                  content += deltaContent;
+                  yield { type: 'text', content: deltaContent };
+                }
+                if (deltaReasoning) {
+                  reasoning += deltaReasoning;
+                  yield { type: 'reasoning', content: deltaReasoning };
+                }
+              } catch { /* ignore incomplete trailing chunk */ }
+            }
+          }
+
+          if (content || reasoning) return;
+          errors.push(`${url} stream:true → empty SSE response`);
+          continue;
         }
         const json = await resp.json();
         // OpenAI chat format
@@ -2304,6 +2340,12 @@ async function* callVllm(
       errors.push(`${url} stream:${streamMode} → HTTP ${status}: ${errBody.slice(0, 200)}`);
 
     } catch (e: any) {
+      if (
+        e?.message?.startsWith(`${providerLabel} auth error`) ||
+        e?.message?.startsWith(`${providerLabel}: model not found`)
+      ) {
+        throw e;
+      }
       errors.push(`${url} → network error: ${e.message}`);
     }
   }
@@ -2771,7 +2813,7 @@ print(json.dumps({'trained': True, 'policy_loss': round(policy_loss.item(),4), '
 export async function runAgentLoopText(
   userMessage: string,
   history: Message[],
-  options: { model?: string; systemPrompt?: string; synergyMode?: 'off' | 'neural' | 'parallel'; companionModel?: string; temperature?: number; openrouterApiKey?: string } = {}
+  options: { model?: string; systemPrompt?: string; synergyMode?: 'off' | 'neural' | 'parallel'; companionModel?: string; temperature?: number; openrouterApiKey?: string; vllmApiKey?: string } = {}
 ): Promise<string> {
   const { content } = await consumeGenerator(runAgentLoop(userMessage, history, options));
   return content.trim() || '⚠ The agent returned no reply text. Check the configured model endpoint and try again.';
@@ -2802,6 +2844,7 @@ export async function* runAgentLoop(
     synergyMode = 'off',
     companionModel,
     openrouterApiKey: orApiKey,
+    vllmApiKey,
     disabledToolGroups = [],
     imagePipeline,
     imageModel,
@@ -2815,7 +2858,9 @@ export async function* runAgentLoop(
     compressionCheckpoint,
   } = options;
   // Per-request URL overrides — forwarded from CLI config or web app settings panel
-  const urlOverrides = (optOllamaUrl || optVllmUrl) ? { ollamaUrl: optOllamaUrl, vllmUrl: optVllmUrl } : undefined;
+  const urlOverrides = (optOllamaUrl || optVllmUrl || vllmApiKey)
+    ? { ollamaUrl: optOllamaUrl, vllmUrl: optVllmUrl, vllmApiKey }
+    : undefined;
   const normalizedCheckpoint = typeof compressionCheckpoint === 'string' ? compressionCheckpoint.trim() : '';
   if (normalizedCheckpoint) {
     messages = [{ role: 'system', content: normalizedCheckpoint }, ...messages];
@@ -2859,6 +2904,7 @@ export async function* runAgentLoop(
     try {
       messages = await compressHistory(messages, model, {
         openrouterApiKey: orApiKey,
+        overrideUrls: urlOverrides,
         keepRecent: 6,
         maxPassDepth: 2,
       });
@@ -2883,6 +2929,7 @@ export async function* runAgentLoop(
       const summary = await callProviderOnce(
         `The user sent a very long message. Produce a COMPLETE, faithful compressed version that preserves EVERY specific request, question, requirement, file name, code snippet, and instruction. Do not drop any requirements:\n\n${userMessage}`,
         model, orApiKey,
+        urlOverrides,
         'You are a lossless message compression engine. Preserve every specific detail, request, and requirement.'
       );
       if (summary && summary.length > 100 && summary.length < userMessage.length * 0.85) {
