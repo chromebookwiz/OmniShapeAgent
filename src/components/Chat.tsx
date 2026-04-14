@@ -585,7 +585,16 @@ export default function Chat() {
       const res = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: prompt, history: [], model: activeModel, synergyMode: 'off', stream: false }),
+        body: JSON.stringify({
+          message: prompt,
+          history: [],
+          model: activeModel,
+          synergyMode: 'off',
+          stream: false,
+          openrouterApiKey: openrouterApiKey || undefined,
+          ollamaUrl,
+          vllmUrl,
+        }),
       });
       if (!res.ok) return userFirst.slice(0, 60);
       const data = await res.json();
@@ -593,7 +602,7 @@ export default function Chat() {
     } catch {
       return msgs.find(m => m.role === 'user')?.content?.slice(0, 60) ?? '';
     }
-  }, [ollamaModel, openrouterModel, primaryProvider, vllmModel]);
+  }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmModel, vllmUrl]);
 
   const testConnection = useCallback(async () => {
     setConnStatus('testing');
@@ -1326,6 +1335,8 @@ export default function Chat() {
           contextWindow: primaryProvider === 'ollama' ? ollamaContextWindow : primaryProvider === 'openrouter' ? openrouterContextWindow : vllmContextWindow,
           attachedImages: imageAttachments.length > 0 ? imageAttachments : undefined,
           attachedMediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
+          ollamaUrl,
+          vllmUrl,
         }),
       });
 
@@ -2364,22 +2375,24 @@ export default function Chat() {
                     />
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="sticky bottom-0 z-10 -mx-1 px-1 pt-3 pb-1 bg-gradient-to-t from-[#FDFCF0] via-[#FDFCF0] to-transparent">
+                    <div className="flex gap-2">
                     <button
                       onClick={testConnection}
                       disabled={connStatus === 'testing'}
-                      className="flex-[2] bg-black text-[#FDFCF0] py-2 rounded-lg text-[10px] font-black transition-all active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50 uppercase tracking-[0.15em]"
+                      className="flex-[2] border-2 border-black bg-[#F7F3D8] text-black py-2.5 rounded-lg text-[10px] font-black transition-all active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50 uppercase tracking-[0.15em] shadow-[2px_2px_0_#000] hover:bg-[#F1EABF]"
                     >
                       <Icons.Refresh />
                       {connStatus === 'testing' ? 'Syncing...' : 'Refresh'}
                     </button>
                     <button
                       onClick={() => saveCurrentChat()}
-                      className="flex-1 border border-black text-black rounded-lg py-2 flex items-center justify-center gap-1.5 text-[10px] font-black hover:bg-black hover:text-white transition-all active:scale-95 uppercase tracking-[0.15em]"
+                      className="flex-1 border-2 border-black bg-white text-black rounded-lg py-2.5 flex items-center justify-center gap-1.5 text-[10px] font-black hover:bg-black/5 transition-all active:scale-95 uppercase tracking-[0.15em]"
                     >
                       <Icons.Save />
                       Save
                     </button>
+                  </div>
                   </div>
                 </div>
 
@@ -2392,24 +2405,31 @@ export default function Chat() {
                 {/* Context Window Settings */}
                 <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Context Window (tokens)</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    {([
-                      { label: 'Ollama', val: ollamaContextWindow, set: setOllamaContextWindow },
-                      { label: 'vLLM', val: vllmContextWindow, set: setVllmContextWindow },
-                      { label: 'OR', val: openrouterContextWindow, set: setOpenrouterContextWindow },
-                    ]).map(({ label, val, set }) => (
-                      <div key={label} className="space-y-0.5">
-                        <label className="text-[8px] font-black text-black/30 uppercase tracking-[0.15em]">{label}</label>
-                        <input
-                          type="number"
-                          value={val}
-                          onChange={(e) => set(Math.max(8000, parseInt(e.target.value) || 120000))}
-                          step={8000}
-                          min={8000}
-                          className="w-full bg-white border border-black/30 rounded-md px-2 py-1 text-[10px] font-mono outline-none focus:border-black"
-                        />
-                      </div>
-                    ))}
+                  <div className={`grid gap-2 ${parallelMode ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                    {(
+                      parallelMode
+                        ? ([primaryProvider, secondaryProvider] as const)
+                        : ([primaryProvider] as const)
+                    ).map((provider) => {
+                      const config = provider === 'ollama'
+                        ? { label: 'Ollama', val: ollamaContextWindow, set: setOllamaContextWindow }
+                        : provider === 'openrouter'
+                        ? { label: 'OpenRouter', val: openrouterContextWindow, set: setOpenrouterContextWindow }
+                        : { label: 'vLLM', val: vllmContextWindow, set: setVllmContextWindow };
+                      return (
+                        <div key={config.label} className="space-y-0.5">
+                          <label className="text-[8px] font-black text-black/30 uppercase tracking-[0.15em]">{config.label}</label>
+                          <input
+                            type="number"
+                            value={config.val}
+                            onChange={(e) => config.set(Math.max(8000, parseInt(e.target.value) || 120000))}
+                            step={8000}
+                            min={8000}
+                            className="w-full bg-white border border-black/30 rounded-md px-2 py-1 text-[10px] font-mono outline-none focus:border-black"
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
