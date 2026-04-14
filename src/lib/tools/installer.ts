@@ -40,34 +40,19 @@ export async function installPip(pkg: string): Promise<string> {
     .join(' ');
   if (!normalizedPackages) return 'Package name required.';
 
-  // Ensure the venv exists — create it if missing
-  if (!fs.existsSync(VENV_DIR)) {
-    const createResult = await run(`python -m venv "${VENV_DIR}"`, CWD, 60_000);
-    if (createResult.startsWith('Error')) {
-      const createResult3 = await run(`python3 -m venv "${VENV_DIR}"`, CWD, 60_000);
-      if (createResult3.startsWith('Error')) {
-        return `Failed to create venv: ${createResult3}`;
-      }
-    }
+  if (!fs.existsSync(VENV_PIP)) {
+    return 'Python venv missing. Run npm install to create .agent_venv before using install_pip.';
   }
 
-  // Use venv pip when available, fall back to system pip
-  const pipCmd = fs.existsSync(VENV_PIP)
-    ? `"${VENV_PIP}" install --upgrade ${normalizedPackages}`
-    : `pip install ${normalizedPackages}`;
-
-  const result = await run(pipCmd, CWD, 180_000);
-  if (result.startsWith('Error') && !fs.existsSync(VENV_PIP)) {
-    return await run(`pip3 install ${normalizedPackages}`, CWD, 180_000);
-  }
-  return result;
+  const pipCmd = `"${VENV_PIP}" install --upgrade ${normalizedPackages}`;
+  return run(pipCmd, CWD, 180_000);
 }
 
 /** Pre-install torch into the venv (CPU build, no GPU required).
  *  Called at startup to ensure torch is always available for bots. */
 export async function ensureTorch(): Promise<string> {
   if (!fs.existsSync(VENV_PYTHON)) {
-    return 'venv not found — call install_pip first.';
+    return 'venv not found. Run npm install to create .agent_venv first.';
   }
 
   // Quick check: is torch already importable?
@@ -90,7 +75,7 @@ export async function ensureTorch(): Promise<string> {
 
 /** Verify torch is importable and return version string. */
 export async function checkTorch(): Promise<string> {
-  if (!fs.existsSync(VENV_PYTHON)) return 'venv not found.';
+  if (!fs.existsSync(VENV_PYTHON)) return 'venv not found. Run npm install to create .agent_venv first.';
   return run(`"${VENV_PYTHON}" -c "import torch; print(torch.__version__)"`, CWD, 10_000);
 }
 

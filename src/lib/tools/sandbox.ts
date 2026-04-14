@@ -120,8 +120,8 @@ export async function runPython(code: string, timeoutMs = 120_000): Promise<stri
     : path.join(venvPath, 'bin', 'python');
 
   try {
-    if (!fs.existsSync(venvPath)) {
-      await execAsync(`python -m venv "${venvPath}"`, { timeout: 60000 });
+    if (!fs.existsSync(pythonCmd)) {
+      return 'Python Error:\nSTDOUT:\n\nSTDERR:\nPython is only allowed through the project venv. Missing .agent_venv interpreter. Run npm install to create it, then retry.';
     }
 
     fs.writeFileSync(tempFile, code, 'utf8');

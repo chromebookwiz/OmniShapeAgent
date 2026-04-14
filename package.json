@@ -1,6 +1,6 @@
 {
   "name": "omnishapeagent",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Local AI agent with chat, tool use, persistent memory, and vision",
   "keywords": [
     "ai",
@@ -54,7 +54,7 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0",
     "lint": "eslint",
-    "postinstall": "node scripts/install-warning.js",
+    "postinstall": "node scripts/install-warning.js && node scripts/bootstrap-agent-venv.js",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "dependencies": {

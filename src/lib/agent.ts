@@ -5614,7 +5614,7 @@ print(json.dumps({
                 platform:   process.platform,
                 cwd:        process.cwd(),
                 node:       process.version,
-                venv:       diagExists(AGENT_VENV_DIR) ? 'found' : '⚠ missing — call install_pip("requests") to create',
+                venv:       diagExists(AGENT_VENV_DIR) ? 'found' : '⚠ missing — run npm install to create .agent_venv',
                 python_bin: diagExists(pyBin) ? 'found' : '⚠ missing',
               };
 
