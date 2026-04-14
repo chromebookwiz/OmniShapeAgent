@@ -54,7 +54,7 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0",
     "lint": "eslint",
-    "postinstall": "node scripts/install-warning.js && node scripts/bootstrap-agent-venv.js",
+    "postinstall": "node scripts/install-warning.js && node scripts/bootstrap-agent-venv.mjs",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "dependencies": {

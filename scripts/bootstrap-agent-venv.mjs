@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const { spawnSync } = require('child_process');
+import fs from 'fs';
+import path from 'path';
+import { spawnSync } from 'child_process';
 
 const root = process.cwd();
 const venvDir = path.join(root, '.agent_venv');
