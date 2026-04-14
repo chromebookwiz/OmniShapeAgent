@@ -8,7 +8,7 @@ export async function POST(req: Request) {
     const {
       message, history, model, systemPrompt, temperature, synergyMode, companionModel,
       openrouterApiKey, vllmApiKey, disabledToolGroups, imagePipeline, imageModel, autoApproveTerminal,
-      metacognition, compressionCheckpoint, autonomousMode,
+      metacognition, compressionCheckpoint, autonomousMode, embedMode,
       contextWindow, attachedImages, attachedMediaUrls,
       // Per-request URL overrides — forwarded from CLI config or web app settings
       ollamaUrl, vllmUrl,
@@ -32,6 +32,7 @@ export async function POST(req: Request) {
       autoApproveTerminal: autoApproveTerminal ?? false,
       metacognition: metacognition === true,
       autonomousMode: autonomousMode === true,
+      embedMode: embedMode === true,
       compressionCheckpoint: typeof compressionCheckpoint === 'string' && compressionCheckpoint.trim() ? compressionCheckpoint : undefined,
       contextWindow: contextWindow ? Number(contextWindow) : undefined,
       attachedImages: Array.isArray(attachedImages) ? attachedImages : undefined,

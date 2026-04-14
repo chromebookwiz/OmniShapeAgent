@@ -1,4 +1,6 @@
 import path from 'path';
+import http from 'http';
+import https from 'https';
 import { searchInternet, fetchUrl, extractLinks, httpPost, runPython, listFiles, grepSearch } from './tools/sandbox';
 import { sendTelegramMessage, getTelegramUpdates } from './tools/telegram';
 import { readSkill, listSkills, readFile, writeFile, patchFile, appendFile, deleteFile, moveFile, copyFile, createDir, listDir, fileExists, zipFiles, unzipFile, readFileRange, findFiles, searchInFiles, extractSection, insertAtLine, deleteLines } from './tools/filesystem';
@@ -119,6 +121,8 @@ export interface AgentOptions {
   metacognition?: boolean;
   /** Explicit autonomy switch from the client. Normal chat should leave this false. */
   autonomousMode?: boolean;
+  /** Enable semantic memory embedding/retrieval for this turn. Off by default in normal chat. */
+  embedMode?: boolean;
   /** Persisted compressed conversation checkpoint from prior turns. */
   compressionCheckpoint?: string;
   /** Self-improve mode: agent has full access to self-analysis/patch tools. */
@@ -152,7 +156,6 @@ Working style:
 - Fix the concrete problem before changing architecture.
 - Summarize only the information that matters when using tools.
 - Stay aligned to the current user request rather than inventing new goals.
-- Unless the prompt explicitly says autonomous mode is active, treat the interaction as a single user-directed turn.
 - Do not ask yourself what to do next, narrate hidden planning, or schedule your own follow-up turns in normal chat.
 
 Available capabilities include local model routing, persistent memory, file editing, terminal execution, browser and screen interaction, and repository-aware coding assistance.
@@ -1892,6 +1895,93 @@ function stripThinkingBlocks(text: string): string {
     .trim();
 }
 
+type CompatResponse = {
+  ok: boolean;
+  status: number;
+  headers: Headers;
+  body?: ReadableStream<Uint8Array> | null;
+  text: () => Promise<string>;
+  json: () => Promise<any>;
+};
+
+async function requestWithNodeFallback(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 15000,
+): Promise<CompatResponse> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const resp = await fetch(url, { ...init, signal: controller.signal, cache: 'no-store', redirect: 'follow' });
+    clearTimeout(timer);
+    return resp;
+  } catch {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const parsed = new URL(url);
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const headers = new Headers();
+      const req = mod.request({
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: init.method || 'GET',
+        headers: init.headers as Record<string, string> | undefined,
+        rejectUnauthorized: false,
+      }, (res) => {
+        const rawHeaders = res.headers as Record<string, string | string[] | undefined>;
+        for (const [key, value] of Object.entries(rawHeaders)) {
+          if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+        }
+
+        const chunks: Buffer[] = [];
+        let resolveBodyText: ((value: string) => void) | null = null;
+        let rejectBodyText: ((reason?: unknown) => void) | null = null;
+        const bodyTextPromise = new Promise<string>((resolveText, rejectText) => {
+          resolveBodyText = resolveText;
+          rejectBodyText = rejectText;
+        });
+
+        const bodyStream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            res.on('data', (chunk: Buffer) => {
+              chunks.push(chunk);
+              controller.enqueue(new Uint8Array(chunk));
+            });
+            res.on('end', () => {
+              resolveBodyText?.(Buffer.concat(chunks).toString('utf-8'));
+              controller.close();
+            });
+            res.on('error', (error) => {
+              rejectBodyText?.(error);
+              controller.error(error);
+            });
+          },
+        });
+
+        settled = true;
+        resolve({
+          ok: (res.statusCode ?? 500) >= 200 && (res.statusCode ?? 500) < 300,
+          status: res.statusCode ?? 500,
+          headers,
+          body: bodyStream,
+          text: () => bodyTextPromise,
+          json: async () => JSON.parse(await bodyTextPromise),
+        });
+      });
+
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`timeout after ${timeoutMs}ms`)));
+      req.on('error', (error) => {
+        if (!settled) reject(error);
+      });
+      if (typeof init.body === 'string' || init.body instanceof Buffer) {
+        req.write(init.body);
+      }
+      req.end();
+    });
+  }
+}
+
 function looksTruncatedForContinuation(text: string): boolean {
   const cleaned = stripThinkingBlocks(text).trim();
   if (!cleaned) return false;
@@ -2219,13 +2309,12 @@ async function* callVllm(
     console.log(`[Agent] vLLM → POST ${url} stream:${streamMode} format:${isLegacy ? 'completions' : 'chat'}`);
 
     try {
-      const resp = await fetch(url, {
+      const resp = await requestWithNodeFallback(url, {
         method: 'POST',
         headers: reqHeaders,
         body: JSON.stringify(body),
-        cache: 'no-store',
         redirect: 'follow',
-      });
+      }, 20000);
 
       if (resp.ok) {
         if (streamMode) {
@@ -2975,9 +3064,11 @@ export async function* runAgentLoop(
   // Record this exchange for user profile
   userProfile.recordExchange(userMessage, '');
 
-  // 1. Embed the query
-  const queryEmbedding = await generateEmbedding(userMessage);
-  const memoryCandidates = vectorStore.getInjectionCandidates(queryEmbedding, userMessage, autonomousMode ? 10 : 6);
+  // 1. Semantic recall is optional; keep it off unless embed mode is explicitly enabled.
+  const queryEmbedding = options.embedMode ? await generateEmbedding(userMessage) : null;
+  const memoryCandidates = queryEmbedding
+    ? vectorStore.getInjectionCandidates(queryEmbedding, userMessage, autonomousMode ? 10 : 6)
+    : [];
   const memorySelections = memoryPolicy.select(userMessage, memoryCandidates, autonomousMode ? 3 : 2);
   const injectedMemoryDecisions = autonomousMode ? memorySelections : tightenMemoryForNormalChat(memorySelections);
   const recentUserContext = messages
@@ -5924,7 +6015,7 @@ except Exception as e:
   }
 
   // Final Memory — store exchange + update user profile
-  if (userMessage && responseText) {
+  if (options.embedMode && userMessage && responseText) {
     try {
       // Store the conversation turn
       const turnContent = formatDialogueMemory(userMessage, responseText.substring(0, 600));

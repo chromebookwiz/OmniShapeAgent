@@ -28,7 +28,7 @@ function providerFromModel(value: string | null): ProviderKind | null {
   return null;
 }
 
-const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision engineering assistant. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks. Normal chat is single-turn and user-directed: unless autonomy is explicitly enabled, do not act as if you are in autonomous mode, do not ask yourself what to do next, and do not schedule follow-up turns on your own.`;
+const DEFAULT_SYSTEM_PROMPT = `You are OmniShapeAgent, a high-precision engineering assistant. Your purpose is to assist the user by orchestrating tools, memory, and multi-model synergy to solve complex engineering and research tasks.`;
 
 
 const Icons = {
@@ -208,12 +208,32 @@ type CommandDefinition = {
 
 const HEARTBEAT_PROMPT = '[HEARTBEAT] Review the active task, recent progress, and current memory state. Continue unfinished work if there is a clear next step, otherwise report only meaningful deltas or that the system is steady.';
 
+const EXACT_SQUARE_BUTTON_STYLE = {
+  width: '40px',
+  height: '40px',
+  minWidth: '40px',
+  minHeight: '40px',
+  maxWidth: '40px',
+  maxHeight: '40px',
+  padding: '0px',
+} as const;
+
+const EXACT_BUTTON_ICON_STYLE = {
+  width: '16px',
+  height: '16px',
+  minWidth: '16px',
+  minHeight: '16px',
+  maxWidth: '16px',
+  maxHeight: '16px',
+} as const;
+
 const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { command: 'commands', usage: '/commands', description: 'Show the available local commands.', icon: 'More', section: 'system', aliases: ['help'] },
   { command: 'settings', usage: '/settings', description: 'Open model and tool settings.', icon: 'Gear', section: 'system' },
   { command: 'control', usage: '/control', description: 'Open or close the control panel.', icon: 'More', section: 'system', aliases: ['menu', 'panel'] },
   { command: 'parallel', usage: '/parallel on', description: 'Keep parallel discourse mode active.', icon: 'Synergy', section: 'modes', persistent: true, autocomplete: '/parallel on' },
   { command: 'autonomous', usage: '/autonomous on', description: 'Let the agent keep working until it stops itself.', icon: 'Autonomous', section: 'modes', persistent: true, autocomplete: '/autonomous on' },
+  { command: 'embed', usage: '/embed on', description: 'Enable semantic embedding for memory retrieval and storage.', icon: 'Memory', section: 'modes', persistent: true, autocomplete: '/embed on' },
   { command: 'heartbeat', usage: '/heartbeat 15', description: 'Enable scheduled heartbeat turns at a minute interval.', icon: 'Heartbeat', section: 'modes', persistent: true, autocomplete: '/heartbeat 15' },
   { command: 'surveyor', usage: '/surveyor on', description: 'Architect and supervise app creation through the local LocalClawd CLI.', icon: 'Architect', section: 'modes', persistent: true, autocomplete: '/surveyor on' },
   { command: 'localclawd', usage: '/localclawd my-app build a note app', description: 'Create a workspace directory and supervise LocalClawd as it builds and tests an app.', icon: 'Architect', section: 'more', autocomplete: '/localclawd my-app build a note app' },
@@ -254,29 +274,31 @@ function ActionMenuButton({
   onClick: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      title={description}
-      className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors ${
-        active
-          ? 'border-black bg-black text-[#FDFCF0]'
-          : 'border-black/10 bg-white text-black hover:border-black/30 hover:bg-black/5'
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <span className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border ${active ? 'border-white/20 bg-white/10 text-[#FDFCF0]' : 'border-black/10 bg-black/[0.03] text-black/65'}`}>
-          {icon}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center justify-between gap-3">
-            <span className="text-[11px] font-black uppercase tracking-[0.18em]">{label}</span>
-            {command && <span className={`text-[9px] font-black uppercase tracking-[0.14em] ${active ? 'text-[#FDFCF0]/65' : 'text-black/30'}`}>{command}</span>}
+    <div className="space-y-2">
+      <button
+        onClick={onClick}
+        title={description}
+        className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors ${
+          active
+            ? 'border-black bg-black text-[#FDFCF0]'
+            : 'border-black/10 bg-white text-black hover:border-black/30 hover:bg-black/5'
+        }`}
+      >
+        <div className="flex items-start gap-3">
+          <span className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border ${active ? 'border-white/20 bg-white/10 text-[#FDFCF0]' : 'border-black/10 bg-black/[0.03] text-black/65'}`}>
+            {icon}
           </span>
-          <span className={`mt-1 block text-[11px] leading-relaxed ${active ? 'text-[#FDFCF0]/70' : 'text-black/45'}`}>{description}</span>
-          {children}
-        </span>
-      </div>
-    </button>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center justify-between gap-3">
+              <span className="text-[11px] font-black uppercase tracking-[0.18em]">{label}</span>
+              {command && <span className={`text-[9px] font-black uppercase tracking-[0.14em] ${active ? 'text-[#FDFCF0]/65' : 'text-black/30'}`}>{command}</span>}
+            </span>
+            <span className={`mt-1 block text-[11px] leading-relaxed ${active ? 'text-[#FDFCF0]/70' : 'text-black/45'}`}>{description}</span>
+          </span>
+        </div>
+      </button>
+      {children}
+    </div>
   );
 }
 
@@ -284,12 +306,11 @@ function ActionMenuButton({
 
 interface ProviderModelPickerProps {
   provider: 'ollama' | 'vllm' | 'openrouter';
-  label: string;
+  label?: string;
   ollamaUrl: string; setOllamaUrl: (v: string) => void;
   ollamaModel: string; setOllamaModel: (v: string) => void;
   ollamaModels: string[]; ollamaStatus: string;
   vllmUrl: string; setVllmUrl: (v: string) => void;
-  vllmApiKey: string; setVllmApiKey: (v: string) => void;
   vllmModel: string; setVllmModel: (v: string) => void;
   vllmModels: Array<{ model: string; hostPort: string; chatUrl?: string }>; vllmStatus: string;
   vllmProbeResult: string | null; runVllmProbe: () => void;
@@ -302,12 +323,12 @@ interface ProviderModelPickerProps {
 function ProviderModelPicker({
   provider, label,
   ollamaUrl, setOllamaUrl, ollamaModel, setOllamaModel, ollamaModels, ollamaStatus,
-  vllmUrl, setVllmUrl, vllmApiKey, setVllmApiKey, vllmModel, setVllmModel, vllmModels, vllmStatus, vllmProbeResult, runVllmProbe,
+  vllmUrl, setVllmUrl, vllmModel, setVllmModel, vllmModels, vllmStatus, vllmProbeResult, runVllmProbe,
   openrouterApiKey, setOpenrouterApiKey, openrouterModel, setOpenrouterModel, openrouterModels, openrouterStatus, openrouterError,
 }: ProviderModelPickerProps) {
   return (
-    <div className="space-y-3">
-      <p className="text-[9px] font-black uppercase tracking-widest text-black/40">{label}</p>
+    <div className="min-w-0 space-y-3">
+      {label && <p className="text-[9px] font-black uppercase tracking-widest text-black/40">{label}</p>}
 
       {provider === 'ollama' && (
         <>
@@ -342,24 +363,14 @@ function ProviderModelPicker({
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
               Cluster Endpoint {vllmStatus === 'ok' ? ` - ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? ' - none' : ''}
             </label>
-            <div className="flex gap-1">
+            <div className="flex min-w-0 gap-1">
               <input value={vllmUrl} onChange={(e) => setVllmUrl(e.target.value)}
-                className="flex-1 bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none focus:border-black" />
-              <button onClick={runVllmProbe} className="px-2 py-1 border border-black/30 rounded-lg text-[9px] font-black hover:bg-black hover:text-white hover:border-black transition-colors">PROBE</button>
+                className="min-w-0 flex-1 bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-black outline-none focus:border-black" />
+              <button onClick={runVllmProbe} className="shrink-0 px-2 py-1 border border-black/30 rounded-lg text-[9px] font-black hover:bg-black hover:text-white hover:border-black transition-colors">PROBE</button>
             </div>
             {vllmProbeResult && (
-              <pre className="text-[8px] font-mono bg-black/5 rounded p-2 max-h-20 overflow-y-auto whitespace-pre-wrap text-black/50">{vllmProbeResult}</pre>
+              <pre className="max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-all text-[8px] font-mono bg-black/5 rounded p-2 max-h-20 text-black/50">{vllmProbeResult}</pre>
             )}
-          </div>
-          <div className="space-y-1">
-            <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">API Key</label>
-            <input
-              type="password"
-              value={vllmApiKey}
-              onChange={(e) => setVllmApiKey(e.target.value)}
-              placeholder="Optional bearer token"
-              className="w-full bg-white border border-black/30 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-black"
-            />
           </div>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">Model</label>
@@ -484,10 +495,14 @@ export default function Chat() {
   const [parallelMode, setParallelMode] = useState(() => {
     try { return localStorage.getItem('sa_parallel_mode') === 'true'; } catch { return false; }
   });
+  const [embedMode, setEmbedMode] = useState(() => {
+    try { return localStorage.getItem('sa_embed_mode') === 'true'; } catch { return false; }
+  });
   const [isParallelRunning, setIsParallelRunning] = useState(false);
   const [showSavedPanel, setShowSavedPanel] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   const [showActionMenu, setShowActionMenu] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [connStatus, setConnStatus] = useState<'testing' | 'ok' | 'fail'>('testing');
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -512,8 +527,9 @@ export default function Chat() {
   const [toolCallCount, setToolCallCount] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
   const voiceRef = useRef<VoiceButtonHandle>(null);
-  const actionMenuRef = useRef<HTMLDivElement>(null);
   const actionMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+  const attachMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const [voiceControlState, setVoiceControlState] = useState({ listening: false, speaking: false, voiceOutputEnabled: false });
   // File attachments
   type Attachment = { name: string; type: string; isImage?: boolean; dataUrl?: string; text?: string; truncated?: boolean };
@@ -585,10 +601,11 @@ export default function Chat() {
   useEffect(() => {
     const el = composerRef.current;
     if (!el) return;
-    const maxHeight = 224;
+    const baseHeight = 32;
+    const maxHeight = 100;
     el.style.height = '0px';
     const nextHeight = Math.min(el.scrollHeight, maxHeight);
-    el.style.height = `${Math.max(64, nextHeight)}px`;
+    el.style.height = `${Math.max(baseHeight, nextHeight)}px`;
     el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }, [input]);
 
@@ -753,6 +770,10 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem('sa_parallel_mode', String(parallelMode)); } catch {}
   }, [parallelMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem('sa_embed_mode', String(embedMode)); } catch {}
+  }, [embedMode]);
 
   useEffect(() => {
     try { localStorage.setItem('sa_ollama_url', ollamaUrl); } catch {}
@@ -1014,6 +1035,7 @@ export default function Chat() {
           '/control - open the control panel\n' +
           '/parallel [on|off] - toggle parallel mode\n' +
           '/autonomous [on|off] - toggle autonomous mode\n' +
+          '/embed [on|off] - toggle semantic embedding for memory\n' +
           '/heartbeat [minutes|on|off] - schedule periodic heartbeat turns\n' +
           '/surveyor [on|off] - supervise app creation through LocalClawd\n' +
           '/localclawd <dir> <spec> - create a directory and supervise LocalClawd building the app\n' +
@@ -1060,6 +1082,14 @@ export default function Chat() {
         const next = boolArg ?? !autonomousMode;
         setAutonomousMode(next);
         appendSystemMessage(`Autonomous mode ${next ? 'enabled' : 'disabled'}.`);
+        break;
+      }
+      case 'embed': {
+        const next = boolArg ?? !embedMode;
+        setEmbedMode(next);
+        appendSystemMessage(next
+          ? 'Embed mode enabled. Semantic memory retrieval and storage will run on future turns.'
+          : 'Embed mode disabled. Automatic semantic memory embedding is paused.');
         break;
       }
       case 'heartbeat': {
@@ -1183,7 +1213,7 @@ export default function Chat() {
 
     setShowActionMenu(false);
     return true;
-  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, heartbeatIntervalMinutes, launchLocalClawdBuild, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, surveyorMode, windowManager]);
+  }, [appendSystemMessage, applyHeartbeatSetting, autonomousMode, embedMode, heartbeatIntervalMinutes, launchLocalClawdBuild, parallelMode, queueAgentPrompt, resetUtilityPanels, startNewSession, surveyorMode, windowManager]);
 
   const normalizedComposerInput = input.trimStart();
   const composerCommandToken = normalizedComposerInput.startsWith('/')
@@ -1350,7 +1380,6 @@ export default function Chat() {
           systemPrompt: (() => {
             let sp = systemPrompt;
             if (autonomousMode) sp += '\n\n[AUTONOMOUS MODE ACTIVE] You are running in a fully autonomous continuous loop. You will keep running turn after turn until you call stop_agent(reason). Use vision_self_check() to take screenshots and see your work. Use check_window_result(id) to verify UI windows loaded correctly. Be decisive and self-sufficient. Call stop_agent("done") when the task is complete or stop_agent("need_input: question") when you need human input.';
-            else sp += '\n\n[NORMAL CHAT MODE] This is a single-turn response. Do not behave as if autonomous mode is active. Do not narrate hidden planning, ask yourself follow-up questions, or trigger your own continuation unless the user explicitly asks for unattended execution.';
             if (physicsModeActive) sp += '\n\n[PHYSICS WINDOW OPEN] If the task depends on the Physics Studio builder, bot library, duel controls, hill terrain options, or Torch Lab deploy panel, first call read_skill("physics-studio"). Use that skill only while the physics window is open.';
             if (surveyorMode) sp += '\n\n[CODING SURVEYOR MODE ACTIVE] You are the architect and reviewer supervising application creation through the LocalClawd CLI. Before using it, verify the CLI is available with a terminal command. If LocalClawd is missing, install it with npm install -g localclawd. Then use LocalClawd to generate or iterate on the application while you oversee architecture, validate outputs, inspect files, correct mistakes, and decide the next step. Do not hand-wave the process: explicitly supervise creation, check generated artifacts, and keep control of requirements and quality.';
             return sp;
@@ -1359,6 +1388,7 @@ export default function Chat() {
           synergyMode: mode,
           openrouterApiKey: openrouterApiKey || undefined,
           vllmApiKey: vllmApiKey || undefined,
+          embedMode,
           disabledToolGroups: (() => {
             const allGroups = ['web', 'terminal', 'files', 'git', 'vision', 'computer', 'memory', 'comms', 'bots', 'scheduler', 'image', 'self'];
             return allGroups.filter(g => !enabledToolGroups.has(g));
@@ -1575,18 +1605,18 @@ export default function Chat() {
   }, [autonomousMode]);
 
   useEffect(() => {
-    if (!showActionMenu) return;
+    if (!showAttachMenu) return;
     const handler = (event: MouseEvent) => {
       const target = event.target as Node;
-      const insidePanel = actionMenuRef.current?.contains(target) ?? false;
-      const insideTrigger = actionMenuTriggerRef.current?.contains(target) ?? false;
+      const insidePanel = attachMenuRef.current?.contains(target) ?? false;
+      const insideTrigger = attachMenuTriggerRef.current?.contains(target) ?? false;
       if (!insidePanel && !insideTrigger) {
-        setShowActionMenu(false);
+        setShowAttachMenu(false);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showActionMenu]);
+  }, [showAttachMenu]);
 
   const handleAttach = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -1835,16 +1865,22 @@ export default function Chat() {
                 ref={actionMenuTriggerRef}
                 onClick={() => { setShowActionMenu(prev => !prev); setShowSettingsPanel(false); }}
                 title="Open control panel"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 transition-all ${showActionMenu ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
+                style={EXACT_SQUARE_BUTTON_STYLE}
+                className={`box-border flex shrink-0 items-center justify-center rounded-lg border border-black/10 active:scale-95 transition-all ${showActionMenu ? 'border-black bg-black text-[#FDFCF0]' : 'bg-white text-black/60 hover:bg-black/5'}`}
               >
-                <Icons.More />
+                <span style={EXACT_BUTTON_ICON_STYLE} className="flex items-center justify-center">
+                  <Icons.More />
+                </span>
               </button>
               <button
                 onClick={() => { setShowSettingsPanel(!showSettingsPanel); setShowActionMenu(false); }}
                 title="Open settings"
-                className={`p-2.5 rounded-lg hover:bg-black/5 active:scale-95 transition-all ${showSettingsPanel ? 'bg-black text-[#FDFCF0]' : 'text-black/60'}`}
+                style={EXACT_SQUARE_BUTTON_STYLE}
+                className={`box-border flex shrink-0 items-center justify-center rounded-lg border border-black/10 active:scale-95 transition-all ${showSettingsPanel ? 'border-black bg-black text-[#FDFCF0]' : 'bg-white text-black/60 hover:bg-black/5'}`}
               >
-                <Icons.Gear />
+                <span style={EXACT_BUTTON_ICON_STYLE} className="flex items-center justify-center">
+                  <Icons.Gear />
+                </span>
               </button>
             </div>
           </div>
@@ -1853,15 +1889,15 @@ export default function Chat() {
         {/* Messaging Zone */}
         <div className="flex-1 relative overflow-hidden flex flex-col">
           {showActionMenu && (
-            <div className="pointer-events-none absolute top-4 right-0 z-20 flex w-full justify-end pr-4 md:top-5 md:pr-6" ref={actionMenuRef}>
-              <div className="pointer-events-auto w-[min(380px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[10px] border border-white/10 bg-[#111] shadow-[0_8px_40px_rgba(0,0,0,0.5)]">
-                <div className="flex h-8 items-center gap-2 border-b border-white/10 bg-[#1a1a1a] px-3">
-                  <span className="h-3 w-3 rounded-full bg-[#ff5f57]" />
-                  <span className="h-3 w-3 rounded-full bg-[#ffbd2e]" />
-                  <span className="h-3 w-3 rounded-full bg-[#28c840]" />
-                  <span className="flex-1 text-center text-[11px] font-semibold tracking-[0.04em] text-white/60">Control Panel</span>
-                </div>
-                <div className="max-h-[70vh] overflow-y-auto bg-[#FDFCF0] p-4 text-black">
+            <FloatingPanel
+              title="Control Panel"
+              onClose={() => setShowActionMenu(false)}
+              defaultW={380}
+              defaultH={620}
+              defaultX={typeof window !== 'undefined' ? Math.max(40, window.innerWidth - 420) : 600}
+              defaultY={60}
+            >
+                <div className="flex-1 overflow-y-auto bg-[#FDFCF0] p-4 text-black">
                   <div className="mb-4 px-1">
                     <div className="text-[10px] font-black uppercase tracking-[0.22em] text-black/40">Control Panel</div>
                     <div className="mt-1 text-[11px] leading-relaxed text-black/45">Modes stay active until you turn them off. Utilities open panels, windows, or immediate actions. Commands mirror every option here.</div>
@@ -1873,30 +1909,32 @@ export default function Chat() {
                       <div className="grid grid-cols-1 gap-2">
                         <ActionMenuButton icon={<Icons.Synergy />} label="Parallel Mode" command="/parallel" description="Run a second model alongside the primary model." active={parallelMode} onClick={toggleParallel} />
                         <ActionMenuButton icon={<Icons.Autonomous active={autonomousMode} running={autonomousMode && isAutoRunningRef.current} />} label="Autonomous Mode" command="/autonomous" description="Keep working until stop_agent is called or you turn it off." active={autonomousMode} onClick={() => { setAutonomousMode(v => !v); }} />
-                        <ActionMenuButton icon={<Icons.Heartbeat />} label="Heartbeat Mode" command={`/heartbeat ${heartbeatIntervalMinutes}`} description={`Schedule an automatic check-in every ${heartbeatIntervalMinutes} minute${heartbeatIntervalMinutes === 1 ? '' : 's'}.`} active={heartbeatMode} onClick={() => { applyHeartbeatSetting(!heartbeatMode, heartbeatIntervalMinutes); }} />
+                        <ActionMenuButton icon={<Icons.Memory />} label="Embed Mode" command="/embed" description="Enable semantic embedding for memory retrieval and storage." active={embedMode} onClick={() => { setEmbedMode(v => !v); }} />
                         <ActionMenuButton icon={<Icons.Architect />} label="Coding Surveyor" command="/surveyor" description="Use LocalClawd as the builder while the architect supervises application design and quality." active={surveyorMode} onClick={() => { setSurveyorMode(v => !v); }} />
                         <ActionMenuButton icon={<Icons.Mic />} label="Voice Input" command="/voice input" description="Start or stop microphone transcription." active={voiceControlState.listening} onClick={() => { voiceRef.current?.toggleListening(); }} />
                         <ActionMenuButton icon={<Icons.Speaker />} label="Voice Output" command="/voice output" description="Enable or disable automatic spoken responses." active={voiceControlState.voiceOutputEnabled} onClick={() => { voiceRef.current?.setVoiceOutputEnabled(!voiceControlState.voiceOutputEnabled); }} />
-                      </div>
-                      <div className="mt-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2.5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-black/40">Heartbeat Interval</div>
-                            <div className="mt-1 text-[11px] text-black/45">Choose how often the agent should auto-check in while the session is idle.</div>
+                        <ActionMenuButton icon={<Icons.Heartbeat />} label="Heartbeat Mode" command={`/heartbeat ${heartbeatIntervalMinutes}`} description={`Schedule an automatic check-in every ${heartbeatIntervalMinutes} minute${heartbeatIntervalMinutes === 1 ? '' : 's'}.`} active={heartbeatMode} onClick={() => { applyHeartbeatSetting(!heartbeatMode, heartbeatIntervalMinutes); }}>
+                          <div className="rounded-2xl border border-black/10 bg-white/80 px-3 py-2.5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-black/40">Heartbeat Interval</div>
+                                <div className="mt-1 text-[11px] text-black/45">Choose how often the agent should auto-check in while the session is idle.</div>
+                              </div>
+                              <div className="text-sm font-black text-black">{heartbeatIntervalMinutes}m</div>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {[5, 15, 30, 60].map((minutes) => (
+                                <button
+                                  key={minutes}
+                                  onClick={() => setHeartbeatIntervalMinutes(minutes)}
+                                  className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] transition-colors ${heartbeatIntervalMinutes === minutes ? 'border-black bg-black text-[#FDFCF0]' : 'border-black/10 bg-[#FDFCF0] text-black/50 hover:border-black/35 hover:text-black'}`}
+                                >
+                                  {minutes}m
+                                </button>
+                              ))}
+                            </div>
                           </div>
-                          <div className="text-sm font-black text-black">{heartbeatIntervalMinutes}m</div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {[5, 15, 30, 60].map((minutes) => (
-                            <button
-                              key={minutes}
-                              onClick={() => setHeartbeatIntervalMinutes(minutes)}
-                              className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] transition-colors ${heartbeatIntervalMinutes === minutes ? 'border-black bg-black text-[#FDFCF0]' : 'border-black/10 bg-[#FDFCF0] text-black/50 hover:border-black/35 hover:text-black'}`}
-                            >
-                              {minutes}m
-                            </button>
-                          ))}
-                        </div>
+                        </ActionMenuButton>
                       </div>
                     </div>
 
@@ -1918,8 +1956,7 @@ export default function Chat() {
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
+            </FloatingPanel>
           )}
           <main className="flex-1 overflow-y-auto px-4 md:px-12 py-8 space-y-6 scrollbar-hide text-[#000000]">
             {messages.map((msg, idx) => {
@@ -2130,19 +2167,19 @@ export default function Chat() {
               defaultX={typeof window !== 'undefined' ? Math.max(40, window.innerWidth - 420) : 600}
               defaultY={60}
             >
-              <div className="flex-1 overflow-y-auto bg-[#FDFCF0] text-black p-5 pb-12 space-y-5">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden bg-[#FDFCF0] text-black p-5 pb-12 space-y-4">
               {parallelMode && !isParallelRunning && (
-                <p className="text-[10px] text-amber-700 font-black">Select two providers below, then send a topic to begin.</p>
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">Select two providers below, then send a topic to begin.</div>
               )}
 
               <div className="space-y-4 text-black">
                 {parallelMode ? (
                   /* Parallel mode: pick 2 providers */
-                  <div className="space-y-6">
+                  <div className="space-y-4 rounded-2xl border border-black/10 bg-white/70 p-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                     {/* Provider pair selectors */}
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4">
                       {/* Primary slot */}
-                      <div className="space-y-2">
+                      <div className="min-w-0 space-y-2">
                         <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Primary (Architect)</label>
                         <select
                           value={primaryProvider}
@@ -2163,7 +2200,7 @@ export default function Chat() {
                         </select>
                       </div>
                       {/* Secondary slot */}
-                      <div className="space-y-2">
+                      <div className="min-w-0 space-y-2">
                         <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Companion (Auditor)</label>
                         <select
                           value={secondaryProvider}
@@ -2189,7 +2226,7 @@ export default function Chat() {
                     </div>
 
                     {/* Model pickers for both selected providers */}
-                    <div className="grid grid-cols-2 gap-6 pt-2 border-t border-black/10">
+                    <div className="grid grid-cols-1 gap-6 border-t border-black/10 pt-4">
                       {/* Primary model picker */}
                       <ProviderModelPicker
                         provider={primaryProvider}
@@ -2198,7 +2235,6 @@ export default function Chat() {
                         ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                         ollamaModels={ollamaModels} ollamaStatus={ollamaStatus}
                         vllmUrl={vllmUrl} setVllmUrl={setVllmUrl}
-                        vllmApiKey={vllmApiKey} setVllmApiKey={setVllmApiKey}
                         vllmModel={vllmModel} setVllmModel={setVllmModel}
                         vllmModels={vllmModels} vllmStatus={vllmStatus}
                         vllmProbeResult={vllmProbeResult} runVllmProbe={runVllmProbe}
@@ -2215,7 +2251,6 @@ export default function Chat() {
                         ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                         ollamaModels={ollamaModels} ollamaStatus={ollamaStatus}
                         vllmUrl={vllmUrl} setVllmUrl={setVllmUrl}
-                        vllmApiKey={vllmApiKey} setVllmApiKey={setVllmApiKey}
                         vllmModel={vllmModel} setVllmModel={setVllmModel}
                         vllmModels={vllmModels} vllmStatus={vllmStatus}
                         vllmProbeResult={vllmProbeResult} runVllmProbe={runVllmProbe}
@@ -2228,7 +2263,7 @@ export default function Chat() {
                   </div>
                 ) : (
                   /* Single mode: provider dropdown + model picker */
-                  <div className="space-y-6">
+                  <div className="space-y-4 rounded-2xl border border-black/10 bg-white/70 p-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Inference Provider</label>
                       <select
@@ -2245,12 +2280,10 @@ export default function Chat() {
                     {/* Render the appropriate config section for the selected provider */}
                     <ProviderModelPicker
                       provider={primaryProvider}
-                      label="Active Model"
                       ollamaUrl={ollamaUrl} setOllamaUrl={setOllamaUrl}
                       ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                       ollamaModels={ollamaModels} ollamaStatus={ollamaStatus}
                       vllmUrl={vllmUrl} setVllmUrl={setVllmUrl}
-                      vllmApiKey={vllmApiKey} setVllmApiKey={setVllmApiKey}
                       vllmModel={vllmModel} setVllmModel={setVllmModel}
                       vllmModels={vllmModels} vllmStatus={vllmStatus}
                       vllmProbeResult={vllmProbeResult} runVllmProbe={runVllmProbe}
@@ -2263,7 +2296,7 @@ export default function Chat() {
                 )}
 
                 {/* Tool group toggles */}
-                <div className="pt-3 border-t border-dashed border-black/10">
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <button
                     onClick={() => setShowToolsPanel(p => !p)}
                     className="flex items-center justify-between w-full group"
@@ -2339,7 +2372,7 @@ export default function Chat() {
                 </div>
 
                 {/* Image pipeline */}
-                <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-4 space-y-1.5 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <label className="text-[9px] font-black uppercase tracking-widest text-black/40">Image Pipeline</label>
                   <select
                     value={imagePipeline}
@@ -2379,7 +2412,7 @@ export default function Chat() {
                   )}
                 </div>
 
-                <div className="pt-3 border-t border-dashed border-black/10 space-y-3">
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-4 space-y-3 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex-1 space-y-1">
                       <div className="flex justify-between items-center">
@@ -2403,6 +2436,19 @@ export default function Chat() {
                       <span className="text-[9px] font-black text-black/40 uppercase tracking-widest whitespace-nowrap">Auto-Save</span>
                     </label>
                   </div>
+
+                  <label className="flex items-center justify-between gap-3 rounded-xl border border-black/10 bg-[#FDFCF0] px-3 py-2.5 cursor-pointer">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-black/40">Embed Mode</p>
+                      <p className="mt-0.5 text-[9px] text-black/35">Off by default. Turn this on only when you want semantic memory embedding and retrieval active.</p>
+                    </div>
+                    <button
+                      onClick={() => setEmbedMode((value) => !value)}
+                      className={`relative h-5 w-9 rounded-full transition-colors flex-shrink-0 ${embedMode ? 'bg-black' : 'bg-black/20'}`}
+                    >
+                      <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${embedMode ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </button>
+                  </label>
 
                   <div className="space-y-1.5">
                     <label className="text-[9px] font-black text-black/40 uppercase tracking-widest">System Prompt</label>
@@ -2443,9 +2489,9 @@ export default function Chat() {
                 )}
 
                 {/* Context Window Settings */}
-                <div className="pt-3 border-t border-dashed border-black/10 space-y-1.5">
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-4 space-y-1.5 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40">Context Window (tokens)</p>
-                  <div className={`grid gap-2 ${parallelMode ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                  <div className="grid grid-cols-1 gap-2">
                     {(
                       parallelMode
                         ? ([primaryProvider, secondaryProvider] as const)
@@ -2457,7 +2503,7 @@ export default function Chat() {
                         ? { label: 'OpenRouter', val: openrouterContextWindow, set: setOpenrouterContextWindow }
                         : { label: 'vLLM', val: vllmContextWindow, set: setVllmContextWindow };
                       return (
-                        <div key={config.label} className="space-y-0.5">
+                        <div key={config.label} className="min-w-0 space-y-0.5">
                           <label className="text-[8px] font-black text-black/30 uppercase tracking-[0.15em]">{config.label}</label>
                           <input
                             type="number"
@@ -2474,7 +2520,7 @@ export default function Chat() {
                 </div>
 
                 {/* Terminal auto-approve */}
-                <div className="pt-3 border-t border-dashed border-black/10">
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <label className="flex items-center justify-between gap-3 cursor-pointer">
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-widest text-black/40">Terminal Auto-Approve</p>
@@ -2490,13 +2536,13 @@ export default function Chat() {
                 </div>
 
                 {/* Remote Access */}
-                <div className="pt-3 border-t border-dashed border-black/10">
+                <div className="rounded-2xl border border-black/10 bg-white/70 p-4 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <p className="text-[9px] font-black uppercase tracking-widest text-black/40 mb-1">Remote Access</p>
-                  <code className="text-[9px] font-mono bg-black/5 px-2 py-1 rounded text-black/50">npx next dev -H 0.0.0.0</code>
+                  <code className="block max-w-full break-all text-[9px] font-mono bg-black/5 px-2 py-1 rounded text-black/50">npx next dev -H 0.0.0.0</code>
                 </div>
 
                 {/* Danger zone */}
-                <div className="pt-3 border-t border-dashed border-red-200 space-y-2">
+                <div className="rounded-2xl border border-red-200 bg-red-50/70 p-4 space-y-2 shadow-[0_1px_0_rgba(0,0,0,0.03)]">
                   <p className="text-[9px] font-black uppercase tracking-widest text-red-400">Danger Zone</p>
                   <button
                     onClick={handleFactoryReset}
@@ -2737,6 +2783,28 @@ export default function Chat() {
               </div>
             )}
 
+            {physicsModeActive && (
+              <div className="rounded-xl border border-black/15 bg-[#F7F1CF] px-3 py-2.5">
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[9px] font-black uppercase tracking-[0.18em] text-black/45">Physics Prompt</div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-black/65">
+                      Example prompt to design, spawn, and automate a bot in the open simulator.
+                    </p>
+                    <p className="mt-1 break-words text-[11px] font-black leading-relaxed text-black">
+                      Design a new physics combat bot for the current Physics Studio arena, build the blueprint, spawn it into the sim, wire up a controller, and automate a short evaluation loop. Iterate until it can move under control, then summarize what you built and which controls or tests you used.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setInput('Design a new physics combat bot for the current Physics Studio arena, build the blueprint, spawn it into the sim, wire up a controller, and automate a short evaluation loop. Iterate until it can move under control, then summarize what you built and which controls or tests you used.')}
+                    className="shrink-0 rounded-full border border-black/20 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-black transition-colors hover:border-black hover:bg-black hover:text-[#FDFCF0]"
+                  >
+                    Use Prompt
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="relative">
               {showCommandSuggestions && (
                 <div className="mb-2 px-1">
@@ -2756,7 +2824,35 @@ export default function Chat() {
                 </div>
               )}
 
-              <div className="flex items-end overflow-hidden border-2 border-black bg-white shadow-[8px_8px_0px_#000000]">
+              {showAttachMenu && (
+                <div ref={attachMenuRef} className="absolute left-0 top-0 z-20 -translate-y-[calc(100%+0.5rem)] rounded-xl border border-black bg-[#FDFCF0] p-1.5 shadow-[6px_6px_0px_#000000]">
+                  <div className="flex min-w-[152px] flex-col gap-1">
+                    <button
+                      onClick={() => {
+                        setShowAttachMenu(false);
+                        fileInputRef.current?.click();
+                      }}
+                      disabled={attachUploading}
+                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-left text-[10px] font-black uppercase tracking-[0.16em] text-black transition-colors hover:bg-black hover:text-[#FDFCF0] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Icons.Paperclip />
+                      File
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowAttachMenu(false);
+                        setShowMediaUrlInput(true);
+                      }}
+                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-left text-[10px] font-black uppercase tracking-[0.16em] text-black transition-colors hover:bg-black hover:text-[#FDFCF0]"
+                    >
+                      <Icons.Link />
+                      Link
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-start overflow-hidden border-2 border-black bg-white shadow-[8px_8px_0px_#000000]">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -2766,19 +2862,16 @@ export default function Chat() {
                   onChange={(e) => handleAttach(e.target.files)}
                 />
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Attach files or images"
+                  ref={attachMenuTriggerRef}
+                  onClick={() => setShowAttachMenu((prev) => !prev)}
+                  title="Insert file or link"
                   disabled={attachUploading}
-                  className="flex h-full items-center self-stretch border-r border-black/10 px-3 text-black/30 transition-colors hover:bg-black/5 hover:text-black"
+                  style={EXACT_SQUARE_BUTTON_STYLE}
+                  className={`m-1 mt-1 box-border flex shrink-0 items-center justify-center self-start rounded-lg border border-black/10 transition-colors ${showAttachMenu ? 'border-black bg-black text-[#FDFCF0]' : 'bg-white text-black/30 hover:bg-black/5 hover:text-black'} disabled:cursor-not-allowed disabled:opacity-40`}
                 >
-                  <Icons.Paperclip />
-                </button>
-                <button
-                  onClick={() => setShowMediaUrlInput(v => !v)}
-                  title="Attach image/video URL"
-                  className={`flex h-full items-center self-stretch border-r border-black/10 px-3 transition-colors ${showMediaUrlInput ? 'bg-black/5 text-black' : 'text-black/30 hover:bg-black/5 hover:text-black'}`}
-                >
-                  <Icons.Link />
+                  <span style={EXACT_BUTTON_ICON_STYLE} className="flex items-center justify-center">
+                    <Icons.Paperclip />
+                  </span>
                 </button>
                 <textarea
                   ref={composerRef}
@@ -2801,7 +2894,7 @@ export default function Chat() {
                   data-lpignore="true"
                   data-1p-ignore="true"
                   data-bwignore="true"
-                  className="max-h-56 min-h-[64px] flex-1 resize-none border-none bg-transparent px-5 py-5 text-[16px] font-black leading-relaxed text-black outline-none placeholder:text-black/20 md:px-8 md:py-6 md:text-sm"
+                  className="max-h-[100px] min-h-[32px] flex-1 resize-none border-none bg-transparent px-5 py-[3px] text-[14px] font-black leading-[1.2] text-black outline-none placeholder:text-black/20 md:px-8 md:py-[3px] md:text-sm"
                   autoCapitalize="none"
                   spellCheck={false}
                   enterKeyHint="send"
@@ -2829,13 +2922,16 @@ export default function Chat() {
                 <button
                   onClick={() => handleSend()}
                   disabled={(!input.trim() && attachments.length === 0) || isLoading || connStatus !== 'ok'}
-                  className={`flex h-full items-center justify-center self-stretch border-l-2 border-black px-12 transition-all active:scale-95 ${
+                  style={EXACT_SQUARE_BUTTON_STYLE}
+                  className={`m-1 mt-1 box-border flex shrink-0 items-center justify-center self-start rounded-lg border border-black/10 transition-all active:scale-95 ${
                     (input.trim() || attachments.length > 0) && !isLoading && connStatus === 'ok'
-                      ? 'bg-black text-[#FDFCF0]'
-                      : 'bg-black/5 text-black/20'
+                      ? 'border-black bg-black text-[#FDFCF0]'
+                      : 'bg-white text-black/20 hover:bg-black/5'
                   }`}
                 >
-                  <Icons.Send />
+                  <span style={EXACT_BUTTON_ICON_STYLE} className="flex items-center justify-center">
+                    <Icons.Send />
+                  </span>
                 </button>
               </div>
             </div>

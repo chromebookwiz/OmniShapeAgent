@@ -1797,6 +1797,7 @@ export default function PhysicsSimulator({
         }
         return new THREE.Vector3(safeInverse(ix), safeInverse(iy), safeInverse(iz));
       };
+      void computeInvInertia;
 
       const supportExtentAlong = (body: { shape: NonNullable<PhysicsCmd['shape']>; size: [number, number, number]; radius: number; quaternion?: import('three').Quaternion; mesh?: import('three').Mesh }, normal: import('three').Vector3) => {
         const dir = normal.clone().normalize();
@@ -1845,6 +1846,7 @@ export default function PhysicsSimulator({
         pool.sort((left, right) => right.mass - left.mass);
         return pool[0]?.id ?? null;
       };
+      void selectRootObjectId;
 
       const controlledHingeIdsForRoot = (rootId: string, hinges: Map<string, HingeConstraint>) => {
         const related = Array.from(hinges.values()).filter((hinge) => hinge.a === rootId || hinge.b === rootId || hinge.id.includes(rootId.split('_').slice(0, -1).join('_')));
@@ -1852,6 +1854,7 @@ export default function PhysicsSimulator({
           .map((hinge) => hinge.id)
           .sort();
       };
+      void controlledHingeIdsForRoot;
 
       const nearestOpponentForRoot = (bodies: Map<string, SimBody>, rootId: string) => {
         const root = bodies.get(rootId);
@@ -2083,6 +2086,7 @@ export default function PhysicsSimulator({
         }
         return { reward: totalReward, observations: controlled.length };
       };
+      void evaluateNetworkOnCreature;
 
       const animate = (now: number) => {
         if (destroyed) return;

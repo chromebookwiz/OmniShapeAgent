@@ -316,7 +316,6 @@ function BotWindow({ bot, onClose, onUpdate, onDeploy }: BotWindowProps) {
 
 export default function BotBrowserManager() {
   const [bots, setBots] = useState<BotWindowState[]>([]);
-  const counterRef = useRef(1);
 
   // Poll registry for live metric updates
   useEffect(() => {

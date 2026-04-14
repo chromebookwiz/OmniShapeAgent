@@ -1,12 +1,43 @@
 // src/app/api/vllm-probe/route.ts
 // Diagnostic: exhaustively probe a vLLM-compatible server for working endpoints.
 import { NextResponse } from 'next/server';
+import http from 'http';
+import https from 'https';
 
 const fetchT = async (url: string, options: RequestInit = {}, timeoutMs = 4000) => {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: ctrl.signal, cache: 'no-store', redirect: 'follow' });
+  } catch {
+    return await new Promise<Response>((resolve, reject) => {
+      const parsed = new URL(url);
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const req = mod.request({
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: options.method || 'GET',
+        headers: options.headers as Record<string, string> | undefined,
+        rejectUnauthorized: false,
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks);
+          const headers = new Headers();
+          for (const [key, value] of Object.entries(res.headers as Record<string, string | string[] | undefined>)) {
+            if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+          }
+          resolve(new Response(body, { status: res.statusCode ?? 500, headers }));
+        });
+        res.on('error', reject);
+      });
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`timeout after ${timeoutMs}ms`)));
+      req.on('error', reject);
+      if (typeof options.body === 'string' || options.body instanceof Buffer) req.write(options.body);
+      req.end();
+    });
   } finally {
     clearTimeout(id);
   }

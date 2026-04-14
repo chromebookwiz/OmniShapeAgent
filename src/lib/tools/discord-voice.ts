@@ -175,7 +175,6 @@ export async function discordPlayYoutube(guildId: string, youtubeUrl: string): P
 
     // Fall back to @distube/ytdl-core
     const ytdl = await import('@distube/ytdl-core');
-    const info = await ytdl.getInfo(youtubeUrl);
     const stream = ytdl.default(youtubeUrl, { filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1 << 25 });
     return playAudioInGuild(guildId, async () => {
       const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });

@@ -1,5 +1,7 @@
 import os from 'os';
 import { NextResponse } from 'next/server';
+import http from 'http';
+import https from 'https';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -16,10 +18,43 @@ const KNOWN_VLLM_HOSTS = [
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const ft = (url: string, init: RequestInit = {}, ms = 1200): Promise<Response> => {
+const ft = async (url: string, init: RequestInit = {}, ms = 1200): Promise<Response> => {
   const c = new AbortController();
   const t = setTimeout(() => c.abort(), ms);
-  return fetch(url, { ...init, signal: c.signal, cache: 'no-store' }).finally(() => clearTimeout(t));
+  try {
+    return await fetch(url, { ...init, signal: c.signal, cache: 'no-store' });
+  } catch {
+    return await new Promise<Response>((resolve, reject) => {
+      const parsed = new URL(url);
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const req = mod.request({
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: init.method || 'GET',
+        headers: init.headers as Record<string, string> | undefined,
+        rejectUnauthorized: false,
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks);
+          const headers = new Headers();
+          for (const [key, value] of Object.entries(res.headers as Record<string, string | string[] | undefined>)) {
+            if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+          }
+          resolve(new Response(body, { status: res.statusCode ?? 500, headers }));
+        });
+        res.on('error', reject);
+      });
+      req.setTimeout(ms, () => req.destroy(new Error(`timeout after ${ms}ms`)));
+      req.on('error', reject);
+      if (typeof init.body === 'string' || init.body instanceof Buffer) req.write(init.body);
+      req.end();
+    });
+  } finally {
+    clearTimeout(t);
+  }
 };
 
 function v1Base(raw: string): string {
