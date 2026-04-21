@@ -361,7 +361,7 @@ function ProviderModelPicker({
         <>
           <div className="space-y-1">
             <label className="text-[9px] font-black text-black/30 uppercase tracking-[0.2em]">
-              Cluster Endpoint {vllmStatus === 'ok' ? ` - ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? ' - none' : ''}
+              Local Endpoint {vllmStatus === 'ok' ? ` - ${vllmModels.length} model${vllmModels.length !== 1 ? 's' : ''}` : vllmStatus === 'no-models' ? ' - none' : ''}
             </label>
             <div className="flex min-w-0 gap-1">
               <input value={vllmUrl} onChange={(e) => setVllmUrl(e.target.value)}
@@ -488,7 +488,7 @@ export default function Chat() {
     try { return localStorage.getItem('sa_ollama_url') ?? 'http://127.0.0.1:11434'; } catch { return 'http://127.0.0.1:11434'; }
   });
   const [vllmUrl, setVllmUrl] = useState(() => {
-    try { return localStorage.getItem('sa_vllm_url') ?? 'http://192.168.1.34:8000'; } catch { return 'http://192.168.1.34:8000'; }
+    try { return localStorage.getItem('sa_vllm_url') ?? ''; } catch { return ''; }
   });
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const [temperature, setTemperature] = useState(0.7);
@@ -699,7 +699,7 @@ export default function Chat() {
         if (!primaryOk) {
           setConnectionError(
             primaryProvider === 'vllm'
-                ? `vLLM: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models - switch provider.' : ''}`
+                ? `Local endpoint: no models found at ${vllmUrl}. ${ollama.length > 0 ? 'Ollama has models - switch provider.' : ''}`
               : primaryProvider === 'openrouter'
               ? `OpenRouter: ${openrouterFailure || 'no models found. Check your API key in settings.'}`
                 : `Ollama: no models found at ${ollamaUrl}. ${vllm.length > 0 ? 'vLLM has models - switch provider.' : ''}`
@@ -709,7 +709,7 @@ export default function Chat() {
         }
       } else {
         setConnStatus('fail');
-        setConnectionError(`No models found. Ollama: ${ollamaUrl} | vLLM: ${vllmUrl || '(not set)'} | OpenRouter: ${openrouterFailure || (openrouterApiKey ? 'key set but no models' : 'no key')}`);
+        setConnectionError(`No models found. Ollama: ${ollamaUrl} | Local endpoint: ${vllmUrl || '(not set)'} | OpenRouter: ${openrouterFailure || (openrouterApiKey ? 'key set but no models' : 'no key')}`);
       }
     } catch {
       setConnStatus('fail');
@@ -719,7 +719,7 @@ export default function Chat() {
 
   const runVllmProbe = async () => {
     if (!vllmUrl) return;
-    setVllmProbeResult('Probing - testing all endpoint paths...');
+    setVllmProbeResult('Probing local endpoint - testing OpenAI-compatible paths...');
     try {
       const params = new URLSearchParams({ url: vllmUrl });
       if (vllmApiKey) params.set('apiKey', vllmApiKey);
@@ -2194,7 +2194,7 @@ export default function Chat() {
                           }}
                           className="w-full bg-white border-2 border-black rounded-lg px-3 py-2.5 text-xs font-black outline-none appearance-none cursor-pointer"
                         >
-                          <option value="vllm">vLLM {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
+                          <option value="vllm">Local Endpoint {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
                           <option value="ollama">Ollama {ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ollamaStatus === 'no-models' ? '(no models)' : ''}</option>
                           <option value="openrouter">OpenRouter {openrouterStatus === 'ok' ? `(${openrouterModels.length})` : '(cloud)'}</option>
                         </select>
@@ -2216,7 +2216,7 @@ export default function Chat() {
                         >
                           {(['ollama', 'vllm', 'openrouter'] as const).filter(p => p !== primaryProvider).map(p => (
                             <option key={p} value={p}>
-                              {p === 'vllm' ? `vLLM ${vllmStatus === 'ok' ? `(${vllmModels.length})` : ''}` :
+                              {p === 'vllm' ? `Local Endpoint ${vllmStatus === 'ok' ? `(${vllmModels.length})` : ''}` :
                                p === 'ollama' ? `Ollama ${ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ''}` :
                                `OpenRouter ${openrouterStatus === 'ok' ? `(${openrouterModels.length})` : '(cloud)'}`}
                             </option>
@@ -2271,7 +2271,7 @@ export default function Chat() {
                         onChange={(e) => setPrimaryProvider(e.target.value as 'ollama' | 'vllm' | 'openrouter')}
                         className="w-full bg-white border-2 border-black rounded-lg px-4 py-3 text-xs font-black outline-none appearance-none cursor-pointer hover:bg-black/5 transition-colors"
                       >
-                        <option value="vllm">vLLM - Cluster {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
+                        <option value="vllm">Local Endpoint - OpenAI Compatible {vllmStatus === 'ok' ? `(${vllmModels.length})` : vllmStatus === 'no-models' ? '(no models)' : ''}</option>
                         <option value="ollama">Ollama - Local {ollamaStatus === 'ok' ? `(${ollamaModels.length})` : ollamaStatus === 'no-models' ? '(no models)' : ''}</option>
                         <option value="openrouter">OpenRouter - Cloud {openrouterStatus === 'ok' ? `(${openrouterModels.length})` : openrouterStatus === 'no-models' ? '(no models)' : '(set API key)'}</option>
                       </select>

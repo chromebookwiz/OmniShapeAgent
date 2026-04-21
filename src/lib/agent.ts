@@ -1746,13 +1746,15 @@ function resolveProviderInfo(
       // URL is embedded in the model string: vllm:modelname@http://host:port/...
       targetModel = inner.slice(0, lastAt);
       const after = inner.slice(lastAt + 1);
-      endpoint = (after.startsWith('http://') || after.startsWith('https://')) ? after : `http://${after}/v1/chat/completions`;
+      endpoint = normalizeLocalOpenAIEndpoint((after.startsWith('http://') || after.startsWith('https://')) ? after : `http://${after}`);
     } else {
-      // No URL in model string — use override, then env, then default
+      // No URL in model string — use override or env only.
       targetModel = inner || process.env.VLLM_MODEL || 'default';
-      const rawBase = overrideUrls?.vllmUrl || process.env.VLLM_URL || 'http://127.0.0.1:8000';
-      const base = rawBase.replace(/\/$/, '');
-      endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+      const rawBase = overrideUrls?.vllmUrl || process.env.VLLM_URL;
+      if (!rawBase) {
+        throw new Error('Local endpoint URL missing. Enter it in settings or set VLLM_URL.');
+      }
+      endpoint = normalizeLocalOpenAIEndpoint(rawBase);
     }
     const vllmKey = overrideUrls?.vllmApiKey || process.env.VLLM_API_KEY || '';
     if (vllmKey) headers['Authorization'] = `Bearer ${vllmKey}`;
@@ -1768,8 +1770,7 @@ function resolveProviderInfo(
   // No prefix — use vllmUrl override or VLLM_URL env if set, else ollama
   const effectiveVllmUrl = overrideUrls?.vllmUrl || process.env.VLLM_URL;
   if (effectiveVllmUrl) {
-    const base = effectiveVllmUrl.replace(/\/$/, '');
-    const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const endpoint = normalizeLocalOpenAIEndpoint(effectiveVllmUrl);
     const targetModel = process.env.VLLM_MODEL || model || 'default';
     const vllmKey = overrideUrls?.vllmApiKey || process.env.VLLM_API_KEY || '';
     if (vllmKey) headers['Authorization'] = `Bearer ${vllmKey}`;
@@ -1779,6 +1780,20 @@ function resolveProviderInfo(
   const rawBase = overrideUrls?.ollamaUrl || _OLLAMA_BASE;
   const ollamaEndpoint = `${rawBase.replace(/\/$/, '').replace(/\/api\/chat$/, '')}/api/chat`;
   return { endpoint: ollamaEndpoint, targetModel: model || 'llama3', headers, backend: 'ollama' };
+}
+
+function normalizeLocalOpenAIEndpoint(rawUrl: string): string {
+  const base = rawUrl.replace(/\/+$/, '');
+  if (/\/v1\/chat\/completions$/i.test(base) || /\/v1\/completions$/i.test(base) || /\/api\/chat$/i.test(base)) {
+    return base;
+  }
+  if (/\/chat\/completions$/i.test(base) || /\/completions$/i.test(base)) {
+    return base.startsWith('http://') || base.startsWith('https://') ? base : `http://${base}`;
+  }
+  if (/\/v1$/i.test(base)) {
+    return `${base}/chat/completions`;
+  }
+  return `${base}/v1/chat/completions`;
 }
 
 // ── Advanced Context Compression ─────────────────────────────────────────────

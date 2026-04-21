@@ -1,5 +1,5 @@
 // src/app/api/vllm-probe/route.ts
-// Diagnostic: exhaustively probe a vLLM-compatible server for working endpoints.
+// Diagnostic: exhaustively probe a local OpenAI-compatible server for working endpoints.
 import { NextResponse } from 'next/server';
 import http from 'http';
 import https from 'https';
@@ -50,7 +50,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Provide ?url=http://host:port' }, { status: 400 });
   }
 
-  const base = rawUrl.replace(/\/+$/, '').replace(/\/v1(\/.*)?$/, '');
+  const base = rawUrl
+    .replace(/\/+$/, '')
+    .replace(/\/v1\/(?:chat\/completions|completions|models)$/i, '')
+    .replace(/\/(?:chat\/completions|completions|models)$/i, '')
+    .replace(/\/v1$/i, '');
   const v1Base = `${base}/v1`;
   const apiKey = searchParams.get('apiKey') || process.env.VLLM_API_KEY || '';
   const authH: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
@@ -60,23 +64,31 @@ export async function GET(req: Request) {
   let workingFormat = '';
 
   // ── Step 1: GET /v1/models ─────────────────────────────────────────────
-  const modelsUrl = `${v1Base}/models`;
+  let modelsUrl = `${v1Base}/models`;
   try {
-    const r = await fetchT(modelsUrl, { method: 'GET', headers: { ...authH } }, 3000);
-    const body = await r.text();
-    if (r.ok) {
+    let modelStepResolved = false;
+    for (const candidate of [`${v1Base}/models`, `${base}/models`]) {
+      const r = await fetchT(candidate, { method: 'GET', headers: { ...authH } }, 3000);
+      const body = await r.text();
+      if (!r.ok) {
+        steps.push(`❌ GET ${candidate} → HTTP ${r.status}: ${body.slice(0, 200)}`);
+        continue;
+      }
       try {
         const data = JSON.parse(body);
         models = (data.data ?? data.models ?? [])
           .map((m: any) => m.id || m.name || m.model || m)
           .filter((x: any) => typeof x === 'string');
-        steps.push(`✅ GET ${modelsUrl} → 200 OK  |  models: [${models.join(', ')}]`);
+        modelsUrl = candidate;
+        steps.push(`✅ GET ${candidate} → 200 OK  |  models: [${models.join(', ')}]`);
+        modelStepResolved = true;
+        break;
       } catch {
-        steps.push(`⚠️  GET ${modelsUrl} → 200 but invalid JSON: ${body.slice(0, 100)}`);
+        steps.push(`⚠️  GET ${candidate} → 200 but invalid JSON: ${body.slice(0, 100)}`);
       }
-    } else {
-      steps.push(`❌ GET ${modelsUrl} → HTTP ${r.status}: ${body.slice(0, 200)}`);
-      steps.push(`   Cannot reach model list — check URL and auth.`);
+    }
+    if (!modelStepResolved) {
+      steps.push('   Cannot reach a usable model list — check URL and auth.');
     }
   } catch (e: any) {
     steps.push(`❌ GET ${modelsUrl} → TIMEOUT/ERROR: ${e.message}`);
@@ -100,7 +112,7 @@ export async function GET(req: Request) {
     },
     {
       url: `${base}/generate`,
-      label: '/generate (vLLM native)',
+      label: '/generate (native generate)',
       body: { model: testModel, prompt: 'hi', max_tokens: 1 },
     },
     {
@@ -152,7 +164,7 @@ export async function GET(req: Request) {
           steps.push(`   POST ${label} → ${r.status} (stream:false), stream:true error: ${e2.message}`);
         }
       } else if (r.status === 401 || r.status === 403) {
-        steps.push(`🔐 POST ${label} → HTTP ${r.status} — auth required. Set VLLM_API_KEY.`);
+        steps.push(`🔐 POST ${label} → HTTP ${r.status} — auth required. Set the local endpoint API key.`);
         workingChatUrl = url; // It exists, just needs auth
         workingFormat = `${label} [auth required]`;
         break;
@@ -188,7 +200,7 @@ export async function GET(req: Request) {
 
   const summary = workingChatUrl
     ? `✅ Working endpoint: ${workingChatUrl} (${workingFormat})`
-    : `❌ No working chat endpoint found. The server responds at ${modelsUrl} (models list) but rejects all POST paths. This may indicate: (1) a reverse proxy blocking POSTs, (2) an API key is required (VLLM_API_KEY), or (3) the server uses a non-standard path.`;
+    : `❌ No working chat endpoint found. The server responds at ${modelsUrl} (models list) but rejects all POST paths. This may indicate: (1) a reverse proxy blocking POSTs, (2) an API key is required, or (3) the server uses a non-standard path.`;
 
   return NextResponse.json({
     base,

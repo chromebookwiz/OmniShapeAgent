@@ -5,16 +5,10 @@ import https from 'https';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-// Ports that are specifically Ollama or common OpenWebUI/proxy ports — never vLLM
+// Ports that are specifically Ollama or common OpenWebUI/proxy ports — never local OpenAI-compatible endpoints
 const OLLAMA_PORTS = new Set(['11434', '3000']);
-// Common vLLM ports to scan on known hosts
+// Common local OpenAI-compatible ports to scan on local hosts/subnets
 const VLLM_PORTS = ['8000', '8001', '5000', '5001', '9000'];
-// Hosts always included in the vLLM scan (in addition to local subnet)
-const KNOWN_VLLM_HOSTS = [
-  '192.168.1.34',
-  'nvidia-spark',
-  'nvidia-spark.local',
-];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +58,14 @@ function v1Base(raw: string): string {
   return idx !== -1 ? b.slice(0, idx) + '/v1' : b + '/v1';
 }
 
+function normalizeEndpointBase(raw: string): string {
+  return raw
+    .replace(/\/+$/, '')
+    .replace(/\/v1\/(?:chat\/completions|completions|models)$/i, '')
+    .replace(/\/(?:chat\/completions|completions|models)$/i, '')
+    .replace(/\/v1$/i, '');
+}
+
 function parseModels(data: any): string[] {
   if (!data) return [];
   if (Array.isArray(data.data)) return data.data.map((m: any) => m.id || m.model).filter(Boolean);
@@ -88,23 +90,30 @@ async function looksLikeOllama(base: string): Promise<boolean> {
  * Try to fetch /v1/models from a base URL.
  * Returns the parsed model names, or [] on any failure.
  */
-async function fetchVllmModels(base: string, timeoutMs = 1200, apiKey = ''): Promise<string[]> {
-  try {
-    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
-    const r = await ft(`${base}/v1/models`, { method: 'GET', headers }, timeoutMs);
-    if (!r.ok) return [];
-    const data = await r.json().catch(() => null);
-    return parseModels(data);
-  } catch {
-    return [];
+async function fetchVllmModels(base: string, timeoutMs = 1200, apiKey = ''): Promise<{ models: string[]; modelsUrl: string | null }> {
+  const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  for (const modelsUrl of [`${base}/v1/models`, `${base}/models`]) {
+    try {
+      const r = await ft(modelsUrl, { method: 'GET', headers }, timeoutMs);
+      if (!r.ok) continue;
+      const data = await r.json().catch(() => null);
+      const models = parseModels(data);
+      if (models.length > 0) return { models, modelsUrl };
+    } catch {
+      continue;
+    }
   }
+  return { models: [], modelsUrl: null };
 }
 
-function subnetHosts(): string[] {
+function localEndpointHosts(): string[] {
   const out = new Set<string>();
+  out.add('127.0.0.1');
+  out.add('localhost');
   Object.values(os.networkInterfaces()).forEach(ifaces => {
     ifaces?.forEach(iface => {
       if (iface.family === 'IPv4' && !iface.internal) {
+        out.add(iface.address);
         const [a, b, c] = iface.address.split('.');
         for (let i = 1; i <= 254; i++) out.add(`${a}.${b}.${c}.${i}`);
       }
@@ -148,12 +157,12 @@ export async function GET(req: Request) {
     if (OLLAMA_PORTS.has(urlPort)) {
       console.log(`[Models] vllmUrl port ${urlPort} is an Ollama port — skipping`);
     } else {
-      const base = vllmUrlParam.replace(/\/+$/, '').replace(/\/v1(\/.*)?$/, '');
+      const base = normalizeEndpointBase(vllmUrlParam);
       const v1 = v1Base(base);
       const hostLabel = (() => { try { return new URL(vllmUrlParam).host; } catch { return vllmUrlParam; } })();
 
       // Fetch models and run Ollama fingerprint in parallel
-      const [names, isOllama] = await Promise.all([
+      const [{ models: names }, isOllama] = await Promise.all([
         fetchVllmModels(base, 3000, vllmApiKey),
         looksLikeOllama(base),
       ]);
@@ -163,9 +172,9 @@ export async function GET(req: Request) {
       } else if (names.length > 0) {
         const chatUrl = `${v1}/chat/completions`;
         names.forEach(m => addVllmEntry(m, hostLabel, chatUrl));
-        console.log(`[Models] explicit vLLM ${vllmUrlParam} → ${names.length} model(s): ${names.join(', ')}`);
+        console.log(`[Models] explicit local endpoint ${vllmUrlParam} → ${names.length} model(s): ${names.join(', ')}`);
       } else {
-        console.log(`[Models] explicit vllmUrl ${vllmUrlParam} returned no models`);
+        console.log(`[Models] explicit local endpoint ${vllmUrlParam} returned no models`);
       }
     }
   }
@@ -174,16 +183,15 @@ export async function GET(req: Request) {
   // Only scan if explicit URL didn't already yield results (avoid duplication)
   if (vllmFound.size === 0) {
     const allHosts = Array.from(new Set([
-      ...KNOWN_VLLM_HOSTS,
       ...extraHosts,
-      ...subnetHosts(),
+      ...localEndpointHosts(),
     ]));
 
     // Fan out all host:port combinations concurrently
     const scanTasks = allHosts.flatMap(host =>
       VLLM_PORTS.map(port => async () => {
         const base = `http://${host}:${port}`;
-        const names = await fetchVllmModels(base, 700, vllmApiKey);
+        const { models: names } = await fetchVllmModels(base, 700, vllmApiKey);
         if (names.length === 0) return;
 
         // Quick Ollama check — prevents listing OpenWebUI/Ollama models as vLLM
@@ -195,7 +203,7 @@ export async function GET(req: Request) {
         const chatUrl = `${base}/v1/chat/completions`;
         names.forEach(m => {
           addVllmEntry(m, `${host}:${port}`, chatUrl);
-          console.log(`[Models] scan found vLLM: ${m} @ ${base}`);
+          console.log(`[Models] scan found local OpenAI endpoint: ${m} @ ${base}`);
         });
       })
     );
