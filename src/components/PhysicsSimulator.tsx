@@ -48,6 +48,14 @@ interface HingeConstraint {
   maxAngle: number;
   motorSpeed: number;    // 0 = no motor
   motorForce: number;
+  stiffness: number;
+  damping: number;
+  angularStiffness: number;
+  angularDamping: number;
+  breakForce: number;
+  separation: number;
+  alignmentError: number;
+  jointLoad: number;
 }
 
 interface SensorBinding {
@@ -307,40 +315,84 @@ export default function PhysicsSimulator({
     }
   }, []);
 
+  type SimBody = {
+    id: string;
+    position: import('three').Vector3;
+    quaternion: import('three').Quaternion;
+    velocity: import('three').Vector3;
+    angularVelocity: import('three').Vector3;
+    mass: number;
+    invMass: number;
+    invInertia: import('three').Vector3;
+    radius: number;
+    shape: NonNullable<PhysicsCmd['shape']>;
+    size: [number, number, number];
+    fixed: boolean;
+    restitution: number;
+    friction: number;
+    contactedGround: boolean;
+    ownerId?: string;
+    team?: string;
+    contactDamage: number;
+  };
+  type SimHinge = {
+      id: string;
+      a: string;
+      b: string;
+      axis: import('three').Vector3;
+      anchorA: import('three').Vector3;
+      anchorB: import('three').Vector3;
+      angle: number;
+      minAngle: number;
+      maxAngle: number;
+      motorSpeed: number;
+      motorForce: number;
+      stiffness: number;
+      damping: number;
+      angularStiffness: number;
+      angularDamping: number;
+      breakForce: number;
+      separation: number;
+      alignmentError: number;
+      jointLoad: number;
+    };
   const updateCamera = useCallback(() => {
     const s = stateRef.current;
     if (!s.camera) return;
-    const { orbitTheta, orbitPhi, orbitRadius } = s;
-    const x = orbitRadius * Math.cos(orbitPhi) * Math.sin(orbitTheta);
-    const y = orbitRadius * Math.sin(orbitPhi);
-    const z = orbitRadius * Math.cos(orbitPhi) * Math.cos(orbitTheta);
-    const t = s.orbitTarget;
-    s.camera.position.set(x + t.x, y + t.y, z + t.z);
-    s.camera.lookAt(t);
+    const radius = Math.max(4, s.orbitRadius);
+    const phi = Math.max(0.1, Math.min(Math.PI / 2 - 0.05, s.orbitPhi));
+    const cosPhi = Math.cos(phi);
+    s.camera.position.set(
+      s.orbitTarget.x + radius * Math.cos(s.orbitTheta) * cosPhi,
+      s.orbitTarget.y + radius * Math.sin(phi),
+      s.orbitTarget.z + radius * Math.sin(s.orbitTheta) * cosPhi,
+    );
+    s.camera.lookAt(s.orbitTarget);
   }, []);
 
   const refreshGroundMesh = useCallback(() => {
     const s = stateRef.current;
-    const mesh = s.groundMesh;
-    if (!mesh) return;
-    const geometry = mesh.geometry as import('three').PlaneGeometry;
-    const positions = geometry.attributes.position;
-    for (let index = 0; index < positions.count; index++) {
-      const x = positions.getX(index);
-      const z = -positions.getY(index);
-      positions.setZ(index, sampleGroundHeight(x, z, s.physicsRules));
+    const ground = s.groundMesh;
+    if (!ground) return;
+    const geometry = ground.geometry;
+    const positions = geometry.getAttribute('position');
+    if (!positions) return;
+    for (let index = 0; index < positions.count; index += 1) {
+      const localX = positions.getX(index);
+      const localZ = -positions.getY(index);
+      positions.setZ(index, sampleGroundHeight(localX, localZ, s.physicsRules));
     }
     positions.needsUpdate = true;
     geometry.computeVertexNormals();
   }, []);
 
-  // ── Command processing ────────────────────────────────────────────────────
-
   const processCommands = useCallback(() => {
     const s = stateRef.current;
-    if (!s.THREE || !s.scene) return;
     const THREE = s.THREE;
+    if (!THREE || !s.scene || !s.camera) return;
     let shouldPublishState = false;
+
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
     const safeInverse = (value: number) => value > 1e-8 ? 1 / value : 0;
     const computeInvInertia = (shape: NonNullable<PhysicsCmd['shape']>, size: [number, number, number], radius: number, mass: number) => {
       if (!(mass > 0) || !Number.isFinite(mass)) return new THREE.Vector3();
@@ -365,40 +417,6 @@ export default function PhysicsSimulator({
       }
       return new THREE.Vector3(safeInverse(ix), safeInverse(iy), safeInverse(iz));
     };
-    type SimBody = {
-      id: string;
-      position: import('three').Vector3;
-      quaternion: import('three').Quaternion;
-      velocity: import('three').Vector3;
-      angularVelocity: import('three').Vector3;
-      mass: number;
-      invMass: number;
-      invInertia: import('three').Vector3;
-      radius: number;
-      shape: NonNullable<PhysicsCmd['shape']>;
-      size: [number, number, number];
-      fixed: boolean;
-      restitution: number;
-      friction: number;
-      contactedGround: boolean;
-      ownerId?: string;
-      team?: string;
-      contactDamage: number;
-    };
-    type SimHinge = {
-      id: string;
-      a: string;
-      b: string;
-      axis: import('three').Vector3;
-      anchorA: import('three').Vector3;
-      anchorB: import('three').Vector3;
-      angle: number;
-      minAngle: number;
-      maxAngle: number;
-      motorSpeed: number;
-      motorForce: number;
-    };
-    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
     const supportExtentAlong = (body: { shape: NonNullable<PhysicsCmd['shape']>; size: [number, number, number]; radius: number; quaternion?: import('three').Quaternion; mesh?: import('three').Mesh }, normal: import('three').Vector3) => {
       const dir = normal.clone().normalize();
       const quaternion = body.quaternion ?? body.mesh?.quaternion;
@@ -431,6 +449,28 @@ export default function PhysicsSimulator({
         localAxis.z * localAxis.z * body.invInertia.z;
       if (invInertia <= 0) return;
       body.angularVelocity.addScaledVector(worldAxis, torqueMagnitude * invInertia);
+    };
+    const applyWorldTorqueVector = (body: { quaternion?: import('three').Quaternion; invInertia: import('three').Vector3; angularVelocity: import('three').Vector3; fixed: boolean }, torqueVector: import('three').Vector3) => {
+      if (body.fixed || torqueVector.lengthSq() < 1e-10) return;
+      const quaternion = body.quaternion;
+      if (!quaternion) return;
+      const localTorque = torqueVector.clone().applyQuaternion(quaternion.clone().invert());
+      const localDelta = new THREE.Vector3(
+        localTorque.x * body.invInertia.x,
+        localTorque.y * body.invInertia.y,
+        localTorque.z * body.invInertia.z,
+      );
+      body.angularVelocity.add(localDelta.applyQuaternion(quaternion));
+    };
+    const pointVelocityAt = (body: SimBody, worldPoint: import('three').Vector3) => {
+      const radial = worldPoint.clone().sub(body.position);
+      return body.velocity.clone().add(body.angularVelocity.clone().cross(radial));
+    };
+    const applyImpulseAtPoint = (body: SimBody, impulse: import('three').Vector3, worldPoint: import('three').Vector3) => {
+      if (body.fixed || impulse.lengthSq() < 1e-10) return;
+      body.velocity.addScaledVector(impulse, body.invMass);
+      const lever = worldPoint.clone().sub(body.position);
+      applyWorldTorqueVector(body, lever.cross(impulse));
     };
     const selectRootObjectId = (bodies: Map<string, PhysicsObject>, hinges: Map<string, HingeConstraint>) => {
       const children = new Set(Array.from(hinges.values()).map((hinge) => hinge.b));
@@ -526,6 +566,14 @@ export default function PhysicsSimulator({
         maxAngle: hinge.maxAngle,
         motorSpeed: hinge.motorSpeed,
         motorForce: hinge.motorForce,
+        stiffness: hinge.stiffness,
+        damping: hinge.damping,
+        angularStiffness: hinge.angularStiffness,
+        angularDamping: hinge.angularDamping,
+        breakForce: hinge.breakForce,
+        separation: hinge.separation,
+        alignmentError: hinge.alignmentError,
+        jointLoad: hinge.jointLoad,
       }));
       const combatants = new Map<string, Combatant>();
       for (const [id, combatant] of s.combatants.entries()) {
@@ -567,15 +615,46 @@ export default function PhysicsSimulator({
         const worldAnchorA = hinge.anchorA.clone().applyQuaternion(a.quaternion).add(a.position);
         const worldAnchorB = hinge.anchorB.clone().applyQuaternion(b.quaternion).add(b.position);
         const correction = worldAnchorB.clone().sub(worldAnchorA);
-        const corrLen = correction.length();
+        const separation = correction.length();
+        hinge.separation = separation;
+        const anchorVelocityA = pointVelocityAt(a, worldAnchorA);
+        const anchorVelocityB = pointVelocityAt(b, worldAnchorB);
+        const relativeAnchorVelocity = anchorVelocityB.sub(anchorVelocityA);
         const invMassSum = a.invMass + b.invMass;
-        if (corrLen > 1e-4 && invMassSum > 0) {
-          const corrDir = correction.normalize();
-          const correctionSpeed = clamp(corrLen * 18, 0, 4);
-          if (a.invMass > 0) a.velocity.addScaledVector(corrDir, correctionSpeed * (a.invMass / invMassSum));
-          if (b.invMass > 0) b.velocity.addScaledVector(corrDir, -correctionSpeed * (b.invMass / invMassSum));
+        if (invMassSum > 0) {
+          const correctiveVelocity = correction.clone().multiplyScalar(clamp(hinge.stiffness, 6, 90) * 0.55);
+          correctiveVelocity.addScaledVector(relativeAnchorVelocity, -clamp(hinge.damping, 0, 40));
+          const impulse = correctiveVelocity.multiplyScalar(dtStep / invMassSum);
+          const maxImpulse = Math.max(0.25, Math.min(hinge.breakForce * dtStep, 18));
+          if (impulse.lengthSq() > maxImpulse * maxImpulse) impulse.setLength(maxImpulse);
+          applyImpulseAtPoint(a, impulse.clone().negate(), worldAnchorA);
+          applyImpulseAtPoint(b, impulse, worldAnchorB);
+
+          if (separation > 1e-5) {
+            const positionalBlend = clamp(dtStep * (12 + hinge.stiffness * 0.45), 0.08, 0.75);
+            if (a.invMass > 0) a.position.addScaledVector(correction, positionalBlend * (a.invMass / invMassSum));
+            if (b.invMass > 0) b.position.addScaledVector(correction, -positionalBlend * (b.invMass / invMassSum));
+          }
         }
-        const worldAxis = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
+
+        const axisA = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
+        const axisB = hinge.axis.clone().applyQuaternion(b.quaternion).normalize();
+        const worldAxis = axisA.clone().add(axisB);
+        if (worldAxis.lengthSq() < 1e-8) worldAxis.copy(axisA);
+        else worldAxis.normalize();
+        const axisError = axisB.clone().cross(axisA);
+        const alignmentError = Math.atan2(axisError.length(), clamp(axisA.dot(axisB), -1, 1));
+        hinge.alignmentError = alignmentError;
+        const relativeAngular = b.angularVelocity.clone().sub(a.angularVelocity);
+        const hingeSpin = relativeAngular.dot(worldAxis);
+        const lateralAngular = relativeAngular.sub(worldAxis.clone().multiplyScalar(hingeSpin));
+        const alignmentImpulse = axisError.multiplyScalar(clamp(hinge.angularStiffness, 4, 90) * dtStep);
+        alignmentImpulse.addScaledVector(lateralAngular, -clamp(hinge.angularDamping, 0, 35) * dtStep);
+        const maxAngularImpulse = Math.max(0.1, Math.min(hinge.breakForce * dtStep * 0.35, 12));
+        if (alignmentImpulse.lengthSq() > maxAngularImpulse * maxAngularImpulse) alignmentImpulse.setLength(maxAngularImpulse);
+        applyWorldTorqueVector(a, alignmentImpulse);
+        applyWorldTorqueVector(b, alignmentImpulse.clone().negate());
+
         const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
         hinge.angle = clamp(hinge.angle + relOmega * dtStep, -Math.PI * 4, Math.PI * 4);
         let torque = clamp((hinge.motorSpeed - relOmega) * 14, -hinge.motorForce, hinge.motorForce);
@@ -587,6 +666,12 @@ export default function PhysicsSimulator({
         }
         applyAxisTorqueToBody(a, worldAxis, torque * dtStep);
         applyAxisTorqueToBody(b, worldAxis, -torque * dtStep);
+        hinge.jointLoad = Math.max(
+          separation * hinge.stiffness,
+          relativeAnchorVelocity.length() * Math.max(1, hinge.damping),
+          alignmentError * Math.max(1, hinge.angularStiffness) * 8,
+          Math.abs(torque) * 4,
+        );
       }
       for (const body of bodies.values()) {
         if (body.fixed) continue;
@@ -748,6 +833,14 @@ export default function PhysicsSimulator({
           motorForce: h.motorForce,
           minAngle: h.minAngle,
           maxAngle: h.maxAngle,
+          stiffness: h.stiffness,
+          damping: h.damping,
+          angularStiffness: h.angularStiffness,
+          angularDamping: h.angularDamping,
+          breakForce: h.breakForce,
+          separation: h.separation,
+          alignmentError: h.alignmentError,
+          jointLoad: h.jointLoad,
         };
       }
       const sensorState: Record<string, object> = {};
@@ -1227,6 +1320,14 @@ export default function PhysicsSimulator({
             maxAngle: cmd.maxAngle ?? Math.PI,
             motorSpeed: 0,
             motorForce: 0,
+            stiffness: Math.max(4, cmd.stiffness ?? 42),
+            damping: Math.max(0, cmd.damping ?? 9),
+            angularStiffness: Math.max(2, cmd.angularStiffness ?? 32),
+            angularDamping: Math.max(0, cmd.angularDamping ?? 6),
+            breakForce: Math.max(40, cmd.breakForce ?? 900),
+            separation: 0,
+            alignmentError: 0,
+            jointLoad: 0,
           });
           shouldPublishState = true;
           break;
@@ -1271,6 +1372,7 @@ export default function PhysicsSimulator({
         // ── spawn_creature ────────────────────────────────────────────────
         case "spawn_creature": {
           if (!cmd.bodyPlan || !cmd.creatureId) break;
+          const creatureOrigin = new THREE.Vector3(...(cmd.position ?? [0, 0, 0]));
           const creaturePrefix = `${cmd.creatureId}_`;
           for (const existingId of Array.from(s.objects.keys())) {
             if (existingId.startsWith(creaturePrefix)) removeObject(existingId);
@@ -1311,7 +1413,7 @@ export default function PhysicsSimulator({
             }
             const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.55 });
             const mesh = new THREE.Mesh(geometry, mat);
-            mesh.position.set(pos[0], pos[1], pos[2]);
+            mesh.position.set(pos[0] + creatureOrigin.x, pos[1] + creatureOrigin.y, pos[2] + creatureOrigin.z);
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             s.scene.add(mesh);
@@ -1349,8 +1451,19 @@ export default function PhysicsSimulator({
                 axis: new THREE.Vector3(...h.axis).normalize(),
                 anchorA: new THREE.Vector3(...h.anchorA),
                 anchorB: new THREE.Vector3(...h.anchorB),
-                angle: 0, minAngle: -Math.PI * 0.6, maxAngle: Math.PI * 0.6,
-                motorSpeed: 0, motorForce: 0,
+                angle: 0,
+                minAngle: h.minAngle ?? -Math.PI * 0.6,
+                maxAngle: h.maxAngle ?? Math.PI * 0.6,
+                motorSpeed: 0,
+                motorForce: Math.max(0, h.motorForce ?? 0),
+                stiffness: Math.max(4, h.stiffness ?? 42),
+                damping: Math.max(0, h.damping ?? 9),
+                angularStiffness: Math.max(2, h.angularStiffness ?? 32),
+                angularDamping: Math.max(0, h.angularDamping ?? 6),
+                breakForce: Math.max(40, h.breakForce ?? 900),
+                separation: 0,
+                alignmentError: 0,
+                jointLoad: 0,
               });
             }
           }
@@ -1633,7 +1746,7 @@ export default function PhysicsSimulator({
     if (shouldPublishState) {
       publishState();
     }
-  }, [updateCamera]);
+  }, [refreshGroundMesh, updateCamera]);
 
   // ── Main setup effect ──────────────────────────────────────────────────────
 
@@ -1768,6 +1881,14 @@ export default function PhysicsSimulator({
         maxAngle: number;
         motorSpeed: number;
         motorForce: number;
+        stiffness: number;
+        damping: number;
+        angularStiffness: number;
+        angularDamping: number;
+        breakForce: number;
+        separation: number;
+        alignmentError: number;
+        jointLoad: number;
       };
 
       const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -1835,6 +1956,33 @@ export default function PhysicsSimulator({
           localAxis.z * localAxis.z * body.invInertia.z;
         if (invInertia <= 0) return;
         body.angularVelocity.addScaledVector(worldAxis, torqueMagnitude * invInertia);
+      };
+      const applyWorldTorqueVector = (body: { quaternion?: import('three').Quaternion; mesh?: import('three').Mesh; invInertia: import('three').Vector3; angularVelocity: import('three').Vector3; fixed: boolean }, torqueVector: import('three').Vector3) => {
+        if (body.fixed || torqueVector.lengthSq() < 1e-10) return;
+        const quaternion = body.quaternion ?? body.mesh?.quaternion;
+        if (!quaternion) return;
+        tmpQuat.copy(quaternion).invert();
+        const localTorque = torqueVector.clone().applyQuaternion(tmpQuat);
+        const localDelta = new THREE.Vector3(
+          localTorque.x * body.invInertia.x,
+          localTorque.y * body.invInertia.y,
+          localTorque.z * body.invInertia.z,
+        );
+        body.angularVelocity.add(localDelta.applyQuaternion(quaternion));
+      };
+      const pointVelocityAt = (body: { position?: import('three').Vector3; mesh?: import('three').Mesh; velocity: import('three').Vector3; angularVelocity: import('three').Vector3 }, worldPoint: import('three').Vector3) => {
+        const position = body.position ?? body.mesh?.position;
+        if (!position) return body.velocity.clone();
+        const radial = worldPoint.clone().sub(position);
+        return body.velocity.clone().add(body.angularVelocity.clone().cross(radial));
+      };
+      const applyImpulseAtPoint = (body: { position?: import('three').Vector3; quaternion?: import('three').Quaternion; mesh?: import('three').Mesh; velocity: import('three').Vector3; angularVelocity: import('three').Vector3; invMass: number; invInertia: import('three').Vector3; fixed: boolean }, impulse: import('three').Vector3, worldPoint: import('three').Vector3) => {
+        if (body.fixed || impulse.lengthSq() < 1e-10) return;
+        body.velocity.addScaledVector(impulse, body.invMass);
+        const position = body.position ?? body.mesh?.position;
+        if (!position) return;
+        const lever = worldPoint.clone().sub(position);
+        applyWorldTorqueVector(body, lever.cross(impulse));
       };
 
       const selectRootObjectId = (bodies: Map<string, PhysicsObject>, hinges: Map<string, HingeConstraint>) => {
@@ -1938,6 +2086,14 @@ export default function PhysicsSimulator({
           maxAngle: hinge.maxAngle,
           motorSpeed: hinge.motorSpeed,
           motorForce: hinge.motorForce,
+          stiffness: hinge.stiffness,
+          damping: hinge.damping,
+          angularStiffness: hinge.angularStiffness,
+          angularDamping: hinge.angularDamping,
+          breakForce: hinge.breakForce,
+          separation: hinge.separation,
+          alignmentError: hinge.alignmentError,
+          jointLoad: hinge.jointLoad,
         }));
         return { bodies, hinges };
       };
@@ -1947,36 +2103,72 @@ export default function PhysicsSimulator({
           body.contactedGround = false;
         }
 
-        for (const hinge of hinges) {
-          const a = bodies.get(hinge.a);
-          const b = bodies.get(hinge.b);
-          if (!a || !b) continue;
-          const worldAnchorA = hinge.anchorA.clone().applyQuaternion(a.quaternion).add(a.position);
-          const worldAnchorB = hinge.anchorB.clone().applyQuaternion(b.quaternion).add(b.position);
-          const correction = worldAnchorB.clone().sub(worldAnchorA);
-          const corrLen = correction.length();
-          const invMassSum = a.invMass + b.invMass;
-          if (corrLen > 1e-4 && invMassSum > 0) {
-            const corrDir = correction.normalize();
-            const correctionSpeed = clamp(corrLen * 18, 0, 4);
-            if (a.invMass > 0) a.velocity.addScaledVector(corrDir, correctionSpeed * (a.invMass / invMassSum));
-            if (b.invMass > 0) b.velocity.addScaledVector(corrDir, -correctionSpeed * (b.invMass / invMassSum));
+        const constraintPasses = 3;
+        for (let constraintPass = 0; constraintPass < constraintPasses; constraintPass += 1) {
+          const passDt = dtStep / constraintPasses;
+          for (const hinge of hinges) {
+            const a = bodies.get(hinge.a); const b = bodies.get(hinge.b);
+            if (!a || !b) continue;
+            const worldAnchorA = hinge.anchorA.clone().applyQuaternion(a.quaternion).add(a.position);
+            const worldAnchorB = hinge.anchorB.clone().applyQuaternion(b.quaternion).add(b.position);
+            const correction = worldAnchorB.clone().sub(worldAnchorA);
+            const separation = correction.length();
+            hinge.separation = separation;
+            const anchorVelocityA = pointVelocityAt(a, worldAnchorA);
+            const anchorVelocityB = pointVelocityAt(b, worldAnchorB);
+            const relativeAnchorVelocity = anchorVelocityB.sub(anchorVelocityA);
+            const invMassSum = a.invMass + b.invMass;
+            if (invMassSum > 0) {
+              const correctiveVelocity = correction.clone().multiplyScalar(clamp(hinge.stiffness, 6, 90) * 0.55);
+              correctiveVelocity.addScaledVector(relativeAnchorVelocity, -clamp(hinge.damping, 0, 40));
+              const impulse = correctiveVelocity.multiplyScalar(passDt / invMassSum);
+              const maxImpulse = Math.max(0.25, Math.min(hinge.breakForce * passDt, 18));
+              if (impulse.lengthSq() > maxImpulse * maxImpulse) impulse.setLength(maxImpulse);
+              applyImpulseAtPoint(a, impulse.clone().negate(), worldAnchorA);
+              applyImpulseAtPoint(b, impulse, worldAnchorB);
+
+              if (separation > 1e-5) {
+                const positionalBlend = clamp(passDt * (12 + hinge.stiffness * 0.45), 0.04, 0.42);
+                if (a.invMass > 0) a.position.addScaledVector(correction, positionalBlend * (a.invMass / invMassSum));
+                if (b.invMass > 0) b.position.addScaledVector(correction, -positionalBlend * (b.invMass / invMassSum));
+              }
+            }
+
+            const axisA = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
+            const axisB = hinge.axis.clone().applyQuaternion(b.quaternion).normalize();
+            const worldAxis = axisA.clone().add(axisB);
+            if (worldAxis.lengthSq() < 1e-8) worldAxis.copy(axisA);
+            else worldAxis.normalize();
+            const axisError = axisB.clone().cross(axisA);
+            const alignmentError = Math.atan2(axisError.length(), clamp(axisA.dot(axisB), -1, 1));
+            hinge.alignmentError = alignmentError;
+            const relativeAngular = b.angularVelocity.clone().sub(a.angularVelocity);
+            const hingeSpin = relativeAngular.dot(worldAxis);
+            const lateralAngular = relativeAngular.sub(worldAxis.clone().multiplyScalar(hingeSpin));
+            const alignmentImpulse = axisError.multiplyScalar(clamp(hinge.angularStiffness, 4, 90) * passDt);
+            alignmentImpulse.addScaledVector(lateralAngular, -clamp(hinge.angularDamping, 0, 35) * passDt);
+            const maxAngularImpulse = Math.max(0.1, Math.min(hinge.breakForce * passDt * 0.35, 12));
+            if (alignmentImpulse.lengthSq() > maxAngularImpulse * maxAngularImpulse) alignmentImpulse.setLength(maxAngularImpulse);
+            applyWorldTorqueVector(a, alignmentImpulse);
+            applyWorldTorqueVector(b, alignmentImpulse.clone().negate());
+
+            const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
+            hinge.angle = clamp(hinge.angle + relOmega * passDt, -Math.PI * 4, Math.PI * 4);
+            let torque = clamp((hinge.motorSpeed - relOmega) * 14, -hinge.motorForce, hinge.motorForce);
+            if (hinge.angle < hinge.minAngle) {
+              torque += (hinge.minAngle - hinge.angle) * 18;
+            } else if (hinge.angle > hinge.maxAngle) {
+              torque -= (hinge.angle - hinge.maxAngle) * 18;
+            }
+            applyAxisTorqueToBody(a, worldAxis, torque * passDt);
+            applyAxisTorqueToBody(b, worldAxis, -torque * passDt);
+            hinge.jointLoad = Math.max(
+              separation * hinge.stiffness,
+              relativeAnchorVelocity.length() * Math.max(1, hinge.damping),
+              alignmentError * Math.max(1, hinge.angularStiffness) * 8,
+              Math.abs(torque) * 4,
+            );
           }
-
-          const worldAxis = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
-          const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
-          hinge.angle = clamp(hinge.angle + relOmega * dtStep, -Math.PI * 4, Math.PI * 4);
-
-          let torque = clamp((hinge.motorSpeed - relOmega) * 14, -hinge.motorForce, hinge.motorForce);
-          const limitedAngle = clamp(hinge.angle, hinge.minAngle, hinge.maxAngle);
-          if (Math.abs(limitedAngle - hinge.angle) > 1e-5) {
-            const limitError = limitedAngle - hinge.angle;
-            torque += clamp(limitError * 90 - relOmega * 8, -hinge.motorForce * 1.35, hinge.motorForce * 1.35);
-            hinge.angle = limitedAngle;
-          }
-
-          applyAxisTorqueToBody(a, worldAxis, torque * dtStep);
-          applyAxisTorqueToBody(b, worldAxis, -torque * dtStep);
         }
 
         for (const body of bodies.values()) {
@@ -2176,6 +2368,14 @@ export default function PhysicsSimulator({
               maxAngle: hinge.maxAngle,
               motorSpeed: hinge.motorSpeed,
               motorForce: hinge.motorForce,
+              stiffness: hinge.stiffness,
+              damping: hinge.damping,
+              angularStiffness: hinge.angularStiffness,
+              angularDamping: hinge.angularDamping,
+              breakForce: hinge.breakForce,
+              separation: hinge.separation,
+              alignmentError: hinge.alignmentError,
+              jointLoad: hinge.jointLoad,
             })), controller.rootId).values;
             const actions = controller.net.forward(observation);
             for (let i = 0; i < controlledHinges.length; i++) {
@@ -2214,19 +2414,46 @@ export default function PhysicsSimulator({
             const wAnchorA = hinge.anchorA.clone().applyQuaternion(a.mesh.quaternion).add(a.mesh.position);
             const wAnchorB = hinge.anchorB.clone().applyQuaternion(b.mesh.quaternion).add(b.mesh.position);
 
-            // Positional correction — pull anchors together
             const correction = wAnchorB.clone().sub(wAnchorA);
-            const corrLen = correction.length();
-            if (corrLen > 0.001) {
-              const corrDir = correction.clone().normalize();
-              const invMassSum = a.invMass + b.invMass;
-              if (invMassSum <= 0) continue;
-              const baumFactor = Math.min(corrLen * 0.4, 0.2); // Baumgarte stabilisation
-              if (!a.fixed) a.velocity.addScaledVector(corrDir,  baumFactor * a.invMass / invMassSum * 60 * subDt);
-              if (!b.fixed) b.velocity.addScaledVector(corrDir, -baumFactor * b.invMass / invMassSum * 60 * subDt);
+            const separation = correction.length();
+            hinge.separation = separation;
+            const anchorVelocityA = pointVelocityAt(a, wAnchorA);
+            const anchorVelocityB = pointVelocityAt(b, wAnchorB);
+            const relativeAnchorVelocity = anchorVelocityB.sub(anchorVelocityA);
+            const invMassSum = a.invMass + b.invMass;
+            if (invMassSum > 0) {
+              const correctiveVelocity = correction.clone().multiplyScalar(clamp(hinge.stiffness, 6, 90) * 0.55);
+              correctiveVelocity.addScaledVector(relativeAnchorVelocity, -clamp(hinge.damping, 0, 40));
+              const impulse = correctiveVelocity.multiplyScalar(subDt / invMassSum);
+              const maxImpulse = Math.max(0.25, Math.min(hinge.breakForce * subDt, 18));
+              if (impulse.lengthSq() > maxImpulse * maxImpulse) impulse.setLength(maxImpulse);
+              applyImpulseAtPoint(a, impulse.clone().negate(), wAnchorA);
+              applyImpulseAtPoint(b, impulse, wAnchorB);
+              if (separation > 1e-5) {
+                const positionalBlend = clamp(subDt * (12 + hinge.stiffness * 0.45), 0.08, 0.75);
+                if (!a.fixed) a.mesh.position.addScaledVector(correction, positionalBlend * (a.invMass / invMassSum));
+                if (!b.fixed) b.mesh.position.addScaledVector(correction, -positionalBlend * (b.invMass / invMassSum));
+              }
             }
 
-            const worldAxis = hinge.axis.clone().applyQuaternion(a.mesh.quaternion).normalize();
+            const axisA = hinge.axis.clone().applyQuaternion(a.mesh.quaternion).normalize();
+            const axisB = hinge.axis.clone().applyQuaternion(b.mesh.quaternion).normalize();
+            const worldAxis = axisA.clone().add(axisB);
+            if (worldAxis.lengthSq() < 1e-8) worldAxis.copy(axisA);
+            else worldAxis.normalize();
+            const axisError = axisB.clone().cross(axisA);
+            const alignmentError = Math.atan2(axisError.length(), clamp(axisA.dot(axisB), -1, 1));
+            hinge.alignmentError = alignmentError;
+            const relativeAngular = b.angularVelocity.clone().sub(a.angularVelocity);
+            const hingeSpin = relativeAngular.dot(worldAxis);
+            const lateralAngular = relativeAngular.sub(worldAxis.clone().multiplyScalar(hingeSpin));
+            const alignmentImpulse = axisError.multiplyScalar(clamp(hinge.angularStiffness, 4, 90) * subDt);
+            alignmentImpulse.addScaledVector(lateralAngular, -clamp(hinge.angularDamping, 0, 35) * subDt);
+            const maxAngularImpulse = Math.max(0.1, Math.min(hinge.breakForce * subDt * 0.35, 12));
+            if (alignmentImpulse.lengthSq() > maxAngularImpulse * maxAngularImpulse) alignmentImpulse.setLength(maxAngularImpulse);
+            applyWorldTorqueVector(a, alignmentImpulse);
+            applyWorldTorqueVector(b, alignmentImpulse.clone().negate());
+
             const relOmega = a.angularVelocity.clone().sub(b.angularVelocity).dot(worldAxis);
             hinge.angle = clamp(hinge.angle + relOmega * subDt, -Math.PI * 4, Math.PI * 4);
             let torqueMag = 0;
@@ -2245,6 +2472,12 @@ export default function PhysicsSimulator({
               applyAxisTorqueToBody(b, worldAxis, -torqueMag);
               a.sleeping = false; b.sleeping = false;
             }
+            hinge.jointLoad = Math.max(
+              separation * hinge.stiffness,
+              relativeAnchorVelocity.length() * Math.max(1, hinge.damping),
+              alignmentError * Math.max(1, hinge.angularStiffness) * 8,
+              Math.abs(torqueMag) * 120,
+            );
           }
 
           // Per-object integration

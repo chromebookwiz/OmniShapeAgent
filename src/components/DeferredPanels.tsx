@@ -3,10 +3,6 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
 
-const BotBrowserManager = dynamic(() => import('./BotBrowser'), {
-  ssr: false,
-});
-
 const Terminal = dynamic(() => import('./Terminal'), {
   ssr: false,
 });
@@ -40,7 +36,6 @@ export default function DeferredPanels() {
 
   return (
     <>
-      <BotBrowserManager />
       <Terminal />
     </>
   );

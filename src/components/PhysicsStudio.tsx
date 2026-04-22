@@ -37,6 +37,14 @@ type HingeLink = {
   axis: [number, number, number];
   anchorA: [number, number, number];
   anchorB: [number, number, number];
+  minAngle?: number;
+  maxAngle?: number;
+  motorForce?: number;
+  stiffness?: number;
+  damping?: number;
+  angularStiffness?: number;
+  angularDamping?: number;
+  breakForce?: number;
 };
 
 type SavedControllerEntry = {
@@ -143,6 +151,64 @@ function parseSize(value: string | undefined, fallback?: [number, number, number
   return parsed;
 }
 
+function formatVec(value: [number, number, number]) {
+  return value.map((entry) => Number(entry.toFixed(3))).join(', ');
+}
+
+type BodyPlanPart = NonNullable<PhysicsCmd['bodyPlan']>[number];
+
+function inferBodyPlanHalfExtents(part: BodyPlanPart): [number, number, number] {
+  if (part.shape === 'sphere') {
+    const radius = part.radius ?? Math.max(...(part.size ?? [0.8, 0.8, 0.8])) * 0.5;
+    return [radius, radius, radius];
+  }
+  if (part.shape === 'capsule') {
+    const radius = part.radius ?? 0.25;
+    const bodyHeight = part.size?.[1] ?? 0.8;
+    return [radius, radius + bodyHeight * 0.5, radius];
+  }
+  const size = part.size ?? [0.8, 0.8, 0.8];
+  return [size[0] * 0.5, size[1] * 0.5, size[2] * 0.5];
+}
+
+function normalizeBodyPlan(bodyPlan: NonNullable<PhysicsCmd['bodyPlan']>) {
+  if (bodyPlan.length === 0) return bodyPlan;
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+
+  for (const part of bodyPlan) {
+    const [halfX, halfY] = inferBodyPlanHalfExtents(part);
+    minX = Math.min(minX, part.position[0] - halfX);
+    maxX = Math.max(maxX, part.position[0] + halfX);
+    minY = Math.min(minY, part.position[1] - halfY);
+  }
+
+  const centerX = (minX + maxX) * 0.5;
+  const liftY = 1.25 - minY;
+  return bodyPlan.map((part) => ({
+    ...part,
+    position: [
+      Number((part.position[0] - centerX).toFixed(3)),
+      Number((part.position[1] + liftY).toFixed(3)),
+      Number(part.position[2].toFixed(3)),
+    ] as [number, number, number],
+  }));
+}
+
+function buildSpawnOrigin(team: string, occupiedSlots: number): [number, number, number] {
+  const baseX = team === 'red' ? 8.5 : team === 'neutral' ? 0 : -8.5;
+  const direction = team === 'red' ? -1 : 1;
+  const laneIndex = occupiedSlots % 3;
+  const depth = Math.floor(occupiedSlots / 3);
+  const lateralOffset = (laneIndex - 1) * 2.6;
+  return [
+    Number((baseX + direction * depth * 2.4 + lateralOffset * 0.35).toFixed(3)),
+    0,
+    0,
+  ];
+}
+
 function parseKvPairs(line: string) {
   const matches = line.match(/([a-zA-Z_][a-zA-Z0-9_-]*)=([^\s]+)/g) ?? [];
   const out: Record<string, string> = {};
@@ -176,6 +242,7 @@ export default function PhysicsStudio({
   const [customTemplates, setCustomTemplates] = useState<ComponentTemplate[]>([]);
   const [parts, setParts] = useState<PlacedPart[]>([]);
   const [hinges, setHinges] = useState<HingeLink[]>([]);
+  const [selectedHingeId, setSelectedHingeId] = useState<string | null>(null);
   const [selectedParts, setSelectedParts] = useState<string[]>([]);
   const [draggingPartId, setDraggingPartId] = useState<string | null>(null);
   const [dsl, setDsl] = useState('');
@@ -204,6 +271,24 @@ export default function PhysicsStudio({
   const templates = useMemo(() => [...PREBUILT_COMPONENTS, ...customTemplates], [customTemplates]);
   const templateMap = useMemo(() => new Map(templates.map((template) => [template.id, template])), [templates]);
   const selectedCombatantState = selectedCombatant ? arenaState?.combatants?.[selectedCombatant] : null;
+  const selectedHinge = selectedHingeId ? hinges.find((hinge) => hinge.id === selectedHingeId) ?? null : null;
+  const selectedControllerState = useMemo(() => {
+    const activeControllers = arenaState?.activeControllers;
+    if (!activeControllers || typeof activeControllers !== 'object') return null;
+    const rootId = selectedCombatantState?.rootId;
+    if (rootId && activeControllers[rootId]) return activeControllers[rootId] as Record<string, unknown>;
+    const fallback = Object.values(activeControllers as Record<string, unknown>)[0];
+    return fallback && typeof fallback === 'object' ? fallback as Record<string, unknown> : null;
+  }, [arenaState?.activeControllers, selectedCombatantState?.rootId]);
+  const selectedCombatantHinges = useMemo(() => {
+    const hingeMap = arenaState?.hinges ?? {};
+    const preferredIds: string[] = Array.isArray(selectedCombatantState?.hingeIds) ? selectedCombatantState.hingeIds as string[] : Object.keys(hingeMap);
+    return preferredIds
+      .map((hingeId) => [hingeId, hingeMap[hingeId]] as const)
+      .filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[1]))
+      .sort((left, right) => Number((right[1]?.jointLoad as number) ?? 0) - Number((left[1]?.jointLoad as number) ?? 0));
+  }, [arenaState?.hinges, selectedCombatantState?.hingeIds]);
+  const liveCombatants = useMemo(() => arenaState?.combatants ? Object.entries(arenaState.combatants) as Array<[string, any]> : [], [arenaState?.combatants]);
 
   useEffect(() => {
     try {
@@ -361,15 +446,25 @@ export default function PhysicsStudio({
     if (selectedParts.length === 0) return;
     setParts((prev) => prev.filter((part) => !selectedParts.includes(part.id)));
     setHinges((prev) => prev.filter((hinge) => !selectedParts.includes(hinge.parentId) && !selectedParts.includes(hinge.childId)));
+    setSelectedHingeId((prev) => {
+      if (!prev) return prev;
+      const hinge = hinges.find((entry) => entry.id === prev);
+      return hinge && !selectedParts.includes(hinge.parentId) && !selectedParts.includes(hinge.childId) ? prev : null;
+    });
     setSelectedParts([]);
     setStatus('Removed selected components.');
-  }, [selectedParts]);
+  }, [hinges, selectedParts]);
 
   const clearBuilder = useCallback(() => {
     setParts([]);
     setHinges([]);
+    setSelectedHingeId(null);
     setSelectedParts([]);
     setStatus('Cleared builder layout.');
+  }, []);
+
+  const updateHinge = useCallback((hingeId: string, patch: Partial<HingeLink>) => {
+    setHinges((prev) => prev.map((hinge) => hinge.id === hingeId ? { ...hinge, ...patch } : hinge));
   }, []);
 
   const attachSelectedWithHinge = useCallback(() => {
@@ -390,7 +485,16 @@ export default function PhysicsStudio({
       axis: [0, 0, 1],
       anchorA: [clamp(dx, -0.5, 0.5), clamp(dy, -0.5, 0.5), 0],
       anchorB: [clamp(-dx, -0.5, 0.5), clamp(-dy, -0.5, 0.5), 0],
+      minAngle: -Math.PI * 0.6,
+      maxAngle: Math.PI * 0.6,
+      motorForce: 0,
+      stiffness: 42,
+      damping: 9,
+      angularStiffness: 32,
+      angularDamping: 6,
+      breakForce: 900,
     }]);
+    setSelectedHingeId((prev) => prev);
     setStatus(`Attached ${child.label} to ${parent.label}.`);
   }, [parts, selectedParts]);
 
@@ -411,13 +515,14 @@ export default function PhysicsStudio({
     }));
     setParts(nextParts);
     setHinges(nextHinges);
+    setSelectedHingeId(null);
     setSelectedParts([]);
     setStatus(`Loaded ${assemblyId} starter assembly.`);
   }, []);
 
   const buildBodyPlan = useCallback(() => {
     const partMap = new Map(parts.map((part) => [part.id, part]));
-    return parts.map((part) => {
+    const nextBodyPlan = parts.map((part) => {
       const template = templateMap.get(part.templateId)!;
       const position: [number, number, number] = [
         Number((((part.x / BOARD_WIDTH) - 0.5) * 8).toFixed(3)),
@@ -448,30 +553,50 @@ export default function PhysicsStudio({
             axis: hinge.axis,
             anchorA: [clamp(dx * 0.5, -parentHalf[0], parentHalf[0]), clamp(dy * 0.5, -parentHalf[1], parentHalf[1]), 0] as [number, number, number],
             anchorB: [clamp(-dx * 0.5, -childHalf[0], childHalf[0]), clamp(-dy * 0.5, -childHalf[1], childHalf[1]), 0] as [number, number, number],
+            minAngle: hinge.minAngle,
+            maxAngle: hinge.maxAngle,
+            motorForce: hinge.motorForce,
+            stiffness: hinge.stiffness,
+            damping: hinge.damping,
+            angularStiffness: hinge.angularStiffness,
+            angularDamping: hinge.angularDamping,
+            breakForce: hinge.breakForce,
           };
         }),
       };
     });
+    return normalizeBodyPlan(nextBodyPlan);
   }, [hinges, parts, templateMap]);
+
+  const getDeploymentOrigin = useCallback((team: string, creatureId: string) => {
+    const occupiedSlots = liveCombatants.filter(([id, combatant]) => id !== creatureId && String(combatant?.team ?? id) === team).length;
+    return buildSpawnOrigin(team, occupiedSlots);
+  }, [liveCombatants]);
+
+  const deployPreparedBodyPlan = useCallback((bodyPlan: NonNullable<PhysicsCmd['bodyPlan']>, team: string, creatureId: string, settings?: { health?: number; contactDamage?: number; aggression?: number }) => {
+    const origin = getDeploymentOrigin(team, creatureId);
+    queuePhysicsCmd('spawn_creature', {
+      creatureId,
+      bodyPlan: normalizeBodyPlan(bodyPlan),
+      position: origin,
+      team,
+      health: settings?.health ?? deployHealth,
+      contactDamage: settings?.contactDamage ?? deployDamage,
+      aggression: settings?.aggression ?? deployAggression,
+    });
+    queuePhysicsCmd('get_state');
+    setSelectedCombatant(creatureId);
+    setControllerId(`${creatureId}-v1`);
+    setStatus(`Deployed ${creatureId} for team ${team} at x=${origin[0].toFixed(1)}.`);
+  }, [deployAggression, deployDamage, deployHealth, getDeploymentOrigin, queuePhysicsCmd]);
 
   const deployCurrentDesign = useCallback((team = deployTeam, creatureId = builderName) => {
     if (parts.length === 0) {
       setStatus('Add components before deploying a bot.');
       return;
     }
-    queuePhysicsCmd('spawn_creature', {
-      creatureId,
-      bodyPlan: buildBodyPlan(),
-      team,
-      health: deployHealth,
-      contactDamage: deployDamage,
-      aggression: deployAggression,
-    });
-    queuePhysicsCmd('get_state');
-    setSelectedCombatant(creatureId);
-    setControllerId(`${creatureId}-v1`);
-    setStatus(`Deployed ${creatureId} for team ${team}.`);
-  }, [buildBodyPlan, builderName, deployAggression, deployDamage, deployHealth, deployTeam, parts.length, queuePhysicsCmd]);
+    deployPreparedBodyPlan(buildBodyPlan(), team, creatureId);
+  }, [buildBodyPlan, builderName, deployPreparedBodyPlan, deployTeam, parts.length]);
 
   const saveBlueprint = useCallback(async () => {
     if (parts.length === 0) {
@@ -511,6 +636,90 @@ export default function PhysicsStudio({
     setStatus(`Saved ${builderName} to the bot library.`);
   }, [buildBodyPlan, builderName, controllerId, customTemplates, deployAggression, deployDamage, deployHealth, deployTeam, generations, hinges, mutationRate, parts, populationSize, refreshBlueprints, rewardFn, simSteps]);
 
+  const enrollArenaBot = useCallback(async () => {
+    if (parts.length === 0) {
+      setStatus('Add components before enrolling an arena bot.');
+      return;
+    }
+
+    const botId = selectedCombatant || builderName;
+    const bodyPlan = buildBodyPlan();
+    const designSettings = {
+      team: deployTeam,
+      health: deployHealth,
+      contactDamage: deployDamage,
+      aggression: deployAggression,
+      rewardFn,
+      generations,
+      populationSize,
+      simSteps,
+      mutationRate,
+      controllerId,
+    };
+
+    const blueprintResponse = await fetch('/api/physics-blueprint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: builderName,
+        name: builderName,
+        templates: customTemplates,
+        parts,
+        hinges,
+        bodyPlan,
+        settings: designSettings,
+      }),
+    });
+    if (!blueprintResponse.ok) {
+      setStatus('Failed to save the arena design before hall-of-fame enrollment.');
+      return;
+    }
+
+    const blueprintPayload = await blueprintResponse.json();
+    const blueprint = blueprintPayload?.blueprint;
+    const strategies = Array.from(new Set(parts
+      .map((part) => templateMap.get(part.templateId)?.role ?? templateMap.get(part.templateId)?.shape ?? 'frame')
+      .filter((entry): entry is string => Boolean(entry))))
+      .slice(0, 8);
+
+    const response = await fetch('/api/hall-of-fame', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'enroll',
+        botId,
+        goal: 'Arena combat champion',
+        url: 'arena://physics-studio',
+        peakMetric: Number(selectedCombatantState?.health ?? deployHealth),
+        peakMetricLabel: 'health',
+        iterations: Number(selectedControllerState?.step ?? 0),
+        strategies,
+        kind: 'arena',
+        notes: `Arena bot enrolled from Physics Studio on ${new Date().toISOString()}.`,
+        design: {
+          blueprintId: blueprint?.id ?? builderName,
+          blueprintName: blueprint?.name ?? builderName,
+          templates: customTemplates,
+          parts,
+          hinges,
+          bodyPlan,
+          settings: blueprint?.settings ?? designSettings,
+          partCount: parts.length,
+          hingeCount: hinges.length,
+          notes: typeof blueprint?.notes === 'string' ? blueprint.notes : undefined,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      setStatus(`Failed to enroll ${botId} in the arena hall of fame.`);
+      return;
+    }
+
+    refreshBlueprints();
+    setStatus(`Enrolled ${botId} in the arena hall of fame with its design.`);
+  }, [buildBodyPlan, builderName, controllerId, customTemplates, deployAggression, deployDamage, deployHealth, deployTeam, generations, hinges, mutationRate, parts, populationSize, refreshBlueprints, rewardFn, selectedCombatant, selectedCombatantState?.health, selectedControllerState?.step, simSteps, templateMap]);
+
   const loadBlueprintIntoStudio = useCallback(async (blueprintId: string) => {
     const response = await fetch(`/api/physics-blueprint?id=${encodeURIComponent(blueprintId)}`);
     if (!response.ok) {
@@ -527,6 +736,7 @@ export default function PhysicsStudio({
     setCustomTemplates(Array.isArray(blueprint.templates) ? blueprint.templates : []);
     setParts(Array.isArray(blueprint.parts) ? blueprint.parts : []);
     setHinges(Array.isArray(blueprint.hinges) ? blueprint.hinges : []);
+    setSelectedHingeId(null);
     const settings = blueprint.settings ?? {};
     if (typeof settings.team === 'string') setDeployTeam(settings.team);
     if (typeof settings.health === 'number') setDeployHealth(settings.health);
@@ -548,19 +758,13 @@ export default function PhysicsStudio({
     if (Array.isArray(blueprint.bodyPlan) && blueprint.bodyPlan.length > 0) {
       const settings = blueprint.settings ?? {};
       const creatureId = String(blueprint.name ?? blueprint.id ?? blueprintId);
-      queuePhysicsCmd('spawn_creature', {
-        creatureId,
-        bodyPlan: blueprint.bodyPlan,
-        team: typeof settings.team === 'string' ? settings.team : deployTeam,
+      deployPreparedBodyPlan(blueprint.bodyPlan as NonNullable<PhysicsCmd['bodyPlan']>, typeof settings.team === 'string' ? settings.team : deployTeam, creatureId, {
         health: typeof settings.health === 'number' ? settings.health : deployHealth,
         contactDamage: typeof settings.contactDamage === 'number' ? settings.contactDamage : deployDamage,
         aggression: typeof settings.aggression === 'number' ? settings.aggression : deployAggression,
       });
-      queuePhysicsCmd('get_state');
-      setSelectedCombatant(creatureId);
-      setStatus(`Deployed stored bot ${creatureId}.`);
     }
-  }, [deployAggression, deployDamage, deployHealth, deployTeam, loadBlueprintIntoStudio, queuePhysicsCmd]);
+  }, [deployAggression, deployDamage, deployHealth, deployPreparedBodyPlan, deployTeam, loadBlueprintIntoStudio]);
 
   const deleteBlueprint = useCallback(async (blueprintId: string) => {
     await fetch('/api/physics-blueprint', {
@@ -632,6 +836,14 @@ export default function PhysicsStudio({
           axis: parseVec(pairs.axis, [0, 0, 1]),
           anchorA: parseVec(pairs.anchorA, [0, 0, 0]),
           anchorB: parseVec(pairs.anchorB, [0, 0, 0]),
+          minAngle: Number.isFinite(Number(pairs.minAngle)) ? Number(pairs.minAngle) : -Math.PI * 0.6,
+          maxAngle: Number.isFinite(Number(pairs.maxAngle)) ? Number(pairs.maxAngle) : Math.PI * 0.6,
+          motorForce: Number.isFinite(Number(pairs.motorForce)) ? Number(pairs.motorForce) : 0,
+          stiffness: Number.isFinite(Number(pairs.stiffness)) ? Number(pairs.stiffness) : 42,
+          damping: Number.isFinite(Number(pairs.damping)) ? Number(pairs.damping) : 9,
+          angularStiffness: Number.isFinite(Number(pairs.angularStiffness)) ? Number(pairs.angularStiffness) : 32,
+          angularDamping: Number.isFinite(Number(pairs.angularDamping)) ? Number(pairs.angularDamping) : 6,
+          breakForce: Number.isFinite(Number(pairs.breakForce)) ? Number(pairs.breakForce) : 900,
         });
       }
     }
@@ -697,8 +909,6 @@ export default function PhysicsStudio({
       'Queued an LLM build refinement request.',
     );
   }, [dispatchAgentPrompt]);
-
-  const liveCombatants = arenaState?.combatants ? Object.entries(arenaState.combatants) as Array<[string, any]> : [];
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', background: '#0b1017', color: '#f4f7fb' }}>
@@ -774,24 +984,26 @@ export default function PhysicsStudio({
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <QuickButton label="Attach Hinge" onClick={attachSelectedWithHinge} />
                   <QuickButton label="Save Bot" onClick={saveBlueprint} />
+                  <QuickButton label="Enroll HOF" onClick={() => { void enrollArenaBot(); }} />
                   <QuickButton label="Remove Selected" onClick={removeSelected} />
                   <QuickButton label="Clear" onClick={clearBuilder} />
                 </div>
-                <div
-                  ref={boardRef}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={onDropTemplate}
-                  style={{
-                    position: 'relative',
-                    width: BOARD_WIDTH,
-                    height: BOARD_HEIGHT,
-                    borderRadius: 18,
-                    border: '1px dashed rgba(255,255,255,0.18)',
-                    background: 'radial-gradient(circle at top, rgba(100,150,255,0.18), rgba(8,12,18,0.72))',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <svg width={BOARD_WIDTH} height={BOARD_HEIGHT} style={{ position: 'absolute', inset: 0 }}>
+                <div style={{ maxWidth: '100%', maxHeight: 420, overflow: 'auto', paddingBottom: 4 }}>
+                  <div
+                    ref={boardRef}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={onDropTemplate}
+                    style={{
+                      position: 'relative',
+                      width: BOARD_WIDTH,
+                      height: BOARD_HEIGHT,
+                      borderRadius: 18,
+                      border: '1px dashed rgba(255,255,255,0.18)',
+                      background: 'radial-gradient(circle at top, rgba(100,150,255,0.18), rgba(8,12,18,0.72))',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <svg width={BOARD_WIDTH} height={BOARD_HEIGHT} style={{ position: 'absolute', inset: 0 }}>
                     {hinges.map((hinge) => {
                       const parent = parts.find((entry) => entry.id === hinge.parentId);
                       const child = parts.find((entry) => entry.id === hinge.childId);
@@ -799,47 +1011,96 @@ export default function PhysicsStudio({
                       return (
                         <line
                           key={hinge.id}
+                          onClick={() => setSelectedHingeId(hinge.id)}
                           x1={parent.x}
                           y1={parent.y}
                           x2={child.x}
                           y2={child.y}
-                          stroke="rgba(255,214,102,0.95)"
-                          strokeWidth="3"
-                          strokeDasharray="8 6"
+                          stroke={selectedHingeId === hinge.id ? '#7ad8ff' : 'rgba(255,214,102,0.95)'}
+                          strokeWidth={selectedHingeId === hinge.id ? '5' : '3'}
+                          strokeDasharray={selectedHingeId === hinge.id ? 'none' : '8 6'}
+                          style={{ cursor: 'pointer' }}
                         />
                       );
                     })}
-                  </svg>
-                  {parts.map((part) => {
-                    const template = templateMap.get(part.templateId);
-                    const selected = selectedParts.includes(part.id);
-                    return (
-                      <button
-                        key={part.id}
-                        onPointerDown={(event) => beginPartDrag(part.id, event.clientX, event.clientY)}
-                        onClick={() => setSelectedParts((prev) => prev.includes(part.id) ? prev.filter((entry) => entry !== part.id) : [...prev.slice(-1), part.id])}
-                        style={{
-                          position: 'absolute',
-                          left: part.x - 32,
-                          top: part.y - 22,
-                          width: 64,
-                          minHeight: 44,
-                          borderRadius: 14,
-                          border: selected ? '2px solid #ffd166' : '1px solid rgba(255,255,255,0.16)',
-                          background: selected ? 'rgba(255,209,102,0.2)' : 'rgba(255,255,255,0.08)',
-                          color: '#f4f7fb',
-                          cursor: draggingPartId === part.id ? 'grabbing' : 'grab',
-                          padding: 6,
-                          fontSize: 10,
-                          fontWeight: 800,
-                        }}
-                      >
-                        <div>{part.label}</div>
-                        <div style={{ marginTop: 2, fontSize: 9, color: 'rgba(244,247,251,0.58)' }}>{template?.role ?? template?.shape}</div>
-                      </button>
-                    );
-                  })}
+                    </svg>
+                    {parts.map((part) => {
+                      const template = templateMap.get(part.templateId);
+                      const selected = selectedParts.includes(part.id);
+                      return (
+                        <button
+                          key={part.id}
+                          onPointerDown={(event) => beginPartDrag(part.id, event.clientX, event.clientY)}
+                          onClick={() => setSelectedParts((prev) => prev.includes(part.id) ? prev.filter((entry) => entry !== part.id) : [...prev.slice(-1), part.id])}
+                          style={{
+                            position: 'absolute',
+                            left: part.x - 32,
+                            top: part.y - 22,
+                            width: 64,
+                            minHeight: 44,
+                            borderRadius: 14,
+                            border: selected ? '2px solid #ffd166' : '1px solid rgba(255,255,255,0.16)',
+                            background: selected ? 'rgba(255,209,102,0.2)' : 'rgba(255,255,255,0.08)',
+                            color: '#f4f7fb',
+                            cursor: draggingPartId === part.id ? 'grabbing' : 'grab',
+                            padding: 6,
+                            fontSize: 10,
+                            fontWeight: 800,
+                          }}
+                        >
+                          <div>{part.label}</div>
+                          <div style={{ marginTop: 2, fontSize: 9, color: 'rgba(244,247,251,0.58)' }}>{template?.role ?? template?.shape}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
+              </Section>
+
+              <Section title="Joint Tuning">
+                {!selectedHinge && <div style={{ fontSize: 11, color: 'rgba(244,247,251,0.62)' }}>Select a hinge on the builder board to tune its physical connection, travel limits, and durability.</div>}
+                {selectedHinge && (
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ fontSize: 11, color: 'rgba(244,247,251,0.68)' }}>
+                      {parts.find((entry) => entry.id === selectedHinge.parentId)?.label ?? selectedHinge.parentId} → {parts.find((entry) => entry.id === selectedHinge.childId)?.label ?? selectedHinge.childId}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <LabeledField label="Axis">
+                        <input value={formatVec(selectedHinge.axis)} onChange={(event) => updateHinge(selectedHinge.id, { axis: parseVec(event.target.value, selectedHinge.axis) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Anchor A">
+                        <input value={formatVec(selectedHinge.anchorA)} onChange={(event) => updateHinge(selectedHinge.id, { anchorA: parseVec(event.target.value, selectedHinge.anchorA) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Anchor B">
+                        <input value={formatVec(selectedHinge.anchorB)} onChange={(event) => updateHinge(selectedHinge.id, { anchorB: parseVec(event.target.value, selectedHinge.anchorB) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Motor Force">
+                        <input type="number" step="1" value={selectedHinge.motorForce ?? 0} onChange={(event) => updateHinge(selectedHinge.id, { motorForce: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Min Angle">
+                        <input type="number" step="0.1" value={selectedHinge.minAngle ?? -Math.PI * 0.6} onChange={(event) => updateHinge(selectedHinge.id, { minAngle: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Max Angle">
+                        <input type="number" step="0.1" value={selectedHinge.maxAngle ?? Math.PI * 0.6} onChange={(event) => updateHinge(selectedHinge.id, { maxAngle: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Linear Stiffness">
+                        <input type="number" step="1" value={selectedHinge.stiffness ?? 42} onChange={(event) => updateHinge(selectedHinge.id, { stiffness: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Linear Damping">
+                        <input type="number" step="0.5" value={selectedHinge.damping ?? 9} onChange={(event) => updateHinge(selectedHinge.id, { damping: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Angular Stiffness">
+                        <input type="number" step="1" value={selectedHinge.angularStiffness ?? 32} onChange={(event) => updateHinge(selectedHinge.id, { angularStiffness: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Angular Damping">
+                        <input type="number" step="0.5" value={selectedHinge.angularDamping ?? 6} onChange={(event) => updateHinge(selectedHinge.id, { angularDamping: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                      <LabeledField label="Break Force">
+                        <input type="number" step="10" value={selectedHinge.breakForce ?? 900} onChange={(event) => updateHinge(selectedHinge.id, { breakForce: Number(event.target.value) })} style={inputStyle} />
+                      </LabeledField>
+                    </div>
+                  </div>
+                )}
               </Section>
 
               <Section title="Component Language">
@@ -852,7 +1113,7 @@ export default function PhysicsStudio({
                   placeholder={[
                     'component ShockHammer shape=box size=1.0,0.2,0.35 mass=0.5 color=#ff6b57 role=weapon contactDamage=2.3',
                     'part hammer component=ShockHammer x=250 y=120',
-                    'hinge hammer parent=Torso axis=0,0,1 anchorA=0.5,0,0 anchorB=-0.2,0,0',
+                    'hinge hammer parent=Torso axis=0,0,1 anchorA=0.5,0,0 anchorB=-0.2,0,0 stiffness=48 damping=10 angularStiffness=34 breakForce=1200',
                   ].join('\n')}
                   style={{ width: '100%', minHeight: 120, borderRadius: 14, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(0,0,0,0.24)', color: '#f4f7fb', padding: 10, fontFamily: 'monospace', fontSize: 11 }}
                 />
@@ -868,6 +1129,7 @@ export default function PhysicsStudio({
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                   <QuickButton label="Save Current Bot" onClick={saveBlueprint} />
+                  <QuickButton label="Enroll HOF" onClick={() => { void enrollArenaBot(); }} />
                   <QuickButton label="Refresh Library" onClick={refreshBlueprints} />
                 </div>
                 <div style={{ display: 'grid', gap: 8 }}>
@@ -914,6 +1176,9 @@ export default function PhysicsStudio({
                     <LabeledField label="Contact Damage"><input type="number" step="0.1" value={deployDamage} onChange={(event) => setDeployDamage(Number(event.target.value))} style={inputStyle} /></LabeledField>
                   </div>
                   <LabeledField label="Aggression"><input type="number" step="0.1" value={deployAggression} onChange={(event) => setDeployAggression(Number(event.target.value))} style={inputStyle} /></LabeledField>
+                  <div style={{ fontSize: 11, color: 'rgba(244,247,251,0.62)', padding: '2px 2px 0' }}>
+                    Next spawn lane: x={getDeploymentOrigin(deployTeam, builderName)[0].toFixed(1)}. Builder layouts are normalized around their centroid before deployment so saved bots and live bots enter the arena from the same frame.
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   <QuickButton label="Deploy User Bot" onClick={() => deployCurrentDesign('user', builderName)} />
@@ -967,6 +1232,36 @@ export default function PhysicsStudio({
                     <QuickButton label="Flat Arena" onClick={() => { setGroundProfile('flat'); setGroundAmplitude(0); setGroundFrequency(0.18); }} />
                     <QuickButton label="Rolling Hills" onClick={() => { setGroundProfile('hills'); setGroundAmplitude(1.1); setGroundFrequency(0.2); }} />
                   </div>
+                </div>
+              </Section>
+
+              <Section title="Joint Telemetry">
+                <div style={{ fontSize: 11, color: 'rgba(244,247,251,0.62)', marginBottom: 8 }}>
+                  Monitor how hard live hinges are working. Separation and alignment error should stay low if the assembly is physically coherent.
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {selectedCombatantHinges.length === 0 && <div style={{ color: 'rgba(244,247,251,0.62)' }}>Deploy a bot with articulated joints to inspect live hinge telemetry.</div>}
+                  {selectedCombatantHinges.slice(0, 8).map(([hingeId, hinge]) => {
+                    const jointLoad = Number(hinge.jointLoad ?? 0);
+                    const separation = Number(hinge.separation ?? 0);
+                    const alignmentError = Number(hinge.alignmentError ?? 0);
+                    const breakForce = Math.max(1, Number(hinge.breakForce ?? 900));
+                    const stressRatio = Math.max(0, Math.min(1, jointLoad / breakForce));
+                    return (
+                      <div key={hingeId} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: 10, background: 'rgba(255,255,255,0.03)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <strong>{hingeId.replace(`${selectedCombatant}_hinge_`, '')}</strong>
+                          <span style={{ fontSize: 10, color: stressRatio > 0.75 ? '#ff8a7a' : stressRatio > 0.45 ? '#ffd166' : '#7ad8ff' }}>{jointLoad.toFixed(1)} load</span>
+                        </div>
+                        <div style={{ marginTop: 6, height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                          <div style={{ width: `${stressRatio * 100}%`, height: '100%', background: stressRatio > 0.75 ? '#ff6b6b' : stressRatio > 0.45 ? '#ffd166' : '#7ad8ff' }} />
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 11, color: 'rgba(244,247,251,0.66)' }}>
+                          separation {separation.toFixed(3)} · align {alignmentError.toFixed(3)} rad · motor {Number(hinge.motorForce ?? 0).toFixed(0)}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </Section>
             </div>

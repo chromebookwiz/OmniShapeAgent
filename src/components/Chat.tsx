@@ -834,7 +834,7 @@ export default function Chat() {
     return () => clearTimeout(timer);
   }, [connStatus, heartbeatIntervalMinutes, heartbeatMode, input, isLoading, messages.length, pendingApprovals.length]);
 
-  // Persist active model string to localStorage so BotBrowser can pick it up for deployments
+  // Persist active model string to localStorage for arena and provider workflows that reuse the current model
   useEffect(() => {
     const activeModel =
       primaryProvider === 'ollama' ? ollamaModel :
@@ -1142,7 +1142,7 @@ export default function Chat() {
       case 'trophyroom':
         resetUtilityPanels();
         setShowHallOfFame(true);
-        appendSystemMessage('Opened the hidden hall of fame.');
+        appendSystemMessage('Opened the arena hall of fame.');
         break;
       case 'wallet':
         resetUtilityPanels();
@@ -2338,7 +2338,7 @@ export default function Chat() {
                           ['computer', 'Computer', 'mouse, keyboard, open_url, wait'],
                           ['memory', 'Memory', 'memory_store/search/list, graph_add/query'],
                           ['comms', 'Comms', 'send_telegram, send_email'],
-                          ['bots', 'Bots', 'deploy_bot, list_bots, stop_bot, spawn_subroutine'],
+                          ['bots', 'Arena', 'physics studio workflows, arena bots, hall of fame'],
                           ['scheduler', 'Scheduler', 'schedule_cron, schedule_resonance'],
                           ['image', 'Image Gen', 'generate_image (Stable Diffusion / OpenRouter)'],
                           ['self', 'Self-Ref', 'read_self, list_all_tools, diagnose_system'],

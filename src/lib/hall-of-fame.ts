@@ -1,36 +1,93 @@
 // src/lib/hall-of-fame.ts
-// Bot Hall of Fame — tracks the greatest bots in history, their strategies,
-// weights, and performance metrics. Champions persist across runs.
+// Arena Hall of Fame — tracks the strongest arena bots, their embedded designs,
+// weights, and combat performance. Champions persist across runs.
 
 import fs from 'fs';
 
 import { ensureWorkspacePaths } from './paths-bootstrap';
 import { PATHS } from './paths-core';
+
 const HOF_PATH = PATHS.hallOfFame;
 
 ensureWorkspacePaths();
 
-export interface BotChampion {
-  id: string;
-  name: string;             // User-assigned or auto-legendary name
-  url: string;              // Target URL the bot ran against
-  goal: string;             // High-level objective
-  rank: number;             // 1-based ranking (1 = best)
-  peakMetric: number;       // Highest performance value recorded
-  peakMetricLabel: string;  // Human-readable label (e.g. "score", "coins/hr")
-  totalIterations: number;
-  runtimeMs: number;
-  strategies: string[];     // Key discoveries / winning strategies
-  weightPath?: string;      // Path to saved PolicyNet weights
-  retired: boolean;
-  enrolledAt: number;       // ms timestamp
-  notes: string;
-  hallmarks: string[];      // Achievement strings e.g. "First to score 1000"
+export interface ArenaBotDesignSnapshot {
+  blueprintId?: string;
+  blueprintName?: string;
+  templates?: Array<Record<string, unknown>>;
+  parts?: Array<Record<string, unknown>>;
+  hinges?: Array<Record<string, unknown>>;
+  bodyPlan?: Array<Record<string, unknown>>;
+  settings?: Record<string, unknown>;
+  notes?: string;
+  partCount: number;
+  hingeCount: number;
 }
 
-// ---------------------------------------------------------------------------
-// 50+ legendary bot names
-// ---------------------------------------------------------------------------
+export interface BotChampion {
+  id: string;
+  kind: 'arena' | 'legacy-web';
+  name: string;
+  url: string;
+  goal: string;
+  rank: number;
+  peakMetric: number;
+  peakMetricLabel: string;
+  totalIterations: number;
+  runtimeMs: number;
+  strategies: string[];
+  weightPath?: string;
+  retired: boolean;
+  enrolledAt: number;
+  notes: string;
+  hallmarks: string[];
+  design?: ArenaBotDesignSnapshot;
+}
+
+function normalizeDesign(input?: Partial<ArenaBotDesignSnapshot>): ArenaBotDesignSnapshot | undefined {
+  if (!input) return undefined;
+  const partCount = Number(
+    input.partCount
+      ?? (Array.isArray(input.parts) ? input.parts.length : Array.isArray(input.bodyPlan) ? input.bodyPlan.length : 0),
+  );
+  const hingeCount = Number(input.hingeCount ?? (Array.isArray(input.hinges) ? input.hinges.length : 0));
+  return {
+    blueprintId: input.blueprintId,
+    blueprintName: input.blueprintName,
+    templates: Array.isArray(input.templates) ? input.templates : undefined,
+    parts: Array.isArray(input.parts) ? input.parts : undefined,
+    hinges: Array.isArray(input.hinges) ? input.hinges : undefined,
+    bodyPlan: Array.isArray(input.bodyPlan) ? input.bodyPlan : undefined,
+    settings: input.settings && typeof input.settings === 'object' ? input.settings : undefined,
+    notes: typeof input.notes === 'string' ? input.notes : undefined,
+    partCount,
+    hingeCount,
+  };
+}
+
+function normalizeChampion(input: Partial<BotChampion> & Pick<BotChampion, 'id'>): BotChampion {
+  const design = normalizeDesign(input.design);
+  return {
+    id: input.id,
+    kind: input.kind ?? (design ? 'arena' : 'legacy-web'),
+    name: input.name ?? input.id,
+    url: input.url ?? (design ? 'arena://physics-studio' : ''),
+    goal: input.goal ?? 'Arena combat champion',
+    rank: Number(input.rank ?? 0),
+    peakMetric: Number(input.peakMetric ?? 0),
+    peakMetricLabel: input.peakMetricLabel ?? 'score',
+    totalIterations: Number(input.totalIterations ?? 0),
+    runtimeMs: Number(input.runtimeMs ?? 0),
+    strategies: Array.isArray(input.strategies) ? input.strategies.map(String) : [],
+    weightPath: typeof input.weightPath === 'string' ? input.weightPath : undefined,
+    retired: Boolean(input.retired),
+    enrolledAt: Number(input.enrolledAt ?? Date.now()),
+    notes: typeof input.notes === 'string' ? input.notes : '',
+    hallmarks: Array.isArray(input.hallmarks) ? input.hallmarks.map(String) : [],
+    design,
+  };
+}
+
 export const LEGENDARY_NAMES: string[] = [
   'The Devourer',
   'Apex Predator',
@@ -89,8 +146,6 @@ export const LEGENDARY_NAMES: string[] = [
   'Dark Reward',
 ];
 
-// ---------------------------------------------------------------------------
-
 class HallOfFame {
   private champions: Map<string, BotChampion> = new Map();
   private usedNames: Set<string> = new Set();
@@ -99,20 +154,17 @@ class HallOfFame {
     this.load();
   }
 
-  // ── Persistence ──────────────────────────────────────────────────────────
-
   private load() {
     try {
-      if (fs.existsSync(HOF_PATH)) {
-        const raw: BotChampion[] = JSON.parse(fs.readFileSync(HOF_PATH, 'utf-8'));
-        if (Array.isArray(raw)) {
-          for (const c of raw) {
-            this.champions.set(c.id, c);
-            this.usedNames.add(c.name);
-          }
-          console.log(`[HallOfFame] Loaded ${this.champions.size} champions.`);
-        }
+      if (!fs.existsSync(HOF_PATH)) return;
+      const raw = JSON.parse(fs.readFileSync(HOF_PATH, 'utf-8')) as Array<Partial<BotChampion> & Pick<BotChampion, 'id'>>;
+      if (!Array.isArray(raw)) return;
+      for (const entry of raw) {
+        const champion = normalizeChampion(entry);
+        this.champions.set(champion.id, champion);
+        this.usedNames.add(champion.name);
       }
+      console.log(`[HallOfFame] Loaded ${this.champions.size} champions.`);
     } catch (err) {
       console.error('[HallOfFame] Failed to load:', err);
     }
@@ -120,10 +172,7 @@ class HallOfFame {
 
   private save() {
     try {
-      fs.writeFileSync(
-        HOF_PATH,
-        JSON.stringify(Array.from(this.champions.values()), null, 2)
-      );
+      fs.writeFileSync(HOF_PATH, JSON.stringify(Array.from(this.champions.values()), null, 2));
     } catch (err) {
       console.error('[HallOfFame] Failed to save:', err);
     }
@@ -131,14 +180,11 @@ class HallOfFame {
 
   private rerank() {
     const sorted = this.getRankings();
-    sorted.forEach((c, i) => { c.rank = i + 1; });
+    sorted.forEach((champion, index) => {
+      champion.rank = index + 1;
+    });
   }
 
-  // ── Core API ─────────────────────────────────────────────────────────────
-
-  /**
-   * Enroll a bot into the Hall of Fame or update its record if already present.
-   */
   enroll(
     botId: string,
     goal: string,
@@ -148,20 +194,26 @@ class HallOfFame {
     strategies: string[],
     weightPath?: string,
     peakMetricLabel: string = 'score',
-    runtimeMs: number = 0
+    runtimeMs: number = 0,
+    options?: {
+      kind?: 'arena' | 'legacy-web';
+      design?: Partial<ArenaBotDesignSnapshot>;
+      notes?: string;
+    },
   ): BotChampion {
     const existing = this.champions.get(botId);
-
     if (existing) {
-      // Update existing champion — only raise the peak, never lower it
-      if (peakMetric > existing.peakMetric) {
-        existing.peakMetric = peakMetric;
-      }
+      if (peakMetric > existing.peakMetric) existing.peakMetric = peakMetric;
       existing.totalIterations = Math.max(existing.totalIterations, iterations);
       existing.runtimeMs += runtimeMs;
-      // Merge strategies (unique only)
-      for (const s of strategies) {
-        if (!existing.strategies.includes(s)) existing.strategies.push(s);
+      existing.goal = goal;
+      existing.url = url;
+      existing.peakMetricLabel = peakMetricLabel;
+      existing.kind = options?.kind ?? existing.kind;
+      existing.design = normalizeDesign(options?.design) ?? existing.design;
+      if (typeof options?.notes === 'string') existing.notes = options.notes;
+      for (const strategy of strategies) {
+        if (!existing.strategies.includes(strategy)) existing.strategies.push(strategy);
       }
       if (weightPath) existing.weightPath = weightPath;
       this.rerank();
@@ -172,10 +224,11 @@ class HallOfFame {
     const name = this.autoName(botId);
     const champion: BotChampion = {
       id: botId,
+      kind: options?.kind ?? ((options?.design || url === 'arena://physics-studio') ? 'arena' : 'legacy-web'),
       name,
       url,
       goal,
-      rank: this.champions.size + 1, // Temp rank; rerank() fixes it
+      rank: this.champions.size + 1,
       peakMetric,
       peakMetricLabel,
       totalIterations: iterations,
@@ -184,8 +237,9 @@ class HallOfFame {
       weightPath,
       retired: false,
       enrolledAt: Date.now(),
-      notes: '',
+      notes: options?.notes ?? '',
       hallmarks: [],
+      design: normalizeDesign(options?.design),
     };
 
     this.champions.set(botId, champion);
@@ -195,137 +249,110 @@ class HallOfFame {
     return champion;
   }
 
-  /**
-   * Assign a legendary name if none exists yet. Returns the name.
-   */
   autoName(botId: string): string {
     const existing = this.champions.get(botId);
     if (existing) return existing.name;
-
-    // Pick a name not yet used
-    const available = LEGENDARY_NAMES.filter(n => !this.usedNames.has(n));
-    let name: string;
-    if (available.length > 0) {
-      name = available[Math.floor(Math.random() * available.length)];
-    } else {
-      // All names used — generate a numbered variant
-      name = `Legend #${this.champions.size + 1}`;
-    }
+    const available = LEGENDARY_NAMES.filter((name) => !this.usedNames.has(name));
+    const name = available.length > 0
+      ? available[Math.floor(Math.random() * available.length)]
+      : `Legend #${this.champions.size + 1}`;
     this.usedNames.add(name);
     return name;
   }
 
-  /**
-   * Mark a champion as retired. Record stays in the Hall.
-   */
   retire(id: string): boolean {
-    const c = this.champions.get(id);
-    if (!c) return false;
-    c.retired = true;
+    const champion = this.champions.get(id);
+    if (!champion) return false;
+    champion.retired = true;
     this.save();
-    console.log(`[HallOfFame] Retired "${c.name}".`);
+    console.log(`[HallOfFame] Retired "${champion.name}".`);
     return true;
   }
 
   getRankings(): BotChampion[] {
     return Array.from(this.champions.values())
-      .sort((a, b) => b.peakMetric - a.peakMetric);
+      .filter((champion) => champion.kind === 'arena')
+      .sort((left, right) => right.peakMetric - left.peakMetric);
   }
 
   getChampion(id: string): BotChampion | undefined {
     return this.champions.get(id);
   }
 
-  /**
-   * Live-update the peak metric for an actively running bot.
-   */
   updateMetric(id: string, metric: number, iteration: number): BotChampion | null {
-    const c = this.champions.get(id);
-    if (!c) return null;
-    if (metric > c.peakMetric) c.peakMetric = metric;
-    c.totalIterations = Math.max(c.totalIterations, iteration);
+    const champion = this.champions.get(id);
+    if (!champion) return null;
+    if (metric > champion.peakMetric) champion.peakMetric = metric;
+    champion.totalIterations = Math.max(champion.totalIterations, iteration);
     this.rerank();
     this.save();
-    return c;
+    return champion;
   }
 
   addHallmark(id: string, hallmark: string): boolean {
-    const c = this.champions.get(id);
-    if (!c) return false;
-    if (!c.hallmarks.includes(hallmark)) {
-      c.hallmarks.push(hallmark);
+    const champion = this.champions.get(id);
+    if (!champion) return false;
+    if (!champion.hallmarks.includes(hallmark)) {
+      champion.hallmarks.push(hallmark);
       this.save();
-      console.log(`[HallOfFame] Hallmark added to "${c.name}": ${hallmark}`);
+      console.log(`[HallOfFame] Hallmark added to "${champion.name}": ${hallmark}`);
     }
     return true;
   }
 
-  /**
-   * Collect the top strategies used by champions with a matching goal,
-   * sorted by frequency of occurrence.
-   */
   getBestStrategies(goal: string): string[] {
-    const freq: Record<string, number> = {};
+    const frequency: Record<string, number> = {};
     const goalLower = goal.toLowerCase();
-
-    for (const c of this.champions.values()) {
-      if (!c.goal.toLowerCase().includes(goalLower)) continue;
-      for (const s of c.strategies) {
-        freq[s] = (freq[s] ?? 0) + 1;
+    for (const champion of this.getRankings()) {
+      if (!champion.goal.toLowerCase().includes(goalLower)) continue;
+      for (const strategy of champion.strategies) {
+        frequency[strategy] = (frequency[strategy] ?? 0) + 1;
       }
     }
-
-    return Object.entries(freq)
-      .sort(([, a], [, b]) => b - a)
+    return Object.entries(frequency)
+      .sort(([, left], [, right]) => right - left)
       .map(([strategy]) => strategy);
   }
-
-  // ── Export ────────────────────────────────────────────────────────────────
 
   export(): string {
     const rankings = this.getRankings();
     if (rankings.length === 0) {
-      return '# Hall of Fame\n\n_No champions enrolled yet._\n';
+      return '# Arena Hall of Fame\n\n_No arena champions enrolled yet._\n';
     }
 
     const lines: string[] = [
-      '# ShapeAgent — Bot Hall of Fame',
+      '# ShapeAgent — Arena Bot Hall of Fame',
       '',
       `_${rankings.length} champions enrolled as of ${new Date().toISOString()}_`,
       '',
-      '| Rank | Name | Goal | Peak | Iterations | Status |',
-      '|------|------|------|------|------------|--------|',
+      '| Rank | Name | Goal | Peak | Iterations | Design | Status |',
+      '|------|------|------|------|------------|--------|--------|',
     ];
 
-    for (const c of rankings) {
-      const status = c.retired ? 'Retired' : 'Active';
+    for (const champion of rankings) {
+      const designSummary = champion.design ? `${champion.design.partCount} parts / ${champion.design.hingeCount} hinges` : 'No design';
+      const status = champion.retired ? 'Retired' : 'Active';
+      lines.push(`| ${champion.rank} | **${champion.name}** | ${champion.goal} | ${champion.peakMetric.toLocaleString()} ${champion.peakMetricLabel} | ${champion.totalIterations.toLocaleString()} | ${designSummary} | ${status} |`);
+    }
+
+    lines.push('', '## Champion Detail Cards', '');
+    for (const champion of rankings.slice(0, 5)) {
       lines.push(
-        `| ${c.rank} | **${c.name}** | ${c.goal} | ${c.peakMetric.toLocaleString()} ${c.peakMetricLabel} | ${c.totalIterations.toLocaleString()} | ${status} |`
+        `### ${champion.rank}. ${champion.name}`,
+        `- **Goal:** ${champion.goal}`,
+        `- **Arena:** ${champion.url}`,
+        `- **Peak:** ${champion.peakMetric.toLocaleString()} ${champion.peakMetricLabel}`,
+        `- **Iterations:** ${champion.totalIterations.toLocaleString()}`,
+        `- **Runtime:** ${(champion.runtimeMs / 1000 / 60).toFixed(1)} min`,
+        champion.design ? `- **Design:** ${champion.design.blueprintName ?? champion.design.blueprintId ?? champion.id} (${champion.design.partCount} parts, ${champion.design.hingeCount} hinges)` : '',
+        `- **Strategies:** ${champion.strategies.slice(0, 3).join('; ')}`,
+        champion.hallmarks.length > 0 ? `- **Hallmarks:** ${champion.hallmarks.join(', ')}` : '',
+        '',
       );
     }
 
-    lines.push('');
-
-    // Detail cards for top 5
-    lines.push('## Champion Detail Cards', '');
-    for (const c of rankings.slice(0, 5)) {
-      lines.push(
-        `### ${c.rank}. ${c.name}`,
-        `- **Goal:** ${c.goal}`,
-        `- **URL:** ${c.url}`,
-        `- **Peak:** ${c.peakMetric.toLocaleString()} ${c.peakMetricLabel}`,
-        `- **Iterations:** ${c.totalIterations.toLocaleString()}`,
-        `- **Runtime:** ${(c.runtimeMs / 1000 / 60).toFixed(1)} min`,
-        `- **Strategies:** ${c.strategies.slice(0, 3).join('; ')}`,
-        c.hallmarks.length > 0 ? `- **Hallmarks:** ${c.hallmarks.join(', ')}` : '',
-        ''
-      );
-    }
-
-    return lines.filter(l => l !== undefined).join('\n');
+    return lines.filter(Boolean).join('\n');
   }
 }
-
-// ---------------------------------------------------------------------------
 
 export const hallOfFame = new HallOfFame();

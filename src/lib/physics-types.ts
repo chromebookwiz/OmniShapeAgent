@@ -64,6 +64,9 @@ export interface PhysicsCmd {
   maxAngle?: number;
   motorSpeed?: number;
   motorForce?: number;
+  angularStiffness?: number;
+  angularDamping?: number;
+  breakForce?: number;
   sensorId?: string;
   sensorType?: 'distance' | 'speed' | 'angle' | 'contact' | 'health' | 'enemy_distance' | 'boundary_distance';
   target?: [number, number, number] | string;
@@ -111,6 +114,14 @@ export interface PhysicsCmd {
       axis: [number, number, number];
       anchorA: [number, number, number];
       anchorB: [number, number, number];
+      minAngle?: number;
+      maxAngle?: number;
+      motorForce?: number;
+      stiffness?: number;
+      damping?: number;
+      angularStiffness?: number;
+      angularDamping?: number;
+      breakForce?: number;
     }>;
   }>;
   controllerId?: string;

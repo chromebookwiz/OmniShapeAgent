@@ -1,7 +1,7 @@
 // src/app/api/hall-of-fame/route.ts
-// GET  — returns the full Hall of Fame as JSON.
+// GET  — returns the full arena Hall of Fame as JSON.
 // POST — mutates via { action, ...args }:
-//   enroll       { botId, goal, url, peakMetric, iterations?, strategies?, weightPath?, peakMetricLabel?, runtimeMs? }
+//   enroll       { botId, goal, url, peakMetric, iterations?, strategies?, weightPath?, peakMetricLabel?, runtimeMs?, kind?, design?, notes? }
 //   retire       { id }
 //   name         { id, name }
 //   hallmark     { id, hallmark }
@@ -43,6 +43,9 @@ export async function POST(req: Request) {
           weightPath,
           peakMetricLabel = 'score',
           runtimeMs       = 0,
+          kind,
+          design,
+          notes,
         } = body;
 
         if (!botId || !goal || !url || peakMetric === undefined) {
@@ -62,6 +65,24 @@ export async function POST(req: Request) {
           weightPath ? String(weightPath) : undefined,
           String(peakMetricLabel),
           Number(runtimeMs),
+          {
+            kind: kind === 'legacy-web' ? 'legacy-web' : 'arena',
+            design: design && typeof design === 'object'
+              ? {
+                  blueprintId: typeof design.blueprintId === 'string' ? design.blueprintId : undefined,
+                  blueprintName: typeof design.blueprintName === 'string' ? design.blueprintName : undefined,
+                  templates: Array.isArray(design.templates) ? design.templates : undefined,
+                  parts: Array.isArray(design.parts) ? design.parts : undefined,
+                  hinges: Array.isArray(design.hinges) ? design.hinges : undefined,
+                  bodyPlan: Array.isArray(design.bodyPlan) ? design.bodyPlan : undefined,
+                  settings: design.settings && typeof design.settings === 'object' ? design.settings : undefined,
+                  notes: typeof design.notes === 'string' ? design.notes : undefined,
+                  partCount: Number(design.partCount ?? (Array.isArray(design.parts) ? design.parts.length : Array.isArray(design.bodyPlan) ? design.bodyPlan.length : 0)),
+                  hingeCount: Number(design.hingeCount ?? (Array.isArray(design.hinges) ? design.hinges.length : 0)),
+                }
+              : undefined,
+            notes: typeof notes === 'string' ? notes : undefined,
+          },
         );
         return NextResponse.json({ ok: true, champion });
       }
