@@ -582,6 +582,8 @@ export default function Chat() {
   const autoStopRequestedRef = useRef(false);        // set by stop_agent event
   const pendingVisionSnapshotRef = useRef<string | null>(null); // base64 from vision_self_check
   const autoLoopCountRef = useRef(0);
+  const hasRunInitialConnectionTestRef = useRef(false);
+  const vllmProbeInFlightRef = useRef(false);
 
   // Media URL attachments (image/video URLs for vLLM multimodal)
   type MediaUrlAttachment = { url: string; type: 'image' | 'video' };
@@ -718,7 +720,8 @@ export default function Chat() {
   }, [ollamaModel, ollamaUrl, openrouterApiKey, openrouterModel, primaryProvider, vllmApiKey, vllmModel, vllmUrl]);
 
   const runVllmProbe = async () => {
-    if (!vllmUrl) return;
+    if (!vllmUrl || vllmProbeInFlightRef.current) return;
+    vllmProbeInFlightRef.current = true;
     setVllmProbeResult('Probing local endpoint - testing OpenAI-compatible paths...');
     try {
       const params = new URLSearchParams({ url: vllmUrl });
@@ -735,18 +738,23 @@ export default function Chat() {
       setVllmProbeResult(lines.join('\n'));
       // If probe found a working URL and we have models, update the vllmModel with correct URL
       if (data.workingChatUrl && data.models?.length > 0) {
+        if (typeof data.resolvedBase === 'string' && data.resolvedBase.trim()) {
+          setVllmUrl(data.resolvedBase);
+        }
         const newVal = `vllm:${data.models[0]}@${data.workingChatUrl}`;
         setVllmModel(newVal);
         // Also update vllmModels list so dropdown shows correct URL
         setVllmModels(data.models.map((m: string) => ({
           model: m,
-          hostPort: (() => { try { return new URL(vllmUrl).host; } catch { return vllmUrl; } })(),
+          hostPort: (() => { try { return new URL(typeof data.resolvedBase === 'string' ? data.resolvedBase : vllmUrl).host; } catch { return typeof data.resolvedBase === 'string' ? data.resolvedBase : vllmUrl; } })(),
           chatUrl: data.workingChatUrl,
         })));
         setVllmStatus('ok');
       }
     } catch (e) {
       setVllmProbeResult(`Probe error: ${String(e)}`);
+    } finally {
+      vllmProbeInFlightRef.current = false;
     }
   };
 
@@ -863,6 +871,8 @@ export default function Chat() {
   }, []);
 
   useEffect(() => {
+    if (hasRunInitialConnectionTestRef.current) return;
+    hasRunInitialConnectionTestRef.current = true;
     testConnection();
     fetchSavedChats();
   }, [fetchSavedChats, testConnection]);

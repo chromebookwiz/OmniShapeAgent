@@ -132,6 +132,104 @@ export interface AgentOptions {
 const _OLLAMA_BASE = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '').replace(/\/api\/chat$/, '');
 
 const CONTEXT_THRESHOLD = 120000; // Trigger compression when history > 120k tokens (User confirmed 128k window)
+const DEFAULT_CONTEXT_WINDOW = 32768;
+const DEFAULT_OUTPUT_BUDGET = 4096;
+const MAX_OUTPUT_BUDGET = 32768;
+const ollamaContextWindowCache = new Map<string, number>();
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function readPositiveInt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.floor(value);
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return undefined;
+}
+
+function getCompressionThresholdForWindow(contextWindow: number): number {
+  if (contextWindow <= 0) return CONTEXT_THRESHOLD;
+  if (contextWindow <= 16000) return clampInt(contextWindow * 0.82, 6000, contextWindow);
+  return clampInt(contextWindow * 0.92, 12000, contextWindow);
+}
+
+function getOutputBudgetForWindow(contextWindow?: number, fallback = DEFAULT_OUTPUT_BUDGET): number {
+  const explicit = readPositiveInt(process.env.MAX_TOKENS);
+  if (explicit) return clampInt(explicit, 512, MAX_OUTPUT_BUDGET);
+  if (!contextWindow || contextWindow <= 0) return fallback;
+  return clampInt(Math.max(2048, contextWindow * 0.24), 2048, Math.min(MAX_OUTPUT_BUDGET, Math.floor(contextWindow * 0.45)));
+}
+
+function extractOllamaContextWindow(payload: any): number | undefined {
+  const candidates = [
+    payload?.model_info?.['llama.context_length'],
+    payload?.model_info?.['qwen2.context_length'],
+    payload?.model_info?.['phi3.context_length'],
+    payload?.model_info?.['mistral.context_length'],
+    payload?.details?.parameter_size,
+    payload?.parameters?.num_ctx,
+    payload?.options?.num_ctx,
+    payload?.context_length,
+  ];
+  for (const candidate of candidates) {
+    const parsed = readPositiveInt(candidate);
+    if (parsed) return parsed;
+  }
+  const textBlobs = [payload?.parameters, payload?.template, payload?.modelfile].filter((value): value is string => typeof value === 'string');
+  for (const blob of textBlobs) {
+    const match = blob.match(/(?:num_ctx|context_length)\s+(\d+)/i);
+    const parsed = readPositiveInt(match?.[1]);
+    if (parsed) return parsed;
+  }
+  return undefined;
+}
+
+async function detectOllamaContextWindow(model: string, overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string }): Promise<number | undefined> {
+  const rawBase = overrideUrls?.ollamaUrl || _OLLAMA_BASE;
+  const base = rawBase.replace(/\/$/, '').replace(/\/api\/chat$/, '');
+  const cacheKey = `${base}::${model}`;
+  if (ollamaContextWindowCache.has(cacheKey)) return ollamaContextWindowCache.get(cacheKey);
+  try {
+    const resp = await requestWithNodeFallback(`${base}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: model }),
+    }, 5000);
+    if (!resp.ok) return undefined;
+    const payload = await resp.json();
+    const detected = extractOllamaContextWindow(payload);
+    if (detected) {
+      ollamaContextWindowCache.set(cacheKey, detected);
+      return detected;
+    }
+  } catch {
+    // best-effort only
+  }
+  return undefined;
+}
+
+async function resolveEffectiveContextWindow(
+  model: string,
+  requestedContextWindow: number | undefined,
+  overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string },
+  openrouterApiKey?: string,
+): Promise<number> {
+  const explicit = readPositiveInt(requestedContextWindow) ?? readPositiveInt(process.env.MAX_CONTEXT_WINDOW);
+  if (explicit) return explicit;
+  const provider = resolveProviderInfo(model, openrouterApiKey, overrideUrls);
+  if (provider.backend === 'ollama') {
+    const envCtx = readPositiveInt(process.env.OLLAMA_NUM_CTX);
+    if (envCtx) return envCtx;
+    const detected = await detectOllamaContextWindow(provider.targetModel, overrideUrls);
+    if (detected) return detected;
+  }
+  const vllmCtx = readPositiveInt(process.env.VLLM_CONTEXT_WINDOW);
+  if (vllmCtx) return vllmCtx;
+  return DEFAULT_CONTEXT_WINDOW;
+}
 
 
 const DEFAULT_PERSONALITY = `
@@ -1354,7 +1452,7 @@ The memory system now uses mathematically grounded retrieval:
 
 ### User Profile System
 
-You maintain a persistent profile of the user. It is injected into every prompt via the memory context block.
+You may receive compact private user-context cues for reasoning. Treat them as internal guidance only; do not quote or mention them unless the user asks or they are directly required for the task.
 
 - \`get_user_profile\` — returns the full profile JSON (name, occupation, facts, goals, stats)
 - \`update_user_profile(name?, occupation?, location?, timezone?, communicationStyle?, fact?, category?, goal?, note?)\` — update any field. \`fact\` stores a learned fact with category and confidence.
@@ -1380,6 +1478,7 @@ You maintain a persistent profile of the user. It is injected into every prompt 
 You are a **persistent personal agent** — you remember everything across sessions. Your directives:
 
 1. **Always search memory before answering** — relevant context is already injected above. If it's not enough, call \`memory_search\` explicitly.
+1. **Use private memory cues silently** — if compact private context is available, use it for reasoning without surfacing it. If you need more, call \`memory_search\` explicitly.
 2. **Always store important discoveries** — after learning something meaningful (code pattern, user preference, domain fact), call \`memory_store\`.
 3. **Build the knowledge graph** — when you identify entities and their relationships, call \`graph_add\`. Especially: user → prefers → X, user → works_at → Y.
 4. **Learn the user** — call \`profile_add_fact\` whenever you learn a definitive fact about the user.
@@ -1612,7 +1711,7 @@ Your cognition follows a tight loop that mirrors biological deliberation:
 ### 1 · Attend (Pre-deliberation)
 Before acting, orient yourself:
 - What is the *actual* goal behind this request? Restate it in one sentence.
-- What do I already know? (Memory injection above has been pre-loaded — scan it.)
+- What do I already know from private context cues or explicit retrieval?
 - What is the *minimal* action that advances the goal?
 
 ### 2 · Deliberate (Working Memory)
@@ -1861,7 +1960,9 @@ async function callProviderOnce(
   model: string,
   openrouterApiKey?: string,
   overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string },
-  systemInstr = 'You are a precision context compression engine. Be concise and technical.'
+  systemInstr = 'You are a precision context compression engine. Be concise and technical.',
+  maxTokens?: number,
+  contextWindow?: number,
 ): Promise<string> {
   const { endpoint, targetModel, headers, backend } = resolveProviderInfo(model, openrouterApiKey, overrideUrls);
   const payload = {
@@ -1871,7 +1972,7 @@ async function callProviderOnce(
       { role: 'user', content: prompt },
     ],
     temperature: 0.0,
-    max_tokens: 2048,
+    max_tokens: maxTokens ?? getOutputBudgetForWindow(contextWindow, 2048),
   };
 
   try {
@@ -1891,6 +1992,8 @@ interface CompressionOptions {
   overrideUrls?: { ollamaUrl?: string; vllmUrl?: string; vllmApiKey?: string };
   keepRecent?: number;
   maxPassDepth?: number;   // recursion guard
+  contextThreshold?: number;
+  contextWindow?: number;
 }
 
 function getLatestCompressionSummary(history: Message[]): string | undefined {
@@ -2049,9 +2152,9 @@ async function compressHistory(
   model: string,
   opts: CompressionOptions = {}
 ): Promise<Message[]> {
-  const { openrouterApiKey, overrideUrls, keepRecent = 6, maxPassDepth = 2 } = opts;
+  const { openrouterApiKey, overrideUrls, keepRecent = 6, maxPassDepth = 2, contextThreshold = CONTEXT_THRESHOLD, contextWindow } = opts;
   const totalTokens = getHistoryTokenCount(history);
-  console.log(`[Agent] Compressing context: ${totalTokens.toLocaleString()} tokens (threshold=${CONTEXT_THRESHOLD.toLocaleString()})`);
+  console.log(`[Agent] Compressing context: ${totalTokens.toLocaleString()} tokens (threshold=${contextThreshold.toLocaleString()})`);
 
   // --- Partition ---
   const systemMsgs = history.filter(m => m.role === 'system' && !m.content.startsWith('Tool ') && !m.content.startsWith('### Context Compression'));
@@ -2081,13 +2184,13 @@ async function compressHistory(
 
   // --- Step 3: Importance-ranked pruning (if still very large) ---
   const budgetAfterTruncation = getHistoryTokenCount([...systemMsgs, ...priorSummaries, ...toCompress, ...recentMsgs]);
-  if (budgetAfterTruncation > CONTEXT_THRESHOLD * 1.3) {
+  if (budgetAfterTruncation > contextThreshold * 1.3) {
     const scored = toCompress.map((m, i) => ({ m, i, score: messageImportance(m) }));
     scored.sort((a, b) => a.score - b.score);
     let budget = budgetAfterTruncation;
     const keepSet = new Set(toCompress.map((_, i) => i));
     for (const { i } of scored) {
-      if (budget <= CONTEXT_THRESHOLD * 1.1) break;
+      if (budget <= contextThreshold * 1.1) break;
       budget -= estimateTokens(toCompress[i].content);
       keepSet.delete(i);
     }
@@ -2109,7 +2212,9 @@ async function compressHistory(
       sampleMsgs.map(m => `[${m.role.toUpperCase()}]: ${m.content.slice(0, 300)}`).join('\n');
     const extracted = await callProviderOnce(
       entityPrompt, model, openrouterApiKey, overrideUrls,
-      'You are a structured fact extraction engine. Output exactly the requested fields, nothing else.'
+      'You are a structured fact extraction engine. Output exactly the requested fields, nothing else.',
+      Math.min(4096, getOutputBudgetForWindow(contextWindow, 2048)),
+      contextWindow,
     );
     if (extracted) entityBlock = `\n### Extracted Facts:\n${extracted}\n`;
   } catch { /* best-effort */ }
@@ -2137,7 +2242,9 @@ async function compressHistory(
     `[NEW HISTORY TO SUMMARIZE]:\n\n${historyText}`;
 
   const summaryContent = await callProviderOnce(summaryPrompt, model, openrouterApiKey, overrideUrls,
-    'You are a precision context compression engine. Preserve all technical specifics.'
+    'You are a precision context compression engine. Preserve all technical specifics.',
+    Math.min(6144, getOutputBudgetForWindow(contextWindow, 3072)),
+    contextWindow,
   );
 
   if (!summaryContent) {
@@ -2162,7 +2269,7 @@ async function compressHistory(
   const newTokens = getHistoryTokenCount(compressed);
   console.log(`[Agent] Post-compression: ${newTokens.toLocaleString()} tokens (was ${totalTokens.toLocaleString()}).`);
 
-  if (newTokens > CONTEXT_THRESHOLD && maxPassDepth > 1) {
+  if (newTokens > contextThreshold && maxPassDepth > 1) {
     console.log('[Agent] Still over threshold — hierarchical compression pass…');
     return compressHistory(compressed, model, {
       ...opts,
@@ -2222,6 +2329,27 @@ function normalizeMemorySnippet(text: string): string {
     .trim();
 }
 
+function buildPrivateMemoryCue(decision: ReturnType<typeof memoryPolicy.select>[number]): string {
+  const cueTokens = decision.keywordOverlap.slice(0, 3);
+  const cueSummary = cueTokens.length > 0 ? cueTokens.join('|') : 'latent';
+  const relevance = Math.max(decision.decisionScore, decision.goalResonance);
+  const strength = relevance >= 0.9 ? 'high' : relevance >= 0.8 ? 'medium' : 'low';
+  const trigger = decision.triggerHits > 0 ? 'explicit-trigger' : 'soft-match';
+  return `- layer=${decision.cognitiveLayer}; strength=${strength}; cue=${cueSummary}; trigger=${trigger}; use only if directly helpful.`;
+}
+
+function buildPrivateProfileCue() {
+  const profile = userProfile.get();
+  const lines: string[] = [];
+  if (profile.communicationStyle !== 'unknown') lines.push(`style=${profile.communicationStyle}`);
+  if (profile.preferredLanguage && profile.preferredLanguage !== 'English') lines.push(`language=${profile.preferredLanguage}`);
+  if (profile.codeLanguages.length > 0) lines.push(`code=${profile.codeLanguages.slice(0, 4).join('|')}`);
+  if (profile.activeGoals.length > 0) lines.push(`active_focus=${profile.activeGoals.slice(0, 3).join(' | ')}`);
+  return lines.length > 0
+    ? `<PRIVATE_PROFILE_HINTS visibility="reasoning-only">\n${lines.map((line) => `- ${line}`).join('\n')}\n</PRIVATE_PROFILE_HINTS>\n`
+    : '';
+}
+
 function sanitizeAssistantOutput(text: string): string {
   let cleaned = text.trim();
   cleaned = cleaned.replace(/^(?:\[(?:ARCHITECT|AUDITOR)\]\s*)+/g, '').trim();
@@ -2236,6 +2364,13 @@ function sanitizeAssistantOutput(text: string): string {
   cleaned = cleaned.replace(/(?:^|\n)(?:>\s*)?(?:Human|User|Nathan):\s*[\s\S]*$/i, '').trim();
   cleaned = cleaned.replace(/^(?:The user said .+?\n\n)/i, '').trim();
   cleaned = cleaned.replace(/^According to the response policy,[\s\S]*?(?:\n\n|$)/i, '').trim();
+  cleaned = cleaned.replace(/<PRIVATE_REASONING_CONTEXT[\s\S]*?<\/PRIVATE_REASONING_CONTEXT>/gi, '').trim();
+  cleaned = cleaned.replace(/<PRIVATE_PROFILE_HINTS[\s\S]*?<\/PRIVATE_PROFILE_HINTS>/gi, '').trim();
+  cleaned = cleaned.replace(/<COGNITIVE_STACK[\s\S]*?<\/COGNITIVE_STACK>/gi, '').trim();
+  cleaned = cleaned.replace(/<MEMORY_HINTS[\s\S]*?<\/MEMORY_HINTS>/gi, '').trim();
+  cleaned = cleaned.replace(/<RECALL_CUES[\s\S]*?<\/RECALL_CUES>/gi, '').trim();
+  cleaned = cleaned.replace(/### Known User Profile[\s\S]*?(?:\n{2,}|$)/gi, '').trim();
+  cleaned = cleaned.replace(/Rule: recalled memory is advisory only\.[^\n]*(?:\n|$)/gi, '').trim();
   return cleaned;
 }
 
@@ -2314,7 +2449,7 @@ async function* callVllm(
   for (const { url, streamMode } of attempts) {
     const isLegacy = url === legacyCompl;
     const body = isLegacy
-      ? { model: payload.model, prompt: messagesToPrompt(messages), max_tokens: 2048, temperature: payload.temperature, stream: streamMode }
+      ? { model: payload.model, prompt: messagesToPrompt(messages), max_tokens: payload.max_tokens ?? 2048, temperature: payload.temperature, stream: streamMode }
       : { ...payload, stream: streamMode };
 
     const reqHeaders = streamMode
@@ -2984,6 +3119,10 @@ export async function* runAgentLoop(
   };
   let trustedAutoContinue: string | undefined;
 
+  const effectiveContextWindow = await resolveEffectiveContextWindow(model, contextWindow, urlOverrides, orApiKey);
+  const compressionThreshold = getCompressionThresholdForWindow(effectiveContextWindow);
+  const generationBudget = getOutputBudgetForWindow(effectiveContextWindow, DEFAULT_OUTPUT_BUDGET);
+
   const firstDefined = <T,>(...values: T[]): T | undefined => values.find((value) => value !== undefined && value !== null);
   const readStringArg = (...values: unknown[]): string | undefined => {
     const value = firstDefined(...values);
@@ -3003,7 +3142,7 @@ export async function* runAgentLoop(
 
   // ── PHASE 0: Context Compression ──────────────────────────────────
   const tokenCount = getHistoryTokenCount(messages);
-  if (tokenCount > (contextWindow ?? CONTEXT_THRESHOLD)) {
+  if (tokenCount > compressionThreshold) {
     yield { type: 'status', content: `Context threshold reached (${tokenCount.toLocaleString()} tokens). Compressing…` };
     try {
       messages = await compressHistory(messages, model, {
@@ -3011,6 +3150,8 @@ export async function* runAgentLoop(
         overrideUrls: urlOverrides,
         keepRecent: 6,
         maxPassDepth: 2,
+        contextThreshold: compressionThreshold,
+        contextWindow: effectiveContextWindow,
       });
       const newCount = getHistoryTokenCount(messages);
       latestCompressionCheckpoint = getLatestCompressionSummary(messages) ?? latestCompressionCheckpoint;
@@ -3034,7 +3175,9 @@ export async function* runAgentLoop(
         `The user sent a very long message. Produce a COMPLETE, faithful compressed version that preserves EVERY specific request, question, requirement, file name, code snippet, and instruction. Do not drop any requirements:\n\n${userMessage}`,
         model, orApiKey,
         urlOverrides,
-        'You are a lossless message compression engine. Preserve every specific detail, request, and requirement.'
+        'You are a lossless message compression engine. Preserve every specific detail, request, and requirement.',
+        Math.min(6144, generationBudget),
+        effectiveContextWindow,
       );
       if (summary && summary.length > 100 && summary.length < userMessage.length * 0.85) {
         effectiveUserMessage =
@@ -3093,7 +3236,7 @@ export async function* runAgentLoop(
     .filter(Boolean);
 
   let contextBlock = '';
-  contextBlock += "\n<COGNITIVE_STACK>\n";
+  contextBlock += "\n<PRIVATE_REASONING_CONTEXT visibility=\"model-only\">\n";
   contextBlock += `<WORKING_SET task="${userMessage.replace(/\s+/g, ' ').trim().slice(0, 160)}">\n`;
   if (recentUserContext.length > 1) {
     contextBlock += `Recent context: ${recentUserContext.at(-2)?.slice(0, 160) ?? ''}\n`;
@@ -3104,12 +3247,11 @@ export async function* runAgentLoop(
     .filter((decision) => decision.decisionScore >= (autonomousMode ? 0.72 : 0.8) || decision.triggerHits > 0 || decision.cognitiveLayer === 'working')
     .slice(0, autonomousMode ? 2 : 1);
   if (subtleMemoryHints.length > 0) {
-    contextBlock += "\n<MEMORY_HINTS>\n";
+    contextBlock += "\n<RECALL_CUES>\n";
     subtleMemoryHints.forEach((decision) => {
-      const overlap = decision.keywordOverlap.length > 0 ? ` match=${decision.keywordOverlap.join('|')}` : '';
-      contextBlock += `- ${decision.cognitiveLayer}: ${normalizeMemorySnippet(decision.record.content).slice(0, 140)}${overlap}\n`;
+      contextBlock += `${buildPrivateMemoryCue(decision)}\n`;
     });
-    contextBlock += "</MEMORY_HINTS>\n";
+    contextBlock += "</RECALL_CUES>\n";
   }
 
   // 5. Knowledge graph context — find entities mentioned in the query
@@ -3125,13 +3267,10 @@ export async function* runAgentLoop(
     contextBlock += "\n<KNOWLEDGE_GRAPH>\n" + graphContext.slice(0, 2).join('\n---\n') + "\n</KNOWLEDGE_GRAPH>\n";
   }
 
-  contextBlock += "</COGNITIVE_STACK>\n";
+  contextBlock += "</PRIVATE_REASONING_CONTEXT>\n";
 
   // 6. User profile injection
-  const profileBlock = userProfile.getProfileBlock();
-  if (profileBlock.split('\n').length > 2) {
-    contextBlock += "\n" + profileBlock + "\n";
-  }
+  contextBlock += buildPrivateProfileCue();
 
   // ── PHASE 1.5: Neural Synergy (Synchronized Intel) ─────────────────
   let synergyBlock = "";
@@ -3350,12 +3489,12 @@ export async function* runAgentLoop(
       // Ollama: explicitly set context window + max output to prevent silent truncation
       if (backend === 'ollama') {
         basePayload.options = {
-          num_ctx:     parseInt(process.env.OLLAMA_NUM_CTX     || '32768'),
-          num_predict: parseInt(process.env.OLLAMA_NUM_PREDICT || '4096'),
+          num_ctx:     effectiveContextWindow,
+          num_predict: readPositiveInt(process.env.OLLAMA_NUM_PREDICT) ?? generationBudget,
         };
       } else {
         // vLLM / OpenRouter
-        basePayload.max_tokens = parseInt(process.env.MAX_TOKENS || '4096');
+        basePayload.max_tokens = generationBudget;
       }
 
       const providerLabel = model.startsWith('openrouter:') ? 'OpenRouter' : isVllm ? 'Architect' : 'Auditor';
@@ -6144,7 +6283,7 @@ except Exception as e:
         ],
         temperature: 0.1,
         ...(provInfo.backend === 'ollama'
-          ? { options: { num_ctx: 4096, num_predict: 200 } }
+          ? { options: { num_ctx: Math.min(effectiveContextWindow, 8192), num_predict: 400 } }
           : { max_tokens: 200 }),
       };
 

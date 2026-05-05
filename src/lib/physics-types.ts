@@ -45,6 +45,8 @@ export interface PhysicsCmd {
   wireframe?: boolean;
   fixed?: boolean;
   force?: [number, number, number];
+  point?: [number, number, number];
+  pointLocal?: boolean;
   torque?: [number, number, number];
   velocity?: [number, number, number];
   angularVelocity?: [number, number, number];

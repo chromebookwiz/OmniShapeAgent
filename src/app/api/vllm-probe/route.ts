@@ -3,6 +3,24 @@
 import { NextResponse } from 'next/server';
 import http from 'http';
 import https from 'https';
+import os from 'os';
+
+const VLLM_PORTS = ['8000', '8001', '5000', '5001', '9000'];
+const MAX_SUBNET_HOSTS = 1024;
+const SCAN_BATCH_SIZE = 24;
+const PROBE_CACHE_TTL_MS = 15_000;
+
+type ProbeModelResult = {
+  base: string;
+  v1Base: string;
+  models: string[];
+  modelsUrl: string | null;
+  attempts: string[];
+  reachable: boolean;
+  authRequired: boolean;
+};
+
+let recentProbeCache: { key: string; expiresAt: number; value: unknown } | null = null;
 
 const fetchT = async (url: string, options: RequestInit = {}, timeoutMs = 4000) => {
   const ctrl = new AbortController();
@@ -43,6 +61,120 @@ const fetchT = async (url: string, options: RequestInit = {}, timeoutMs = 4000) 
   }
 };
 
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function intToIpv4(value: number): string {
+  return [
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255,
+  ].join('.');
+}
+
+function enumerateSubnetHosts(address: string, netmask?: string | null, limit = MAX_SUBNET_HOSTS): string[] {
+  const ipValue = ipv4ToInt(address);
+  if (ipValue === null) return [];
+  const maskValue = ipv4ToInt(netmask || '255.255.255.0');
+  if (maskValue === null) return [];
+  const network = ipValue & maskValue;
+  const broadcast = network | (~maskValue >>> 0);
+  const firstHost = network + 1;
+  const lastHost = broadcast - 1;
+  if (lastHost < firstHost) return [address];
+  const totalHosts = lastHost - firstHost + 1;
+  if (totalHosts > limit) {
+    const [a, b, c] = address.split('.');
+    const fallback: string[] = [];
+    for (let host = 1; host <= 254; host += 1) fallback.push(`${a}.${b}.${c}.${host}`);
+    return fallback;
+  }
+  const hosts: string[] = [];
+  for (let current = firstHost; current <= lastHost; current += 1) hosts.push(intToIpv4(current >>> 0));
+  return hosts;
+}
+
+function extractHost(raw: string): string | null {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function localEndpointHosts(seedHosts: string[] = []): string[] {
+  const out = new Set<string>(['127.0.0.1', 'localhost']);
+  seedHosts.forEach((host) => {
+    if (host) out.add(host);
+  });
+  Object.values(os.networkInterfaces()).forEach((ifaces) => {
+    ifaces?.forEach((iface) => {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        out.add(iface.address);
+        enumerateSubnetHosts(iface.address, iface.netmask).forEach((host) => out.add(host));
+      }
+    });
+  });
+  return Array.from(out);
+}
+
+function parseModels(data: any): string[] {
+  if (!data) return [];
+  if (Array.isArray(data.data)) return data.data.map((entry: any) => entry.id || entry.name || entry.model || entry).filter((entry: unknown): entry is string => typeof entry === 'string');
+  if (Array.isArray(data.models)) return data.models.map((entry: any) => entry.id || entry.name || entry.model || entry).filter((entry: unknown): entry is string => typeof entry === 'string');
+  return [];
+}
+
+async function runScanTasks<T>(tasks: Array<() => Promise<T>>) {
+  const results: PromiseSettledResult<T>[] = [];
+  for (let index = 0; index < tasks.length; index += SCAN_BATCH_SIZE) {
+    const batchResults = await Promise.allSettled(tasks.slice(index, index + SCAN_BATCH_SIZE).map((task) => task()));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
+async function probeModelEndpoints(base: string, authH: Record<string, string>, timeoutMs = 3000) {
+  const normalizedBase = base
+    .replace(/\/+$/, '')
+    .replace(/\/v1\/(?:chat\/completions|completions|models)$/i, '')
+    .replace(/\/(?:chat\/completions|completions|models)$/i, '')
+    .replace(/\/v1$/i, '');
+  const v1Base = `${normalizedBase}/v1`;
+  const attempts: string[] = [];
+  for (const candidate of [`${v1Base}/models`, `${normalizedBase}/models`]) {
+    try {
+      const response = await fetchT(candidate, { method: 'GET', headers: { ...authH } }, timeoutMs);
+      const body = await response.text();
+      if (response.status === 401 || response.status === 403) {
+        attempts.push(`AUTH ${response.status} @ ${candidate}`);
+        return { base: normalizedBase, v1Base, models: [] as string[], modelsUrl: candidate, attempts, reachable: true, authRequired: true };
+      }
+      if (!response.ok) {
+        attempts.push(`HTTP ${response.status} @ ${candidate}`);
+        continue;
+      }
+      try {
+        const models = parseModels(JSON.parse(body));
+        if (models.length > 0) {
+          return { base: normalizedBase, v1Base, models, modelsUrl: candidate, attempts, reachable: true, authRequired: false };
+        }
+        attempts.push(`No models @ ${candidate}`);
+        return { base: normalizedBase, v1Base, models: [] as string[], modelsUrl: candidate, attempts, reachable: true, authRequired: false };
+      } catch {
+        attempts.push(`Invalid JSON @ ${candidate}`);
+      }
+    } catch (error) {
+      attempts.push(`ERROR @ ${candidate}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { base: normalizedBase, v1Base, models: [] as string[], modelsUrl: null as string | null, attempts, reachable: false, authRequired: false };
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const rawUrl = searchParams.get('url') || process.env.VLLM_URL || '';
@@ -57,43 +189,64 @@ export async function GET(req: Request) {
     .replace(/\/v1$/i, '');
   const v1Base = `${base}/v1`;
   const apiKey = searchParams.get('apiKey') || process.env.VLLM_API_KEY || '';
+  const extraHosts = (searchParams.get('sparkHosts') || process.env.VLLM_HOSTS || '')
+    .split(',').map((host) => host.trim()).filter(Boolean);
+  const probeCacheKey = JSON.stringify({ rawUrl, apiKey: Boolean(apiKey), extraHosts: [...extraHosts].sort() });
+  if (recentProbeCache && recentProbeCache.key === probeCacheKey && recentProbeCache.expiresAt > Date.now()) {
+    return NextResponse.json(recentProbeCache.value);
+  }
   const authH: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
   const steps: string[] = [];
   let models: string[] = [];
   let workingChatUrl: string | null = null;
   let workingFormat = '';
+  let resolvedBase = base;
+  let resolvedV1Base = `${base}/v1`;
 
   // ── Step 1: GET /v1/models ─────────────────────────────────────────────
   let modelsUrl = `${v1Base}/models`;
-  try {
-    let modelStepResolved = false;
-    for (const candidate of [`${v1Base}/models`, `${base}/models`]) {
-      const r = await fetchT(candidate, { method: 'GET', headers: { ...authH } }, 3000);
-      const body = await r.text();
-      if (!r.ok) {
-        steps.push(`❌ GET ${candidate} → HTTP ${r.status}: ${body.slice(0, 200)}`);
-        continue;
-      }
-      try {
-        const data = JSON.parse(body);
-        models = (data.data ?? data.models ?? [])
-          .map((m: any) => m.id || m.name || m.model || m)
-          .filter((x: any) => typeof x === 'string');
-        modelsUrl = candidate;
-        steps.push(`✅ GET ${candidate} → 200 OK  |  models: [${models.join(', ')}]`);
-        modelStepResolved = true;
-        break;
-      } catch {
-        steps.push(`⚠️  GET ${candidate} → 200 but invalid JSON: ${body.slice(0, 100)}`);
-      }
+  const directProbe = await probeModelEndpoints(base, authH, 3000);
+  models = directProbe.models;
+  if (directProbe.modelsUrl) {
+    modelsUrl = directProbe.modelsUrl;
+    resolvedBase = directProbe.base;
+    resolvedV1Base = directProbe.v1Base;
+    steps.push(`✅ GET ${directProbe.modelsUrl} → 200 OK  |  models: [${models.join(', ')}]`);
+    if (directProbe.authRequired) {
+      steps.push(`🔐 ${directProbe.modelsUrl} requires auth but the endpoint is reachable.`);
     }
-    if (!modelStepResolved) {
-      steps.push('   Cannot reach a usable model list — check URL and auth.');
+  } else {
+    directProbe.attempts.forEach((attempt) => steps.push(`❌ ${attempt}`));
+    steps.push(`   Server unreachable at ${base}; starting LAN scan for a moved local endpoint.`);
+    const explicitHost = extractHost(rawUrl);
+    const scanHosts = localEndpointHosts([...extraHosts, ...(explicitHost ? [explicitHost] : [])]);
+    let foundAny = false;
+    const scanTasks = scanHosts.flatMap((host) =>
+      VLLM_PORTS.map((port) => async () => {
+        if (foundAny) return null;
+        const candidateBase = `http://${host}:${port}`;
+        const result = await probeModelEndpoints(candidateBase, authH, 900);
+        if (result.models.length > 0 || result.authRequired) foundAny = true;
+        return result.models.length > 0 || result.authRequired ? result : null;
+      }),
+    );
+    const scanResults = await runScanTasks(scanTasks);
+    const firstHit = scanResults
+      .filter((entry): entry is PromiseFulfilledResult<Awaited<ReturnType<typeof scanTasks[number]>>> => entry.status === 'fulfilled')
+      .map((entry) => entry.value)
+      .find((entry) => entry && (entry.models.length > 0 || entry.authRequired));
+    if (!firstHit) {
+      const payload = { base, steps, models, workingChatUrl, summary: 'Server unreachable after LAN scan' };
+      recentProbeCache = { key: probeCacheKey, expiresAt: Date.now() + PROBE_CACHE_TTL_MS, value: payload };
+      return NextResponse.json(payload);
     }
-  } catch (e: any) {
-    steps.push(`❌ GET ${modelsUrl} → TIMEOUT/ERROR: ${e.message}`);
-    steps.push(`   Server unreachable at ${base}`);
-    return NextResponse.json({ base, steps, models, workingChatUrl, summary: 'Server unreachable' });
+    resolvedBase = firstHit.base;
+    resolvedV1Base = firstHit.v1Base;
+    modelsUrl = firstHit.modelsUrl ?? `${firstHit.v1Base}/models`;
+    models = firstHit.models;
+    steps.push(firstHit.authRequired
+      ? `🔐 LAN scan found reachable endpoint ${resolvedBase} but it requires auth.`
+      : `✅ LAN scan found ${resolvedBase}  |  models: [${models.join(', ')}]`);
   }
 
   const testModel = models[0] ?? 'test-model';
@@ -122,6 +275,11 @@ export async function GET(req: Request) {
     },
   ];
 
+  chatCandidates[0].url = `${resolvedV1Base}/chat/completions`;
+  chatCandidates[1].url = `${resolvedV1Base}/completions`;
+  chatCandidates[2].url = `${resolvedBase}/generate`;
+  chatCandidates[3].url = `${resolvedBase}/api/generate`;
+
   for (const { url, label, body } of chatCandidates) {
     // Try POST stream:false
     try {
@@ -137,9 +295,9 @@ export async function GET(req: Request) {
         workingChatUrl = url;
         workingFormat = label;
         break;
-      } else if (r.status === 422) {
+      } else if (r.status === 422 || r.status === 400) {
         // Unprocessable entity = endpoint exists but payload was rejected — endpoint IS accessible
-        steps.push(`✅ POST ${label} stream:false → 422 (endpoint exists, payload invalid — likely model name mismatch)`);
+        steps.push(`✅ POST ${label} stream:false → ${r.status} (endpoint exists, payload invalid — likely model or payload mismatch)`);
         workingChatUrl = url;
         workingFormat = label;
         break;
@@ -179,7 +337,7 @@ export async function GET(req: Request) {
   // ── Step 3: Also check Ollama native /api/chat ─────────────────────────
   if (!workingChatUrl) {
     try {
-      const ollamaUrl = `${base}/api/chat`;
+      const ollamaUrl = `${resolvedBase}/api/chat`;
       const r = await fetchT(ollamaUrl, {
         method: 'POST',
         headers: { ...authH, 'Content-Type': 'application/json' },
@@ -202,13 +360,16 @@ export async function GET(req: Request) {
     ? `✅ Working endpoint: ${workingChatUrl} (${workingFormat})`
     : `❌ No working chat endpoint found. The server responds at ${modelsUrl} (models list) but rejects all POST paths. This may indicate: (1) a reverse proxy blocking POSTs, (2) an API key is required, or (3) the server uses a non-standard path.`;
 
-  return NextResponse.json({
+  const payload = {
     base,
-    v1Base,
+    resolvedBase,
+    v1Base: resolvedV1Base,
     models,
     workingChatUrl,
     workingFormat,
     steps,
     summary,
-  });
+  };
+  recentProbeCache = { key: probeCacheKey, expiresAt: Date.now() + PROBE_CACHE_TTL_MS, value: payload };
+  return NextResponse.json(payload);
 }

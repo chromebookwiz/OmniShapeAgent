@@ -27,6 +27,8 @@ interface PhysicsObject {
   team?: string;
   contactDamage: number;
   partRole?: string;
+  kind: 'body' | 'joint';
+  jointForHingeId?: string;
 }
 
 interface SpringConstraint {
@@ -40,6 +42,7 @@ interface SpringConstraint {
 interface HingeConstraint {
   id: string;
   a: string; b: string;
+  jointId: string | undefined;
   axis: import("three").Vector3;
   anchorA: import("three").Vector3;  // local space offset on A
   anchorB: import("three").Vector3;  // local space offset on B
@@ -121,6 +124,111 @@ interface Combatant {
   aggression: number;
   contactDamage: number;
   eliminated: boolean;
+}
+
+type ConstraintBodyLike = {
+  position?: import('three').Vector3;
+  quaternion?: import('three').Quaternion;
+  mesh?: import('three').Mesh;
+  velocity: import('three').Vector3;
+  angularVelocity: import('three').Vector3;
+  invMass: number;
+  invInertia: import('three').Vector3;
+  fixed: boolean;
+};
+
+const FORCE_TIMESTEP = 1 / 60;
+
+function clampScalar(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getConstraintPosition(body: ConstraintBodyLike) {
+  return body.position ?? body.mesh?.position ?? null;
+}
+
+function getConstraintQuaternion(body: ConstraintBodyLike) {
+  return body.quaternion ?? body.mesh?.quaternion ?? null;
+}
+
+function pointVelocityForBody(body: ConstraintBodyLike, worldPoint: import('three').Vector3) {
+  const position = getConstraintPosition(body);
+  if (!position) return body.velocity.clone();
+  const radial = worldPoint.clone().sub(position);
+  return body.velocity.clone().add(body.angularVelocity.clone().cross(radial));
+}
+
+function applyWorldTorqueToBody(body: ConstraintBodyLike, torqueVector: import('three').Vector3) {
+  if (body.fixed || torqueVector.lengthSq() < 1e-10) return;
+  const quaternion = getConstraintQuaternion(body);
+  if (!quaternion) return;
+  const localTorque = torqueVector.clone().applyQuaternion(quaternion.clone().invert());
+  const localDelta = torqueVector.clone().set(
+    localTorque.x * body.invInertia.x,
+    localTorque.y * body.invInertia.y,
+    localTorque.z * body.invInertia.z,
+  );
+  body.angularVelocity.add(localDelta.applyQuaternion(quaternion));
+}
+
+function applyImpulseAtPointToBody(body: ConstraintBodyLike, impulse: import('three').Vector3, worldPoint: import('three').Vector3) {
+  if (body.fixed || impulse.lengthSq() < 1e-10) return;
+  body.velocity.addScaledVector(impulse, body.invMass);
+  const position = getConstraintPosition(body);
+  if (!position) return;
+  const lever = worldPoint.clone().sub(position);
+  applyWorldTorqueToBody(body, lever.cross(impulse));
+}
+
+function resolveWorldPointForBody(body: { mesh: import('three').Mesh }, point?: [number, number, number], pointLocal?: boolean) {
+  if (!point) return body.mesh.position.clone();
+  if (!pointLocal) return body.mesh.position.clone().set(point[0], point[1], point[2]);
+  return body.mesh.position.clone().set(point[0], point[1], point[2]).applyQuaternion(body.mesh.quaternion).add(body.mesh.position);
+}
+
+function solveAnchorConstraint(args: {
+  body: ConstraintBodyLike;
+  targetBody?: ConstraintBodyLike | null;
+  worldAnchor: import('three').Vector3;
+  targetPoint: import('three').Vector3;
+  stiffness: number;
+  damping: number;
+  dt: number;
+  breakForce: number;
+  positionalMin: number;
+  positionalMax: number;
+}) {
+  const { body, targetBody, worldAnchor, targetPoint, stiffness, damping, dt, breakForce, positionalMin, positionalMax } = args;
+  const correction = targetPoint.clone().sub(worldAnchor);
+  const separation = correction.length();
+  const bodyVelocity = pointVelocityForBody(body, worldAnchor);
+  const targetVelocity = targetBody ? pointVelocityForBody(targetBody, targetPoint) : bodyVelocity.clone().set(0, 0, 0);
+  const relativeVelocity = targetVelocity.sub(bodyVelocity);
+  const invMassSum = body.invMass + (targetBody?.invMass ?? 0);
+  if (invMassSum <= 0) return separation;
+  const correctiveVelocity = correction.clone().multiplyScalar(clampScalar(stiffness, 6, 120) * 0.55);
+  correctiveVelocity.addScaledVector(relativeVelocity, -clampScalar(damping, 0, 45));
+  const impulse = correctiveVelocity.multiplyScalar(dt / invMassSum);
+  const maxImpulse = Math.max(0.15, Math.min(breakForce * dt, 18));
+  if (impulse.lengthSq() > maxImpulse * maxImpulse) impulse.setLength(maxImpulse);
+  applyImpulseAtPointToBody(body, impulse.clone().negate(), worldAnchor);
+  if (targetBody) applyImpulseAtPointToBody(targetBody, impulse, targetPoint);
+  if (separation > 1e-5) {
+    const bodyPosition = getConstraintPosition(body);
+    const targetPosition = targetBody ? getConstraintPosition(targetBody) : null;
+    const positionalBlend = clampScalar(dt * (12 + stiffness * 0.45), positionalMin, positionalMax);
+    if (bodyPosition && body.invMass > 0) bodyPosition.addScaledVector(correction, positionalBlend * (body.invMass / invMassSum));
+    if (targetPosition && targetBody && targetBody.invMass > 0) targetPosition.addScaledVector(correction, -positionalBlend * (targetBody.invMass / invMassSum));
+  }
+  return separation;
+}
+
+function areBodiesDirectlyConnected(bodyA: { id: string; jointForHingeId?: string }, bodyB: { id: string; jointForHingeId?: string }, hinges: Map<string, { a: string; b: string; jointId?: string }>) {
+  const hingeA = bodyA.jointForHingeId ? hinges.get(bodyA.jointForHingeId) : undefined;
+  if (hingeA && (hingeA.a === bodyB.id || hingeA.b === bodyB.id)) return true;
+  const hingeB = bodyB.jointForHingeId ? hinges.get(bodyB.jointForHingeId) : undefined;
+  if (hingeB && (hingeB.a === bodyA.id || hingeB.b === bodyA.id)) return true;
+  return false;
 }
 
 const DEFAULT_PHYSICS_RULES: PhysicsRules = {
@@ -308,7 +416,10 @@ export default function PhysicsSimulator({
       if (spring.a === objectId || spring.b === objectId) s.springs.delete(springId);
     }
     for (const [hingeId, hinge] of Array.from(s.hinges.entries())) {
-      if (hinge.a === objectId || hinge.b === objectId) s.hinges.delete(hingeId);
+      if (hinge.a === objectId || hinge.b === objectId || hinge.jointId === objectId) {
+        if (hinge.jointId && hinge.jointId !== objectId) removeObject(hinge.jointId);
+        s.hinges.delete(hingeId);
+      }
     }
     for (const [sensorId, sensor] of Array.from(s.sensors.entries())) {
       if (sensor.objId === objectId || sensor.objId2 === objectId) s.sensors.delete(sensorId);
@@ -334,11 +445,14 @@ export default function PhysicsSimulator({
     ownerId?: string;
     team?: string;
     contactDamage: number;
+    kind: 'body' | 'joint';
+    jointForHingeId?: string;
   };
   type SimHinge = {
       id: string;
       a: string;
       b: string;
+      jointId: string | undefined;
       axis: import('three').Vector3;
       anchorA: import('three').Vector3;
       anchorB: import('three').Vector3;
@@ -552,12 +666,15 @@ export default function PhysicsSimulator({
           ownerId: body.ownerId,
           team: body.team,
           contactDamage: body.contactDamage,
+          kind: body.kind,
+          jointForHingeId: body.jointForHingeId,
         });
       }
       const hinges = Array.from(s.hinges.values()).map((hinge) => ({
         id: hinge.id,
         a: hinge.a,
         b: hinge.b,
+        jointId: hinge.jointId,
         axis: hinge.axis.clone(),
         anchorA: hinge.anchorA.clone(),
         anchorB: hinge.anchorB.clone(),
@@ -608,34 +725,43 @@ export default function PhysicsSimulator({
     const simulateBodiesStep = (bodies: Map<string, SimBody>, hinges: SimHinge[], combatants: Map<string, Combatant>, dtStep: number, clockRef: { value: number }, pairCooldowns: Map<string, number>) => {
       for (const body of bodies.values()) body.contactedGround = false;
       clockRef.value += dtStep;
+      const hingeMap = new Map(hinges.map((hinge) => [hinge.id, hinge] as const));
       for (const hinge of hinges) {
         const a = bodies.get(hinge.a);
         const b = bodies.get(hinge.b);
         if (!a || !b) continue;
+        const joint = hinge.jointId ? bodies.get(hinge.jointId) ?? null : null;
         const worldAnchorA = hinge.anchorA.clone().applyQuaternion(a.quaternion).add(a.position);
         const worldAnchorB = hinge.anchorB.clone().applyQuaternion(b.quaternion).add(b.position);
-        const correction = worldAnchorB.clone().sub(worldAnchorA);
-        const separation = correction.length();
+        const separationA = solveAnchorConstraint({
+          body: a,
+          targetBody: joint,
+          worldAnchor: worldAnchorA,
+          targetPoint: joint ? joint.position.clone() : worldAnchorA.clone().lerp(worldAnchorB, 0.5),
+          stiffness: hinge.stiffness,
+          damping: hinge.damping,
+          dt: dtStep,
+          breakForce: hinge.breakForce,
+          positionalMin: 0.08,
+          positionalMax: 0.75,
+        });
+        const separationB = solveAnchorConstraint({
+          body: b,
+          targetBody: joint,
+          worldAnchor: worldAnchorB,
+          targetPoint: joint ? joint.position.clone() : worldAnchorA.clone().lerp(worldAnchorB, 0.5),
+          stiffness: hinge.stiffness,
+          damping: hinge.damping,
+          dt: dtStep,
+          breakForce: hinge.breakForce,
+          positionalMin: 0.08,
+          positionalMax: 0.75,
+        });
+        const separation = Math.max(separationA, separationB);
         hinge.separation = separation;
         const anchorVelocityA = pointVelocityAt(a, worldAnchorA);
         const anchorVelocityB = pointVelocityAt(b, worldAnchorB);
         const relativeAnchorVelocity = anchorVelocityB.sub(anchorVelocityA);
-        const invMassSum = a.invMass + b.invMass;
-        if (invMassSum > 0) {
-          const correctiveVelocity = correction.clone().multiplyScalar(clamp(hinge.stiffness, 6, 90) * 0.55);
-          correctiveVelocity.addScaledVector(relativeAnchorVelocity, -clamp(hinge.damping, 0, 40));
-          const impulse = correctiveVelocity.multiplyScalar(dtStep / invMassSum);
-          const maxImpulse = Math.max(0.25, Math.min(hinge.breakForce * dtStep, 18));
-          if (impulse.lengthSq() > maxImpulse * maxImpulse) impulse.setLength(maxImpulse);
-          applyImpulseAtPoint(a, impulse.clone().negate(), worldAnchorA);
-          applyImpulseAtPoint(b, impulse, worldAnchorB);
-
-          if (separation > 1e-5) {
-            const positionalBlend = clamp(dtStep * (12 + hinge.stiffness * 0.45), 0.08, 0.75);
-            if (a.invMass > 0) a.position.addScaledVector(correction, positionalBlend * (a.invMass / invMassSum));
-            if (b.invMass > 0) b.position.addScaledVector(correction, -positionalBlend * (b.invMass / invMassSum));
-          }
-        }
 
         const axisA = hinge.axis.clone().applyQuaternion(a.quaternion).normalize();
         const axisB = hinge.axis.clone().applyQuaternion(b.quaternion).normalize();
@@ -712,6 +838,7 @@ export default function PhysicsSimulator({
           const a = list[i];
           const b = list[j];
           if (a.fixed && b.fixed) continue;
+          if (areBodiesDirectlyConnected(a, b, hingeMap)) continue;
           const delta = b.position.clone().sub(a.position);
           const dist2 = delta.lengthSq();
           const minDist = a.radius + b.radius;
@@ -822,6 +949,8 @@ export default function PhysicsSimulator({
           team: obj.team ?? null,
           contactDamage: obj.contactDamage,
           partRole: obj.partRole ?? null,
+          kind: obj.kind,
+          jointForHingeId: obj.jointForHingeId ?? null,
         };
       }
       const hingeState: Record<string, object> = {};
@@ -829,6 +958,7 @@ export default function PhysicsSimulator({
         hingeState[id] = {
           a: h.a,
           b: h.b,
+          jointId: h.jointId ?? null,
           motorSpeed: h.motorSpeed,
           motorForce: h.motorForce,
           minAngle: h.minAngle,
@@ -1068,6 +1198,8 @@ export default function PhysicsSimulator({
               team: cmd.team,
               contactDamage: Math.max(0.1, Number(cmd.contactDamage ?? 1)),
               partRole: undefined,
+              kind: 'body',
+              jointForHingeId: undefined,
             });
           }
           shouldPublishState = true;
@@ -1093,9 +1225,10 @@ export default function PhysicsSimulator({
           if (!cmd.objId || !cmd.force) break;
           const obj = s.objects.get(cmd.objId);
           if (obj) {
-            obj.velocity.x += cmd.force[0] / obj.mass;
-            obj.velocity.y += cmd.force[1] / obj.mass;
-            obj.velocity.z += cmd.force[2] / obj.mass;
+            const force = new THREE.Vector3(...cmd.force);
+            const applicationPoint = resolveWorldPointForBody(obj, cmd.point, cmd.pointLocal);
+            obj.velocity.addScaledVector(force, FORCE_TIMESTEP * obj.invMass);
+            applyWorldTorqueToBody(obj, applicationPoint.clone().sub(obj.mesh.position).cross(force).multiplyScalar(FORCE_TIMESTEP));
             obj.sleeping = false; obj.sleepTimer = 0;
             shouldPublishState = true;
           }
@@ -1105,9 +1238,9 @@ export default function PhysicsSimulator({
           if (!cmd.objId || !cmd.force) break;
           const obj = s.objects.get(cmd.objId);
           if (obj) {
-            obj.velocity.x += cmd.force[0] / obj.mass;
-            obj.velocity.y += cmd.force[1] / obj.mass;
-            obj.velocity.z += cmd.force[2] / obj.mass;
+            const impulse = new THREE.Vector3(...cmd.force);
+            const applicationPoint = resolveWorldPointForBody(obj, cmd.point, cmd.pointLocal);
+            applyImpulseAtPointToBody(obj, impulse, applicationPoint);
             obj.sleeping = false; obj.sleepTimer = 0;
             shouldPublishState = true;
           }
@@ -1297,9 +1430,7 @@ export default function PhysicsSimulator({
         case "apply_torque": {
           const obj = cmd.objId ? s.objects.get(cmd.objId) : null;
           if (obj && cmd.torque) {
-            obj.angularVelocity.x += cmd.torque[0] / obj.mass;
-            obj.angularVelocity.y += cmd.torque[1] / obj.mass;
-            obj.angularVelocity.z += cmd.torque[2] / obj.mass;
+            applyWorldTorqueToBody(obj, new THREE.Vector3(...cmd.torque).multiplyScalar(FORCE_TIMESTEP));
             obj.sleeping = false; obj.sleepTimer = 0;
             shouldPublishState = true;
           }
@@ -1309,9 +1440,47 @@ export default function PhysicsSimulator({
         // ── add_hinge ─────────────────────────────────────────────────────
         case "add_hinge": {
           if (!cmd.hingeId || !cmd.objId || !cmd.objId2) break;
+          const bodyA = s.objects.get(cmd.objId);
+          const bodyB = s.objects.get(cmd.objId2);
+          if (!bodyA || !bodyB) break;
+          const worldAnchorA = new THREE.Vector3(...(cmd.anchorA ?? [0, 0, 0])).applyQuaternion(bodyA.mesh.quaternion).add(bodyA.mesh.position);
+          const worldAnchorB = new THREE.Vector3(...(cmd.anchorB ?? [0, 0, 0])).applyQuaternion(bodyB.mesh.quaternion).add(bodyB.mesh.position);
+          const jointId = `${cmd.hingeId}__joint`;
+          removeObject(jointId);
+          const jointGeometry = new THREE.SphereGeometry(0.09, 10, 8);
+          const jointMaterial = new THREE.MeshStandardMaterial({ color: '#f8d66d', metalness: 0.7, roughness: 0.28, emissive: '#5f4d00' });
+          const jointMesh = new THREE.Mesh(jointGeometry, jointMaterial);
+          jointMesh.position.copy(worldAnchorA.clone().lerp(worldAnchorB, 0.5));
+          jointMesh.castShadow = true;
+          jointMesh.receiveShadow = true;
+          s.scene.add(jointMesh);
+          s.objects.set(jointId, {
+            id: jointId,
+            mesh: jointMesh,
+            velocity: bodyA.velocity.clone().lerp(bodyB.velocity, 0.5),
+            angularVelocity: new THREE.Vector3(),
+            mass: 0.18,
+            invMass: safeInverse(0.18),
+            invInertia: computeInvInertia('sphere', [0.18, 0.18, 0.18], 0.09, 0.18),
+            radius: 0.09,
+            shape: 'sphere',
+            size: [0.18, 0.18, 0.18],
+            fixed: false,
+            restitution: 0.12,
+            friction: 0.82,
+            sleeping: false,
+            sleepTimer: 0,
+            ownerId: bodyA.ownerId && bodyA.ownerId === bodyB.ownerId ? bodyA.ownerId : undefined,
+            team: bodyA.team && bodyA.team === bodyB.team ? bodyA.team : undefined,
+            contactDamage: 0.05,
+            partRole: 'joint',
+            kind: 'joint',
+            jointForHingeId: cmd.hingeId,
+          });
           s.hinges.set(cmd.hingeId, {
             id: cmd.hingeId,
             a: cmd.objId, b: cmd.objId2,
+            jointId,
             axis: new THREE.Vector3(...(cmd.axis ?? [0, 1, 0])).normalize(),
             anchorA: new THREE.Vector3(...(cmd.anchorA ?? [0, 0, 0])),
             anchorB: new THREE.Vector3(...(cmd.anchorB ?? [0, 0, 0])),
@@ -1348,6 +1517,8 @@ export default function PhysicsSimulator({
         // ── remove_hinge ─────────────────────────────────────────────────
         case "remove_hinge": {
           if (cmd.hingeId) {
+            const hinge = s.hinges.get(cmd.hingeId);
+            if (hinge?.jointId) removeObject(hinge.jointId);
             s.hinges.delete(cmd.hingeId);
             shouldPublishState = true;
           }
@@ -1434,6 +1605,8 @@ export default function PhysicsSimulator({
               team: cmd.team ?? cmd.creatureId,
               contactDamage: Math.max(0.15, Number(part.contactDamage ?? cmd.contactDamage ?? 1)),
               partRole: part.role ?? undefined,
+              kind: 'body',
+              jointForHingeId: undefined,
             });
           }
           for (const part of cmd.bodyPlan) {
@@ -1446,8 +1619,45 @@ export default function PhysicsSimulator({
               }
               const hingeId = `${cmd.creatureId}_hinge_${part.id}_${h.parentId}`;
               const parentPartId = `${cmd.creatureId}_${h.parentId}`;
+              const parentBody = s.objects.get(parentPartId);
+              const childBody = s.objects.get(partId);
+              if (!parentBody || !childBody) continue;
+              const worldAnchorA = new THREE.Vector3(...h.anchorA).applyQuaternion(parentBody.mesh.quaternion).add(parentBody.mesh.position);
+              const worldAnchorB = new THREE.Vector3(...h.anchorB).applyQuaternion(childBody.mesh.quaternion).add(childBody.mesh.position);
+              const jointId = `${hingeId}__joint`;
+              removeObject(jointId);
+              const jointGeometry = new THREE.SphereGeometry(0.085, 10, 8);
+              const jointMaterial = new THREE.MeshStandardMaterial({ color: '#f1d18a', metalness: 0.66, roughness: 0.3, emissive: '#564200' });
+              const jointMesh = new THREE.Mesh(jointGeometry, jointMaterial);
+              jointMesh.position.copy(worldAnchorA.clone().lerp(worldAnchorB, 0.5));
+              jointMesh.castShadow = true;
+              jointMesh.receiveShadow = true;
+              s.scene.add(jointMesh);
+              s.objects.set(jointId, {
+                id: jointId,
+                mesh: jointMesh,
+                velocity: parentBody.velocity.clone().lerp(childBody.velocity, 0.5),
+                angularVelocity: new THREE.Vector3(),
+                mass: 0.16,
+                invMass: safeInverse(0.16),
+                invInertia: computeInvInertia('sphere', [0.17, 0.17, 0.17], 0.085, 0.16),
+                radius: 0.085,
+                shape: 'sphere',
+                size: [0.17, 0.17, 0.17],
+                fixed: false,
+                restitution: 0.1,
+                friction: 0.82,
+                sleeping: false,
+                sleepTimer: 0,
+                ownerId: cmd.creatureId,
+                team: cmd.team ?? cmd.creatureId,
+                contactDamage: 0.05,
+                partRole: 'joint',
+                kind: 'joint',
+                jointForHingeId: hingeId,
+              });
               s.hinges.set(hingeId, {
-                id: hingeId, a: parentPartId, b: partId,
+                id: hingeId, a: parentPartId, b: partId, jointId,
                 axis: new THREE.Vector3(...h.axis).normalize(),
                 anchorA: new THREE.Vector3(...h.anchorA),
                 anchorB: new THREE.Vector3(...h.anchorB),
@@ -1867,12 +2077,15 @@ export default function PhysicsSimulator({
         ownerId?: string;
         team?: string;
         contactDamage: number;
+        kind: 'body' | 'joint';
+        jointForHingeId?: string;
       };
 
       type SimHinge = {
         id: string;
         a: string;
         b: string;
+        jointId: string | undefined;
         axis: import('three').Vector3;
         anchorA: import('three').Vector3;
         anchorB: import('three').Vector3;
@@ -2072,12 +2285,15 @@ export default function PhysicsSimulator({
             ownerId: body.ownerId,
             team: body.team,
             contactDamage: body.contactDamage,
+            kind: body.kind,
+            jointForHingeId: body.jointForHingeId,
           });
         }
         const hinges = Array.from(s.hinges.values()).map((hinge) => ({
           id: hinge.id,
           a: hinge.a,
           b: hinge.b,
+          jointId: hinge.jointId,
           axis: hinge.axis.clone(),
           anchorA: hinge.anchorA.clone(),
           anchorB: hinge.anchorB.clone(),
@@ -2354,12 +2570,15 @@ export default function PhysicsSimulator({
                 ownerId: body.ownerId,
                 team: body.team,
                 contactDamage: body.contactDamage,
+                kind: body.kind,
+                jointForHingeId: body.jointForHingeId,
               });
             }
             const observation = buildObservation(simBodies, controlledHinges.map((hinge) => ({
               id: hinge.id,
               a: hinge.a,
               b: hinge.b,
+              jointId: hinge.jointId,
               axis: hinge.axis,
               anchorA: hinge.anchorA,
               anchorB: hinge.anchorB,
@@ -2405,36 +2624,46 @@ export default function PhysicsSimulator({
           }
 
           // Hinge constraints (positional + angular motor)
+          const hingeMap = new Map(Array.from(s.hinges.values()).map((hinge) => [hinge.id, hinge] as const));
           for (const hinge of s.hinges.values()) {
             const a = s.objects.get(hinge.a);
             const b = s.objects.get(hinge.b);
             if (!a || !b) continue;
+            const joint = hinge.jointId ? s.objects.get(hinge.jointId) ?? null : null;
 
             // World-space anchor points
             const wAnchorA = hinge.anchorA.clone().applyQuaternion(a.mesh.quaternion).add(a.mesh.position);
             const wAnchorB = hinge.anchorB.clone().applyQuaternion(b.mesh.quaternion).add(b.mesh.position);
 
-            const correction = wAnchorB.clone().sub(wAnchorA);
-            const separation = correction.length();
+            const separationA = solveAnchorConstraint({
+              body: a,
+              targetBody: joint,
+              worldAnchor: wAnchorA,
+              targetPoint: joint ? joint.mesh.position.clone() : wAnchorA.clone().lerp(wAnchorB, 0.5),
+              stiffness: hinge.stiffness,
+              damping: hinge.damping,
+              dt: subDt,
+              breakForce: hinge.breakForce,
+              positionalMin: 0.08,
+              positionalMax: 0.75,
+            });
+            const separationB = solveAnchorConstraint({
+              body: b,
+              targetBody: joint,
+              worldAnchor: wAnchorB,
+              targetPoint: joint ? joint.mesh.position.clone() : wAnchorA.clone().lerp(wAnchorB, 0.5),
+              stiffness: hinge.stiffness,
+              damping: hinge.damping,
+              dt: subDt,
+              breakForce: hinge.breakForce,
+              positionalMin: 0.08,
+              positionalMax: 0.75,
+            });
+            const separation = Math.max(separationA, separationB);
             hinge.separation = separation;
             const anchorVelocityA = pointVelocityAt(a, wAnchorA);
             const anchorVelocityB = pointVelocityAt(b, wAnchorB);
             const relativeAnchorVelocity = anchorVelocityB.sub(anchorVelocityA);
-            const invMassSum = a.invMass + b.invMass;
-            if (invMassSum > 0) {
-              const correctiveVelocity = correction.clone().multiplyScalar(clamp(hinge.stiffness, 6, 90) * 0.55);
-              correctiveVelocity.addScaledVector(relativeAnchorVelocity, -clamp(hinge.damping, 0, 40));
-              const impulse = correctiveVelocity.multiplyScalar(subDt / invMassSum);
-              const maxImpulse = Math.max(0.25, Math.min(hinge.breakForce * subDt, 18));
-              if (impulse.lengthSq() > maxImpulse * maxImpulse) impulse.setLength(maxImpulse);
-              applyImpulseAtPoint(a, impulse.clone().negate(), wAnchorA);
-              applyImpulseAtPoint(b, impulse, wAnchorB);
-              if (separation > 1e-5) {
-                const positionalBlend = clamp(subDt * (12 + hinge.stiffness * 0.45), 0.08, 0.75);
-                if (!a.fixed) a.mesh.position.addScaledVector(correction, positionalBlend * (a.invMass / invMassSum));
-                if (!b.fixed) b.mesh.position.addScaledVector(correction, -positionalBlend * (b.invMass / invMassSum));
-              }
-            }
 
             const axisA = hinge.axis.clone().applyQuaternion(a.mesh.quaternion).normalize();
             const axisB = hinge.axis.clone().applyQuaternion(b.mesh.quaternion).normalize();
@@ -2560,6 +2789,7 @@ export default function PhysicsSimulator({
             for (let j = i + 1; j < objs.length; j++) {
               const a = objs[i], b = objs[j];
               if ((a.sleeping && b.sleeping) || (a.fixed && b.fixed)) continue;
+              if (areBodiesDirectlyConnected(a, b, hingeMap)) continue;
               const dx = b.mesh.position.x - a.mesh.position.x;
               const dy = b.mesh.position.y - a.mesh.position.y;
               const dz = b.mesh.position.z - a.mesh.position.z;

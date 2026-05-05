@@ -9,6 +9,19 @@ import https from 'https';
 const OLLAMA_PORTS = new Set(['11434', '3000']);
 // Common local OpenAI-compatible ports to scan on local hosts/subnets
 const VLLM_PORTS = ['8000', '8001', '5000', '5001', '9000'];
+const MAX_SUBNET_HOSTS = 1024;
+const SCAN_BATCH_SIZE = 24;
+const SCAN_CACHE_TTL_MS = 15_000;
+
+type VllmModelResult = { models: string[]; modelsUrl: string | null; reachable: boolean; authRequired: boolean };
+
+let recentModelScanCache:
+  | {
+      key: string;
+      expiresAt: number;
+      value: Array<{ model: string; hostPort: string; chatUrl?: string }>;
+    }
+  | null = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +79,51 @@ function normalizeEndpointBase(raw: string): string {
     .replace(/\/v1$/i, '');
 }
 
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function intToIpv4(value: number): string {
+  return [
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255,
+  ].join('.');
+}
+
+function enumerateSubnetHosts(address: string, netmask?: string | null, limit = MAX_SUBNET_HOSTS): string[] {
+  const ipValue = ipv4ToInt(address);
+  if (ipValue === null) return [];
+  const maskValue = ipv4ToInt(netmask || '255.255.255.0');
+  if (maskValue === null) return [];
+  const network = ipValue & maskValue;
+  const broadcast = network | (~maskValue >>> 0);
+  const firstHost = network + 1;
+  const lastHost = broadcast - 1;
+  if (lastHost < firstHost) return [address];
+  const totalHosts = lastHost - firstHost + 1;
+  if (totalHosts > limit) {
+    const [a, b, c] = address.split('.');
+    const fallback: string[] = [];
+    for (let host = 1; host <= 254; host += 1) fallback.push(`${a}.${b}.${c}.${host}`);
+    return fallback;
+  }
+  const hosts: string[] = [];
+  for (let current = firstHost; current <= lastHost; current += 1) hosts.push(intToIpv4(current >>> 0));
+  return hosts;
+}
+
+function extractHost(raw: string): string | null {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return null;
+  }
+}
+
 function parseModels(data: any): string[] {
   if (!data) return [];
   if (Array.isArray(data.data)) return data.data.map((m: any) => m.id || m.model).filter(Boolean);
@@ -90,36 +148,47 @@ async function looksLikeOllama(base: string): Promise<boolean> {
  * Try to fetch /v1/models from a base URL.
  * Returns the parsed model names, or [] on any failure.
  */
-async function fetchVllmModels(base: string, timeoutMs = 1200, apiKey = ''): Promise<{ models: string[]; modelsUrl: string | null }> {
+async function fetchVllmModels(base: string, timeoutMs = 1200, apiKey = ''): Promise<VllmModelResult> {
   const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
   for (const modelsUrl of [`${base}/v1/models`, `${base}/models`]) {
     try {
       const r = await ft(modelsUrl, { method: 'GET', headers }, timeoutMs);
+      if (r.status === 401 || r.status === 403) return { models: [], modelsUrl, reachable: true, authRequired: true };
       if (!r.ok) continue;
       const data = await r.json().catch(() => null);
       const models = parseModels(data);
-      if (models.length > 0) return { models, modelsUrl };
+      if (models.length > 0) return { models, modelsUrl, reachable: true, authRequired: false };
+      return { models: [], modelsUrl, reachable: true, authRequired: false };
     } catch {
       continue;
     }
   }
-  return { models: [], modelsUrl: null };
+  return { models: [], modelsUrl: null, reachable: false, authRequired: false };
 }
 
-function localEndpointHosts(): string[] {
+function localEndpointHosts(seedHosts: string[] = []): string[] {
   const out = new Set<string>();
   out.add('127.0.0.1');
   out.add('localhost');
+  seedHosts.forEach((host) => {
+    if (host) out.add(host);
+  });
   Object.values(os.networkInterfaces()).forEach(ifaces => {
     ifaces?.forEach(iface => {
       if (iface.family === 'IPv4' && !iface.internal) {
         out.add(iface.address);
-        const [a, b, c] = iface.address.split('.');
-        for (let i = 1; i <= 254; i++) out.add(`${a}.${b}.${c}.${i}`);
+        enumerateSubnetHosts(iface.address, iface.netmask).forEach((host) => out.add(host));
       }
     });
   });
   return Array.from(out);
+}
+
+async function runScanTasks(tasks: Array<() => Promise<void>>, shouldStop?: () => boolean) {
+  for (let index = 0; index < tasks.length; index += SCAN_BATCH_SIZE) {
+    if (shouldStop?.()) break;
+    await Promise.allSettled(tasks.slice(index, index + SCAN_BATCH_SIZE).map((task) => task()));
+  }
 }
 
 // ── GET /api/models ──────────────────────────────────────────────────────────
@@ -132,6 +201,17 @@ export async function GET(req: Request) {
   const vllmApiKey     = searchParams.get('vllmApiKey') || process.env.VLLM_API_KEY || '';
   const extraHosts     = (searchParams.get('vllmSparkHosts') || process.env.VLLM_HOSTS || '')
     .split(',').map(h => h.trim()).filter(Boolean);
+  const explicitHost = extractHost(vllmUrlParam);
+  const scanCacheKey = JSON.stringify({ vllmUrlParam, vllmApiKey: Boolean(vllmApiKey), extraHosts: [...extraHosts].sort() });
+
+  if (recentModelScanCache && recentModelScanCache.key === scanCacheKey && recentModelScanCache.expiresAt > Date.now()) {
+    return NextResponse.json({
+      ollamaModels: [],
+      vllmModels: recentModelScanCache.value,
+      openrouterModels: [],
+      cached: true,
+    });
+  }
 
   // ── 1. Ollama ─────────────────────────────────────────────────────────────
   const ollamaModels: string[] = [];
@@ -162,13 +242,15 @@ export async function GET(req: Request) {
       const hostLabel = (() => { try { return new URL(vllmUrlParam).host; } catch { return vllmUrlParam; } })();
 
       // Fetch models and run Ollama fingerprint in parallel
-      const [{ models: names }, isOllama] = await Promise.all([
+      const [{ models: names, authRequired }, isOllama] = await Promise.all([
         fetchVllmModels(base, 3000, vllmApiKey),
         looksLikeOllama(base),
       ]);
 
       if (isOllama) {
         console.log(`[Models] explicit vllmUrl ${vllmUrlParam} is Ollama/OpenWebUI — ignored`);
+      } else if (authRequired) {
+        console.log(`[Models] explicit local endpoint ${vllmUrlParam} is reachable but requires auth`);
       } else if (names.length > 0) {
         const chatUrl = `${v1}/chat/completions`;
         names.forEach(m => addVllmEntry(m, hostLabel, chatUrl));
@@ -184,15 +266,18 @@ export async function GET(req: Request) {
   if (vllmFound.size === 0) {
     const allHosts = Array.from(new Set([
       ...extraHosts,
-      ...localEndpointHosts(),
+      ...(explicitHost ? [explicitHost] : []),
+      ...localEndpointHosts([...extraHosts, ...(explicitHost ? [explicitHost] : [])]),
     ]));
 
     // Fan out all host:port combinations concurrently
+    let foundAny = false;
     const scanTasks = allHosts.flatMap(host =>
       VLLM_PORTS.map(port => async () => {
+        if (foundAny) return;
         const base = `http://${host}:${port}`;
-        const { models: names } = await fetchVllmModels(base, 700, vllmApiKey);
-        if (names.length === 0) return;
+        const { models: names, authRequired, reachable } = await fetchVllmModels(base, 700, vllmApiKey);
+        if (!reachable || authRequired || names.length === 0) return;
 
         // Quick Ollama check — prevents listing OpenWebUI/Ollama models as vLLM
         if (await looksLikeOllama(base)) {
@@ -205,10 +290,11 @@ export async function GET(req: Request) {
           addVllmEntry(m, `${host}:${port}`, chatUrl);
           console.log(`[Models] scan found local OpenAI endpoint: ${m} @ ${base}`);
         });
+        foundAny = true;
       })
     );
 
-    await Promise.allSettled(scanTasks.map(fn => fn()));
+    await runScanTasks(scanTasks, () => foundAny);
   }
 
   // ── 4. Build response ─────────────────────────────────────────────────────
@@ -220,6 +306,12 @@ export async function GET(req: Request) {
       chatUrl,
     };
   });
+
+  recentModelScanCache = {
+    key: scanCacheKey,
+    expiresAt: Date.now() + SCAN_CACHE_TTL_MS,
+    value: vllmList,
+  };
 
   // ── 5. OpenRouter ─────────────────────────────────────────────────────────
   const openrouterKey = searchParams.get('openrouterApiKey') || process.env.OPENROUTER_API_KEY || '';

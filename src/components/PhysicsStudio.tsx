@@ -289,6 +289,50 @@ export default function PhysicsStudio({
       .sort((left, right) => Number((right[1]?.jointLoad as number) ?? 0) - Number((left[1]?.jointLoad as number) ?? 0));
   }, [arenaState?.hinges, selectedCombatantState?.hingeIds]);
   const liveCombatants = useMemo(() => arenaState?.combatants ? Object.entries(arenaState.combatants) as Array<[string, any]> : [], [arenaState?.combatants]);
+  const builderMetrics = useMemo(() => {
+    const adjacency = new Map<string, Set<string>>();
+    let totalMass = 0;
+    let actuatorCount = 0;
+    for (const part of parts) {
+      adjacency.set(part.id, new Set());
+      totalMass += templateMap.get(part.templateId)?.mass ?? 0;
+    }
+    for (const hinge of hinges) {
+      adjacency.get(hinge.parentId)?.add(hinge.childId);
+      adjacency.get(hinge.childId)?.add(hinge.parentId);
+      if ((hinge.motorForce ?? 0) > 0.01) actuatorCount += 1;
+    }
+    const visited = new Set<string>();
+    let connectedGroups = 0;
+    for (const part of parts) {
+      if (visited.has(part.id)) continue;
+      connectedGroups += 1;
+      const stack = [part.id];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        for (const next of adjacency.get(current) ?? []) {
+          if (!visited.has(next)) stack.push(next);
+        }
+      }
+    }
+    const warnings: string[] = [];
+    if (parts.length > 1 && hinges.length === 0) warnings.push('The assembly has multiple parts but no physical joints.');
+    if (connectedGroups > 1) warnings.push(`The builder currently has ${connectedGroups} disconnected mechanisms.`);
+    if (hinges.length > 0 && actuatorCount === 0) warnings.push('None of the hinges are motorized, so the automaton cannot drive itself yet.');
+    if (totalMass > 0 && hinges.length > 0 && totalMass / Math.max(1, hinges.length) > 2.8) warnings.push('Mass per hinge is high; consider more support joints or lighter limbs.');
+    return {
+      totalMass: Number(totalMass.toFixed(2)),
+      connectedGroups,
+      actuatorCount,
+      averageMassPerPart: parts.length ? Number((totalMass / parts.length).toFixed(2)) : 0,
+      warnings,
+    };
+  }, [hinges, parts, templateMap]);
+  const stackedLayout = width < 1180;
+  const sidebarWidth = stackedLayout ? width : clamp(Math.round(width * 0.34), 360, 460);
+  const simulatorHeight = stackedLayout ? Math.max(320, Math.min(520, Math.floor(height * 0.48))) : height;
 
   useEffect(() => {
     try {
@@ -911,9 +955,9 @@ export default function PhysicsStudio({
   }, [dispatchAgentPrompt]);
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', background: '#0b1017', color: '#f4f7fb' }}>
+    <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: stackedLayout ? 'minmax(0, 1fr)' : `minmax(0, 1fr) ${sidebarWidth}px`, gridTemplateRows: stackedLayout ? `${simulatorHeight}px minmax(0, 1fr)` : 'minmax(0, 1fr)', background: '#0b1017', color: '#f4f7fb', minHeight: 0 }}>
       <div style={{ position: 'relative', borderRight: '1px solid rgba(255,255,255,0.08)', minWidth: 0 }}>
-        <PhysicsSimulator commands={commands} width={Math.max(320, width - 380)} height={height} />
+        <PhysicsSimulator commands={commands} width={Math.max(320, stackedLayout ? width : width - sidebarWidth)} height={simulatorHeight} />
         <div style={{ position: 'absolute', left: 16, bottom: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <QuickButton label="Refresh State" onClick={refreshArenaState} />
           <QuickButton label="Deploy User Bot" onClick={() => deployCurrentDesign('user', builderName)} />
@@ -922,8 +966,8 @@ export default function PhysicsStudio({
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, background: 'linear-gradient(180deg, #0f1722 0%, #101723 100%)' }}>
-        <div style={{ display: 'flex', gap: 6, padding: 10, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, overflow: 'hidden', background: 'linear-gradient(180deg, #0f1722 0%, #101723 100%)' }}>
+        <div style={{ display: 'flex', gap: 6, padding: 10, flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           {(['builder', 'arena', 'torch', 'guide'] as StudioTab[]).map((entry) => (
             <button
               key={entry}
@@ -951,9 +995,27 @@ export default function PhysicsStudio({
           <div style={{ color: 'rgba(244,247,251,0.62)', lineHeight: 1.5 }}>{status}</div>
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 12 }}>
           {tab === 'builder' && (
             <div style={{ display: 'grid', gap: 12 }}>
+              <Section title="Automata Readout">
+                <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
+                  <MetricCard label="Parts" value={String(parts.length)} hint="Rigid members in the current body plan." />
+                  <MetricCard label="Joints" value={String(hinges.length)} hint="Physical hinge pins connecting parts." />
+                  <MetricCard label="Motors" value={String(builderMetrics.actuatorCount)} hint="Hinges with non-zero drive force." />
+                  <MetricCard label="Mass" value={`${builderMetrics.totalMass} kg`} hint="Total assembly mass from the component palette." />
+                  <MetricCard label="Groups" value={String(builderMetrics.connectedGroups)} hint="Disconnected mechanisms should usually be reduced to one." />
+                  <MetricCard label="Avg Part Mass" value={`${builderMetrics.averageMassPerPart} kg`} hint="Heavy limbs need more support and torque." />
+                </div>
+                {builderMetrics.warnings.length > 0 && (
+                  <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+                    {builderMetrics.warnings.map((warning) => (
+                      <div key={warning} style={{ borderRadius: 12, border: '1px solid rgba(255,196,106,0.24)', background: 'rgba(255,196,106,0.08)', padding: '8px 10px', color: 'rgba(255,226,181,0.92)', fontSize: 11, lineHeight: 1.5 }}>{warning}</div>
+                    ))}
+                  </div>
+                )}
+              </Section>
+
               <Section title="Starter Assemblies">
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {Object.keys(STARTER_ASSEMBLIES).map((assemblyId) => (
@@ -1359,6 +1421,16 @@ function LabeledField({ label, children }: { label: string; children: React.Reac
       <span>{label}</span>
       {children}
     </label>
+  );
+}
+
+function MetricCard({ label, value, hint }: { label: string; value: string; hint: string }) {
+  return (
+    <div style={{ borderRadius: 14, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)', padding: 10 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'rgba(244,247,251,0.48)' }}>{label}</div>
+      <div style={{ marginTop: 6, fontSize: 18, fontWeight: 900, color: '#f4f7fb' }}>{value}</div>
+      <div style={{ marginTop: 6, fontSize: 11, lineHeight: 1.45, color: 'rgba(244,247,251,0.62)' }}>{hint}</div>
+    </div>
   );
 }
 
