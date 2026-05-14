@@ -69,6 +69,39 @@ type SavedBlueprintEntry = {
 const BOARD_WIDTH = 360;
 const BOARD_HEIGHT = 360;
 const STUDIO_STORAGE_KEY = 'physics-studio-layout-v1';
+const SNAP_GRID = 18;
+const SNAP_NEIGHBOR_PX = 24;
+const DEFAULT_MOTOR_FORCE = 28;
+
+function snapToGrid(value: number) {
+  return Math.round(value / SNAP_GRID) * SNAP_GRID;
+}
+
+function snapAxisAlignedAnchors(
+  parentTemplate: ComponentTemplate,
+  childTemplate: ComponentTemplate,
+  parentX: number,
+  parentY: number,
+  childX: number,
+  childY: number,
+): { anchorA: [number, number, number]; anchorB: [number, number, number] } {
+  const dx = childX - parentX;
+  const dy = parentY - childY;
+  const parentHalf = inferHalfExtents(parentTemplate);
+  const childHalf = inferHalfExtents(childTemplate);
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const sx = dx === 0 ? 1 : Math.sign(dx);
+    return {
+      anchorA: [sx * parentHalf[0], 0, 0],
+      anchorB: [-sx * childHalf[0], 0, 0],
+    };
+  }
+  const sy = dy === 0 ? 1 : Math.sign(dy);
+  return {
+    anchorA: [0, sy * parentHalf[1], 0],
+    anchorB: [0, -sy * childHalf[1], 0],
+  };
+}
 
 const PREBUILT_COMPONENTS: ComponentTemplate[] = [
   { id: 'torso-core', name: 'Torso Core', description: 'Stable chassis block for walkers and duelists.', shape: 'box', size: [1.4, 0.5, 0.75], mass: 2.2, color: '#8ec5ff', role: 'core', contactDamage: 0.7 },
@@ -445,8 +478,8 @@ export default function PhysicsStudio({
       id: cmdId('part'),
       templateId,
       label: template.name,
-      x: clamp(x, 24, BOARD_WIDTH - 24),
-      y: clamp(y, 24, BOARD_HEIGHT - 24),
+      x: clamp(snapToGrid(x), 24, BOARD_WIDTH - 24),
+      y: clamp(snapToGrid(y), 24, BOARD_HEIGHT - 24),
     };
     setParts((prev) => [...prev, nextPart]);
     setSelectedParts([nextPart.id]);
@@ -458,7 +491,7 @@ export default function PhysicsStudio({
     const templateId = event.dataTransfer.getData('text/plain');
     if (!templateId || !boardRef.current) return;
     const rect = boardRef.current.getBoundingClientRect();
-    addPartFromTemplate(templateId, event.clientX - rect.left, event.clientY - rect.top);
+    addPartFromTemplate(templateId, snapToGrid(event.clientX - rect.left), snapToGrid(event.clientY - rect.top));
   }, [addPartFromTemplate]);
 
   const beginPartDrag = useCallback((partId: string, startX: number, startY: number) => {
@@ -469,13 +502,26 @@ export default function PhysicsStudio({
     const offsetX = startX - boardRect.left - part.x;
     const offsetY = startY - boardRect.top - part.y;
     const onMove = (event: PointerEvent) => {
-      setParts((prev) => prev.map((entry) => entry.id === partId
-        ? {
-            ...entry,
-            x: clamp(event.clientX - boardRect.left - offsetX, 24, BOARD_WIDTH - 24),
-            y: clamp(event.clientY - boardRect.top - offsetY, 24, BOARD_HEIGHT - 24),
+      const rawX = event.clientX - boardRect.left - offsetX;
+      const rawY = event.clientY - boardRect.top - offsetY;
+      const useSnap = !event.altKey;
+      setParts((prev) => prev.map((entry) => {
+        if (entry.id !== partId) return entry;
+        let nx = useSnap ? snapToGrid(rawX) : rawX;
+        let ny = useSnap ? snapToGrid(rawY) : rawY;
+        if (useSnap) {
+          for (const other of prev) {
+            if (other.id === partId) continue;
+            if (Math.abs(other.x - nx) < SNAP_NEIGHBOR_PX) nx = other.x;
+            if (Math.abs(other.y - ny) < SNAP_NEIGHBOR_PX) ny = other.y;
           }
-        : entry));
+        }
+        return {
+          ...entry,
+          x: clamp(nx, 24, BOARD_WIDTH - 24),
+          y: clamp(ny, 24, BOARD_HEIGHT - 24),
+        };
+      }));
     };
     const onUp = () => {
       setDraggingPartId(null);
@@ -520,23 +566,25 @@ export default function PhysicsStudio({
     const parent = parts.find((entry) => entry.id === parentId);
     const child = parts.find((entry) => entry.id === childId);
     if (!parent || !child) return;
-    const dx = (child.x - parent.x) / 70;
-    const dy = (child.y - parent.y) / 70;
+    const parentTpl = templateMap.get(parent.templateId);
+    const childTpl = templateMap.get(child.templateId);
+    if (!parentTpl || !childTpl) return;
+    const { anchorA, anchorB } = snapAxisAlignedAnchors(parentTpl, childTpl, parent.x, parent.y, child.x, child.y);
     setHinges((prev) => [...prev, {
       id: cmdId('hinge'),
       parentId,
       childId,
       axis: [0, 0, 1],
-      anchorA: [clamp(dx, -0.5, 0.5), clamp(dy, -0.5, 0.5), 0],
-      anchorB: [clamp(-dx, -0.5, 0.5), clamp(-dy, -0.5, 0.5), 0],
+      anchorA,
+      anchorB,
       minAngle: -Math.PI * 0.6,
       maxAngle: Math.PI * 0.6,
-      motorForce: 0,
-      stiffness: 42,
-      damping: 9,
-      angularStiffness: 32,
-      angularDamping: 6,
-      breakForce: 900,
+      motorForce: DEFAULT_MOTOR_FORCE,
+      stiffness: 60,
+      damping: 11,
+      angularStiffness: 38,
+      angularDamping: 7,
+      breakForce: 1400,
     }]);
     setSelectedHingeId((prev) => prev);
     setStatus(`Attached ${child.label} to ${parent.label}.`);
@@ -588,18 +636,15 @@ export default function PhysicsStudio({
           const child = partMap.get(hinge.childId)!;
           const parentTemplate = templateMap.get(parent.templateId)!;
           const childTemplate = templateMap.get(child.templateId)!;
-          const parentHalf = inferHalfExtents(parentTemplate);
-          const childHalf = inferHalfExtents(childTemplate);
-          const dx = ((child.x - parent.x) / BOARD_WIDTH) * 8;
-          const dy = ((parent.y - child.y) / BOARD_HEIGHT) * 4.4;
+          const snap = snapAxisAlignedAnchors(parentTemplate, childTemplate, parent.x, parent.y, child.x, child.y);
           return {
             parentId: hinge.parentId,
             axis: hinge.axis,
-            anchorA: [clamp(dx * 0.5, -parentHalf[0], parentHalf[0]), clamp(dy * 0.5, -parentHalf[1], parentHalf[1]), 0] as [number, number, number],
-            anchorB: [clamp(-dx * 0.5, -childHalf[0], childHalf[0]), clamp(-dy * 0.5, -childHalf[1], childHalf[1]), 0] as [number, number, number],
+            anchorA: snap.anchorA,
+            anchorB: snap.anchorB,
             minAngle: hinge.minAngle,
             maxAngle: hinge.maxAngle,
-            motorForce: hinge.motorForce,
+            motorForce: hinge.motorForce && hinge.motorForce > 0 ? hinge.motorForce : DEFAULT_MOTOR_FORCE,
             stiffness: hinge.stiffness,
             damping: hinge.damping,
             angularStiffness: hinge.angularStiffness,
@@ -882,7 +927,7 @@ export default function PhysicsStudio({
           anchorB: parseVec(pairs.anchorB, [0, 0, 0]),
           minAngle: Number.isFinite(Number(pairs.minAngle)) ? Number(pairs.minAngle) : -Math.PI * 0.6,
           maxAngle: Number.isFinite(Number(pairs.maxAngle)) ? Number(pairs.maxAngle) : Math.PI * 0.6,
-          motorForce: Number.isFinite(Number(pairs.motorForce)) ? Number(pairs.motorForce) : 0,
+          motorForce: Number.isFinite(Number(pairs.motorForce)) ? Number(pairs.motorForce) : DEFAULT_MOTOR_FORCE,
           stiffness: Number.isFinite(Number(pairs.stiffness)) ? Number(pairs.stiffness) : 42,
           damping: Number.isFinite(Number(pairs.damping)) ? Number(pairs.damping) : 9,
           angularStiffness: Number.isFinite(Number(pairs.angularStiffness)) ? Number(pairs.angularStiffness) : 32,

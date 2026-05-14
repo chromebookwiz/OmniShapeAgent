@@ -2190,7 +2190,7 @@ export default function Chat() {
                     <div className="grid grid-cols-1 gap-4">
                       {/* Primary slot */}
                       <div className="min-w-0 space-y-2">
-                        <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Primary (Architect)</label>
+                        <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Primary</label>
                         <select
                           value={primaryProvider}
                           onChange={(e) => {
@@ -2211,7 +2211,7 @@ export default function Chat() {
                       </div>
                       {/* Secondary slot */}
                       <div className="min-w-0 space-y-2">
-                        <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Companion (Auditor)</label>
+                        <label className="text-[10px] font-black text-black/40 uppercase tracking-[0.2em]">Companion</label>
                         <select
                           value={secondaryProvider}
                           onChange={(e) => {

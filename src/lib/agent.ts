@@ -776,7 +776,6 @@ Pattern for bot improvement loop:
 
 - Direct, precise, no filler. Senior engineer voice.
 - Store anything worth remembering with \`memory_store\`.
-- **Multi-agent roles**: [ARCHITECT] leads reasoning, [AUDITOR] audits it. Neural Sync blocks ground reasoning with companion model weights.
 `;
 
 const TECHNICAL_INSTRUCTIONS = `
@@ -3497,8 +3496,7 @@ export async function* runAgentLoop(
         basePayload.max_tokens = generationBudget;
       }
 
-      const providerLabel = model.startsWith('openrouter:') ? 'OpenRouter' : isVllm ? 'Architect' : 'Auditor';
-      yield { type: 'status', content: `Consulting ${providerLabel}...` };
+      yield { type: 'status', content: `Generating response...` };
       
       const gen = isVllm ? callVllm(endpoint, basePayload, headers) : callOllama(endpoint, basePayload, headers);
 
@@ -3558,7 +3556,7 @@ export async function* runAgentLoop(
       }
 
       if (reasoning) {
-        finalAppendedOutput += `\n[THINKING] (${isVllm ? 'ARCHITECT' : 'AUDITOR'})\n${reasoning}\n[THOUGHT_END]\n`;
+        finalAppendedOutput += `\n[THINKING]\n${reasoning}\n[THOUGHT_END]\n`;
       }
       
       const finalContent = responseText;
